@@ -2,7 +2,8 @@
 //!
 //! [`build_core`] is the one place that knows every crate. It opens the [`Store`] once (the
 //! undo journal, the settings and the activity log are the same database), builds the executor
-//! and the tweak engine over the given [`Ports`], and resolves entries a crash left pending.
+//! and the tweak engine over the given [`Ports`], builds the clean engine (`CleaningSetup`) and
+//! resolves entries a crash left pending.
 //! It takes the ports and the store path as parameters, so the app calls it with the real
 //! Windows adapters ([`windows_ports`]) and a path in the app data directory, and tests call
 //! the very same function with fakes or a throwaway registry key and a temp directory.
@@ -16,14 +17,15 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use tauri::{AppHandle, Manager as _};
 use volt_core::{
-    ActivityLog, Catalogue, CatalogueError, Clock, Executor, Journal, PortError, Ports,
-    ReconcileReport, Resolution, Settings, SystemClock, TweakEngine,
+    ActivityLog, Catalogue, CatalogueError, CleanEngine, CleaningRules, Clock, Executor, Journal,
+    KnownFolders, PortError, Ports, ReconcileReport, Resolution, RulesError, Settings, SystemClock,
+    TweakEngine,
 };
 use volt_store::{CorruptionRecovery, OpenOutcome, Store, StoreError};
-use volt_win::{WinCommands, WinFileSystem, WinRegistry, WinServices};
+use volt_win::{WinCommands, WinFileSystem, WinKnownFolders, WinRegistry, WinServices};
 
 use crate::IpcError;
-use crate::catalogue::EMBEDDED_CATALOGUE;
+use crate::catalogue::{EMBEDDED_CATALOGUE, EMBEDDED_CLEANING_RULES};
 use crate::unsupported::{UnsupportedMemory, UnsupportedProcesses};
 
 /// File name of the database inside the app data directory.
@@ -37,6 +39,8 @@ pub enum InitError {
     Store(StoreError),
     /// The catalogue text is invalid. The embedded catalogue is tested, so this is a build bug.
     Catalogue(CatalogueError),
+    /// The cleaning rules text is invalid. The embedded file is tested, so this is a build bug.
+    CleaningRules(RulesError),
     /// The app data directory could not be found or created.
     DataDir(String),
 }
@@ -46,6 +50,7 @@ impl fmt::Display for InitError {
         match self {
             Self::Store(error) => write!(f, "{error}"),
             Self::Catalogue(error) => write!(f, "{error}"),
+            Self::CleaningRules(error) => write!(f, "{error}"),
             Self::DataDir(message) => write!(f, "cannot use the app data directory: {message}"),
         }
     }
@@ -62,6 +67,12 @@ impl From<StoreError> for InitError {
 impl From<CatalogueError> for InitError {
     fn from(error: CatalogueError) -> Self {
         Self::Catalogue(error)
+    }
+}
+
+impl From<RulesError> for InitError {
+    fn from(error: RulesError) -> Self {
+        Self::CleaningRules(error)
     }
 }
 
@@ -90,12 +101,14 @@ pub struct AppCore {
     /// What building the core found.
     pub startup: StartupReport,
     gate: Mutex<()>,
+    clean: Option<CleanEngine>,
 }
 
 impl fmt::Debug for AppCore {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AppCore")
             .field("engine", &self.engine)
+            .field("clean", &self.clean)
             .field("startup", &self.startup)
             .finish_non_exhaustive()
     }
@@ -119,7 +132,23 @@ impl AppCore {
             activity,
             startup,
             gate: Mutex::new(()),
+            clean: None,
         }
+    }
+
+    /// Attaches the clean engine. [`build_core`] always does; a core assembled by hand with
+    /// [`AppCore::new`] has none until this is called.
+    #[must_use]
+    pub fn with_clean_engine(mut self, engine: CleanEngine) -> Self {
+        self.clean = Some(engine);
+        self
+    }
+
+    /// The clean engine: scans and cleans with the embedded rules, writes the activity log and
+    /// reads the settings. `None` only for a core assembled by hand without one.
+    #[must_use]
+    pub fn clean_engine(&self) -> Option<&CleanEngine> {
+        self.clean.as_ref()
     }
 
     /// Serialises the operations that read or change tweak state, so two quick clicks (or a
@@ -144,7 +173,52 @@ pub fn build_core(
     store_path: &Path,
     catalogue_toml: &str,
 ) -> Result<AppCore, InitError> {
+    build_core_with_cleaning(ports, store_path, catalogue_toml, CleaningSetup::windows())
+}
+
+/// What the clean engine is built from, besides the ports, the clock and the store: the rules
+/// text and the resolver of the rules' named locations.
+pub struct CleaningSetup<'a> {
+    /// The cleaning rules, as TOML text. The app passes [`EMBEDDED_CLEANING_RULES`].
+    pub rules_toml: &'a str,
+    /// Resolves the rules' named locations to folders. The app passes [`WinKnownFolders`]; a
+    /// test passes a fake or a double that points at a temp directory.
+    pub folders: Arc<dyn KnownFolders>,
+}
+
+impl fmt::Debug for CleaningSetup<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CleaningSetup")
+            .field("rules_bytes", &self.rules_toml.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl CleaningSetup<'static> {
+    /// The real setup: the embedded rules and the Windows known folders.
+    #[must_use]
+    pub fn windows() -> Self {
+        Self {
+            rules_toml: EMBEDDED_CLEANING_RULES,
+            folders: Arc::new(WinKnownFolders::new()),
+        }
+    }
+}
+
+/// [`build_core`] with the clean engine's rules and known folders given. The clean engine is
+/// built from `ports.file_system`, the system clock and the one store (as activity log and as
+/// settings, for the minimum age of the temp rules).
+///
+/// Invalid cleaning rules are [`InitError::CleaningRules`], like an invalid tweak catalogue: the
+/// text is checked before the database is opened.
+pub fn build_core_with_cleaning(
+    ports: Ports,
+    store_path: &Path,
+    catalogue_toml: &str,
+    cleaning: CleaningSetup<'_>,
+) -> Result<AppCore, InitError> {
     let catalogue = Arc::new(Catalogue::from_toml(catalogue_toml)?);
+    let rules = CleaningRules::from_toml(cleaning.rules_toml)?;
     let OpenOutcome { store, recovery } = Store::open(store_path)?;
     if let Some(recovery) = &recovery {
         log::warn!(
@@ -167,6 +241,15 @@ pub fn build_core(
         .reconcile_pending();
     log_reconcile(&reconcile);
 
+    let clean = CleanEngine::new(
+        rules,
+        cleaning.folders,
+        ports.file_system.clone(),
+        clock.clone(),
+    )
+    .with_activity_log(activity.clone())
+    .with_settings(settings.clone());
+
     let engine = TweakEngine::new(catalogue, ports, journal.clone(), clock)
         .with_activity_log(activity.clone());
     Ok(AppCore::new(
@@ -179,7 +262,8 @@ pub fn build_core(
             recovery,
             reconcile,
         },
-    ))
+    )
+    .with_clean_engine(clean))
 }
 
 /// The ports of the real machine: the Windows adapters of `volt-win`, plus

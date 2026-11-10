@@ -148,8 +148,10 @@ What `volt-core` contains today:
     category, risk, a root, `include` patterns (at least one), optional `exclude` patterns and
     constraints: `min_age_days`, `max_depth` (at most 32) and `remove_empty_dirs`. Patterns are
     relative to the root, `/` separated, ignore case and support `*`, `?` and `**` as a whole
-    component; `..`, a leading `/`, a drive letter, `\` and character classes are refused. The
-    real rule set is a later task; tests use small inline definitions.
+    component; `..`, a leading `/`, a drive letter, `\` and character classes are refused. Two
+    optional fields describe the rule's environment: `requires_admin` (the location needs
+    administrator rights) and `min_age_setting` (the settings key that may override the minimum
+    age, see below). The real rule set is `catalogue/cleaning.toml` (see Shipped cleaning rules).
   - **Roots are never paths.** A root is one of a closed set of named `Location`s (`user_temp`,
     `local_app_data`, `roaming_app_data`, `program_data`, `windows`) plus a relative path. The
     `KnownFolders` port resolves a location, so the core never reads the environment. Refused at
@@ -161,7 +163,8 @@ What `volt-core` contains today:
   - **Scan, plan, confirm, clean.** `scan` is read-only and returns a `CleanPlan`: per rule the
     items (files, and empty folders when the rule removes them, children before parents) with
     size and modification time, totals, exact counts and a capped list of what was skipped and
-    why (link, too new, unknown age, beyond the depth limit, unreadable). A scan never follows a
+    why (link, too new, unknown age, beyond the depth limit, access denied, unreadable). A scan
+    carries the rule's `requires_admin` and the minimum age it applied. A scan never follows a
     junction, symlink or other reparse point (a root that is one is refused), never lists a
     folder outside the root and never plans a path outside it. The caller shows the plan and calls
     `CleanPlan::confirm` (or `confirm_rules`); only the resulting `ConfirmedPlan` can be passed
@@ -182,6 +185,42 @@ What `volt-core` contains today:
     nothing could be moved) names the rule id and counts only, following the redaction rule: no
     path, no file name, no port message. A failing log is counted in the report and never blocks
     a clean.
+  - **Administrator rights are typed, not guessed.** A rule flagged `requires_admin` is still
+    scanned. When Windows refuses the root (or a folder on the way to it) the scan fails with
+    `ScanFailure::RootAccessDenied`; when it refuses something inside, the entry is skipped as
+    `SkipReason::AccessDenied` and counted in `ScanCounts::access_denied`.
+    `RuleScan::needs_administrator()` is true for a flagged rule with either, so the UI can say
+    "this needs administrator rights" instead of showing an empty result as "nothing to clean". A
+    missing root is not a refusal. The flag is the rule's own statement; how the rights are
+    obtained is the undecided elevation model (see Process and elevation model).
+  - **Minimum age and the setting that overrides it.** Every rule states `min_age_days` (0 for
+    caches whose age means nothing). A rule with `min_age_setting` takes the age from that key of
+    the `Settings` port when the engine was given one (`CleanEngine::with_settings`): a whole
+    number of days from 1 to 3650 replaces the rule's age (it may lower it, never to 0); no value
+    keeps the rule's age; an unreadable or out-of-range value fails that rule's scan with
+    `ScanFailure::MinAgeSettingUnreadable` or `MinAgeSettingInvalid`, because falling back to a
+    smaller age than the user chose could take files they meant to keep. `RuleScan::min_age_days`
+    reports the age that was applied. The scan is the only place the age is judged: an entry newer
+    than it is never listed, and a clean only moves what the plan lists.
+  - **Shipped cleaning rules** (`catalogue/cleaning.toml`). Per user, no administrator rights:
+    `user-temp` (the temp folder, 7 days, configurable), `user-wer-archive` and `user-wer-queue`
+    (Windows Error Reporting, 7 days), `user-crash-dumps` (`*.dmp` in `CrashDumps`, 7 days),
+    `thumbnail-cache` and `icon-cache` (`thumbcache_*.db` and `iconcache_*.db` in the Explorer
+    folder, no minimum age; Explorer keeps some open, and those are reported as in use). Machine
+    wide, `requires_admin`: `windows-temp` (7 days, configurable, never `CBS`), `machine-wer-archive`
+    and `machine-wer-queue`, `windows-update-logs` (`*.etl`) and `delivery-optimization-cache`
+    (risk Caution: the service owns it). Every description says what the files are, why removing
+    them is safe and what the user notices. **Deliberately not rules:** the Windows Update
+    download cache (clearing it needs the update service stopped and started again, which needs
+    elevation) and emptying the Recycle Bin (a permanent delete, which will be a separate
+    explicit action on the Cleaner page). A location is left out when there is doubt.
+  - **Every rule has a fixture.** `apps/desktop/src-tauri/tests/cleaning_rules.rs` builds, for
+    each rule of the embedded file, a tree with the core fakes holding entries the rule must take
+    and entries it must not (too new, at the age limit, excluded, matching no include, too deep,
+    a link with content below it, a folder that is not empty, and files outside the root), scans
+    it, compares the plan with the expectation, then cleans the plan against the fake and checks
+    that exactly the planned entries moved. A guard test fails when a rule has no fixture or a
+    fixture lacks a kind of entry the rule's shape makes possible.
 
 ## Persistence
 
@@ -227,13 +266,23 @@ fakes, or with a throwaway registry key and a temp directory.
   (an unusable database, a build bug in the catalogue) the app still starts, the tray and window
   keep working, and every command answers with the same error, which the UI shows. `AppCore`
   holds a lock that serialises list, apply and revert, so two quick clicks cannot interleave.
+- **The clean engine.** `build_core` also builds a `CleanEngine` from the embedded cleaning rules,
+  the `ports.file_system` adapter, `WinKnownFolders`, the system clock, and the store (as the
+  activity log and as the settings, for the minimum age of the temp rules). `AppCore::clean_engine()`
+  returns it. `build_core(ports, store_path, catalogue_toml)` keeps its signature and calls
+  `build_core_with_cleaning`, which takes a `CleaningSetup` (the rules text and the
+  `KnownFolders` resolver) so a test can pass its own. The rules text is validated before the
+  database is opened; a file that does not load is `InitError::CleaningRules` (a typed init
+  error, like an invalid tweak catalogue), never a panic. There are no IPC commands or UI for
+  cleaning yet: the Cleaner page is a later task.
 - **The catalogue** lives in the repository at `catalogue/tweaks.toml` and is embedded into the
   binary with `include_str!` (`catalogue.rs`); `volt-core` only ever receives the text. A test loads
   the embedded text and fails the build on any problem. Today it holds exactly one tweak, Show file
   extensions (`HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced`,
   `HideFileExt` = DWORD 0): Safe, evidence Anecdotal because it is a usability and safety
   preference and not a performance gain, no restart (open Explorer windows pick it up on refresh).
-  The real catalogue is a later task.
+  The real catalogue is a later task. The cleaning rules are embedded the same way
+  (`catalogue/cleaning.toml`, `EMBEDDED_CLEANING_RULES`), and a test loads the embedded text.
 - **Where the files are.** The database is `volt.db` in the app data directory
   (`%APPDATA%\io.github.tatsuyakari1203.volt`); the diagnostic log is in the app log directory.
 
@@ -260,6 +309,9 @@ with the Windows API: `WinRegistry`, `WinServices`, `WinFileSystem`, `WinKnownFo
 - Tests are confined to `HKCU\Software\VoltTest` and temp directories. Scan and clean tests run
   the real engine over a temp directory with a real junction (a junction swapped in after the scan
   included); the tests that put items in the real Recycle Bin are `#[ignore]`d and run on request.
+  `tests/cleaning_rules.rs` runs some of the shipped rules through `WinFileSystem` over a temp
+  directory with a known-folders double (scan only), and an opt-in `--ignored` test scans every
+  shipped rule on the real machine, read-only, printing counts and sizes and no names.
 - **`WinMetrics`** needs no administrator rights and no vendor library, so it works for any GPU.
   CPU is `GetSystemTimes` (idle, kernel and user time; kernel includes idle), memory is
   `GlobalMemoryStatusEx`, disks are `GetLogicalDrives` filtered to `DRIVE_FIXED` with
@@ -308,6 +360,15 @@ depends on it: one elevated process that is both the tray agent and the Tauri ho
 alternative, an unelevated UI talking to an elevated helper over a named pipe, has a smaller
 attack surface but costs an IPC protocol and a second binary. Everything below works unelevated
 and does not depend on that decision, except where it says so.
+
+What already depends on it: the machine-wide cleaning rules (`windows-temp`, `machine-wer-*`,
+`windows-update-logs`, `delivery-optimization-cache`) are flagged `requires_admin`. Unelevated they
+are scanned and report `needs_administrator()`; nothing is attempted by other means. Measured on a
+development machine without elevation (a read-only scan, counts only): Windows temp and the
+Delivery Optimization cache refuse the root itself, the machine-wide error report folders list
+but refuse every report folder inside, and the Windows Update logs are readable. Cleaning them
+for real (and the Windows Update download cache, which also needs the update service stopped and
+started) waits for the elevation decision.
 
 ### Window lifecycle and tray
 

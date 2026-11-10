@@ -1,0 +1,257 @@
+# The cleaning rules embedded in the desktop app (apps/desktop/src-tauri/src/catalogue.rs).
+#
+# Every rule says exactly where it looks, what it may take and what it must leave alone. The format
+# is documented on `volt_core::CleaningRules::from_toml`; the app refuses to start when this file
+# does not validate, and a test checks it on every build. A test also builds a fixture tree for
+# EVERY rule here (apps/desktop/src-tauri/tests/cleaning_rules.rs) and fails when a rule has none.
+#
+# Everything a clean takes goes to the Recycle Bin, never to a permanent delete. Entries modified
+# more recently than `min_age_days` are never taken. A rule marked `requires_admin = true` sits in a
+# machine-wide location that Windows only lets an administrator read or change; run unelevated,
+# its scan reports that in a typed way instead of an empty result.
+#
+# Left out on purpose (see the task notes): the Windows Update download cache (clearing it needs the
+# update service stopped and started again, which needs administrator rights) and emptying the
+# Recycle Bin (a permanent delete, a separate explicit action). When in doubt a location is left
+# out: a small, obviously safe set beats a large one.
+#
+# Per-user locations first (no administrator rights), then the machine-wide ones.
+
+# ---- per user ----------------------------------------------------------------------------------
+
+[[rule]]
+id = "user-temp"
+title = "Temporary files"
+description = """
+Files that programs and installers left in your temporary folder (%TEMP%) and no longer use. Only files and \
+folders not modified for at least the minimum age are taken (7 days unless you change it in the settings, the \
+same age Windows' own Disk Cleanup uses), so what a program is working with right now is never touched, and a \
+file another program still holds open is skipped. Folders that end up empty are taken too. You will not \
+notice anything: programs create their temporary files again when they need them."""
+category = "temporary_files"
+risk = "safe"
+include = ["**"]
+min_age_setting = "clean.temp_min_age_days"
+
+[rule.root]
+location = "user_temp"
+
+[rule.constraints]
+min_age_days = 7
+max_depth = 6
+remove_empty_dirs = true
+
+[[rule]]
+id = "user-wer-archive"
+title = "Error reports already handled"
+description = """
+Windows Error Reporting keeps a copy of every error report it has dealt with in your profile, one folder per \
+report, with the crash details and sometimes a small memory snapshot. They are only for diagnosis: nothing \
+reads them again unless you open one yourself. Reports newer than 7 days are kept. You will not notice \
+anything, except that an old report you wanted to look at is in the Recycle Bin."""
+category = "crash_reports"
+risk = "safe"
+include = ["**"]
+
+[rule.root]
+location = "local_app_data"
+path = "Microsoft/Windows/WER/ReportArchive"
+
+[rule.constraints]
+min_age_days = 7
+max_depth = 4
+remove_empty_dirs = true
+
+[[rule]]
+id = "user-wer-queue"
+title = "Error reports waiting to be sent"
+description = """
+Reports that Windows Error Reporting collected after a program failed and has not sent yet. Removing one only \
+means that report is never sent to Microsoft; the program and Windows are not affected. Reports newer than 7 \
+days are kept. You will not notice anything."""
+category = "crash_reports"
+risk = "safe"
+include = ["**"]
+
+[rule.root]
+location = "local_app_data"
+path = "Microsoft/Windows/WER/ReportQueue"
+
+[rule.constraints]
+min_age_days = 7
+max_depth = 4
+remove_empty_dirs = true
+
+[[rule]]
+id = "user-crash-dumps"
+title = "Application crash dumps"
+description = """
+Memory snapshots (.dmp files) that Windows writes into your profile when a program crashes and crash dumps \
+are enabled for it. They are only useful to someone debugging that crash, for example a developer with a \
+debugger. Dumps newer than 7 days are kept. You will not notice anything; a dump you still needed would be in \
+the Recycle Bin."""
+category = "crash_reports"
+risk = "safe"
+include = ["**/*.dmp"]
+
+[rule.root]
+location = "local_app_data"
+path = "CrashDumps"
+
+[rule.constraints]
+min_age_days = 7
+max_depth = 2
+
+[[rule]]
+id = "thumbnail-cache"
+title = "Thumbnail cache"
+description = """
+The small preview pictures File Explorer keeps (thumbcache_*.db) so folders full of photos and videos open \
+quickly. Windows rebuilds them whenever a folder is shown, so this is safe. Afterwards the first visit to a \
+picture folder is a little slower while thumbnails are made again. File Explorer keeps some of these files \
+open while it runs, and those are skipped and reported as in use; closing File Explorer windows first lets \
+more of them go."""
+category = "application_cache"
+risk = "safe"
+include = ["thumbcache_*.db"]
+
+[rule.root]
+location = "local_app_data"
+path = "Microsoft/Windows/Explorer"
+
+[rule.constraints]
+min_age_days = 0
+max_depth = 0
+
+[[rule]]
+id = "icon-cache"
+title = "Icon cache"
+description = """
+The cache of program and file icons File Explorer keeps (iconcache_*.db) so the desktop and folders draw \
+quickly. Windows rebuilds it by itself. Afterwards icons may flash or appear a moment late the first time \
+they are shown. File Explorer keeps some of these files open while it runs, and those are skipped and \
+reported as in use."""
+category = "application_cache"
+risk = "safe"
+include = ["iconcache_*.db"]
+
+[rule.root]
+location = "local_app_data"
+path = "Microsoft/Windows/Explorer"
+
+[rule.constraints]
+min_age_days = 0
+max_depth = 0
+
+# ---- machine-wide: administrator rights needed --------------------------------------------------
+
+[[rule]]
+id = "windows-temp"
+title = "Windows temporary files"
+description = """
+Files that Windows, services and installers running for all users left in C:\\Windows\\Temp. Only files and \
+folders not modified for at least the minimum age are taken (7 days unless you change it in the settings), and \
+the folder Windows uses to service updates (CBS) is never touched. Files in use are skipped. You will not \
+notice anything: they are created again when needed. Reading and changing this folder needs administrator \
+rights."""
+category = "temporary_files"
+risk = "caution"
+include = ["**"]
+exclude = ["CBS"]
+requires_admin = true
+min_age_setting = "clean.temp_min_age_days"
+
+[rule.root]
+location = "windows"
+path = "Temp"
+
+[rule.constraints]
+min_age_days = 7
+max_depth = 6
+remove_empty_dirs = true
+
+[[rule]]
+id = "machine-wer-archive"
+title = "Error reports already handled (all users)"
+description = """
+The machine-wide copy of the error reports Windows Error Reporting has dealt with, for every user and for \
+services. Only useful for diagnosis; reports newer than 7 days are kept. You will not notice anything. Needs \
+administrator rights."""
+category = "crash_reports"
+risk = "safe"
+include = ["**"]
+requires_admin = true
+
+[rule.root]
+location = "program_data"
+path = "Microsoft/Windows/WER/ReportArchive"
+
+[rule.constraints]
+min_age_days = 7
+max_depth = 4
+remove_empty_dirs = true
+
+[[rule]]
+id = "machine-wer-queue"
+title = "Error reports waiting to be sent (all users)"
+description = """
+The machine-wide queue of error reports that have not been sent yet. Removing one only means that report is \
+never sent; Windows and the programs are not affected. Reports newer than 7 days are kept. You will not notice \
+anything. Needs administrator rights."""
+category = "crash_reports"
+risk = "safe"
+include = ["**"]
+requires_admin = true
+
+[rule.root]
+location = "program_data"
+path = "Microsoft/Windows/WER/ReportQueue"
+
+[rule.constraints]
+min_age_days = 7
+max_depth = 4
+remove_empty_dirs = true
+
+[[rule]]
+id = "windows-update-logs"
+title = "Windows Update trace logs"
+description = """
+The trace logs (.etl files) the Windows Update client writes to C:\\Windows\\Logs\\WindowsUpdate. They only \
+help someone diagnosing an update problem, and Windows writes new ones when it needs them. Logs newer than 7 \
+days are kept, so a problem you are chasing right now stays documented. You will not notice anything. Needs \
+administrator rights."""
+category = "logs"
+risk = "safe"
+include = ["*.etl"]
+requires_admin = true
+
+[rule.root]
+location = "windows"
+path = "Logs/WindowsUpdate"
+
+[rule.constraints]
+min_age_days = 7
+max_depth = 0
+
+[[rule]]
+id = "delivery-optimization-cache"
+title = "Delivery Optimization cache"
+description = """
+Update files that the Delivery Optimization service downloaded and keeps so it can share them with other PCs \
+and finish interrupted downloads. Windows downloads them again if they are needed. Files newer than 7 days are \
+kept, so a download in progress is not disturbed. You will not notice anything, except that an update that was \
+waiting may download again. Marked Caution because the service owns this folder and Windows' own cleanup uses \
+the service rather than deleting the files; a file the service holds open is skipped. Needs administrator \
+rights."""
+category = "windows_update"
+risk = "caution"
+include = ["**"]
+requires_admin = true
+
+[rule.root]
+location = "windows"
+path = "ServiceProfiles/NetworkService/AppData/Local/Microsoft/Windows/DeliveryOptimization/Cache"
+
+[rule.constraints]
+min_age_days = 7
+max_depth = 4

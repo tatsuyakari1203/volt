@@ -9,8 +9,9 @@ use super::plan::{
     SkippedEntry,
 };
 use super::root::resolve_root;
-use super::rule::{CleaningRule, MAX_DEPTH_LIMIT};
+use super::rule::{CleaningRule, MAX_DEPTH_LIMIT, MIN_AGE_SETTING_MAX, MIN_AGE_SETTING_MIN};
 use crate::activity::error_class;
+use crate::error::PortError;
 use crate::ports::{EntryInfo, EntryKind};
 use crate::time::Timestamp;
 
@@ -50,13 +51,52 @@ pub(super) fn component_text(name: &std::ffi::OsStr) -> Option<String> {
     (!invalid).then(|| text.into_owned())
 }
 
+/// How a port failure while reading is reported: access denied is its own
+/// typed reason, everything else carries its class.
+fn read_failure(error: &PortError) -> SkipReason {
+    match error {
+        PortError::AccessDenied(_) => SkipReason::AccessDenied,
+        other => SkipReason::Unreadable(error_class(other)),
+    }
+}
+
+/// A root that could not be examined or listed, as a typed failure.
+fn root_failure(error: &PortError) -> ScanFailure {
+    match error {
+        PortError::AccessDenied(_) => ScanFailure::RootAccessDenied,
+        other => ScanFailure::RootUnreadable(error_class(other)),
+    }
+}
+
 impl CleanEngine {
+    /// The minimum age to apply to `rule`: its own, or the whole number of days
+    /// stored under the rule's settings key. A missing value keeps the rule's
+    /// own age; a value that cannot be read or is out of range is a failure,
+    /// never a quiet fallback to a smaller age.
+    fn effective_min_age(&self, rule: &CleaningRule) -> Result<u32, ScanFailure> {
+        let own = rule.constraints.min_age_days;
+        let (Some(key), Some(settings)) = (&rule.min_age_setting, &self.settings) else {
+            return Ok(own);
+        };
+        match settings.get(key) {
+            Ok(None) => Ok(own),
+            Ok(Some(value)) => value
+                .as_u64()
+                .and_then(|days| u32::try_from(days).ok())
+                .filter(|days| (MIN_AGE_SETTING_MIN..=MIN_AGE_SETTING_MAX).contains(days))
+                .ok_or(ScanFailure::MinAgeSettingInvalid),
+            Err(error) => Err(ScanFailure::MinAgeSettingUnreadable(error_class(&error))),
+        }
+    }
+
     pub(super) fn scan_rule(&self, rule: &CleaningRule, now: Timestamp) -> RuleScan {
         let mut scan = RuleScan {
             rule_id: rule.id.clone(),
             title: rule.title.clone(),
             category: rule.category,
             risk: rule.risk,
+            requires_admin: rule.requires_admin,
+            min_age_days: rule.constraints.min_age_days,
             root: None,
             root_exists: false,
             failure: None,
@@ -64,6 +104,13 @@ impl CleanEngine {
             skipped: Vec::new(),
             counts: ScanCounts::default(),
         };
+        match self.effective_min_age(rule) {
+            Ok(days) => scan.min_age_days = days,
+            Err(failure) => {
+                scan.failure = Some(failure);
+                return scan;
+            }
+        }
         let root = match resolve_root(rule, self.folders.as_ref()) {
             Ok(root) => root,
             Err(error) => {
@@ -90,7 +137,7 @@ impl CleanEngine {
                 return scan;
             }
             Err(error) => {
-                scan.failure = Some(ScanFailure::RootUnreadable(error_class(&error)));
+                scan.failure = Some(root_failure(&error));
                 return scan;
             }
         }
@@ -99,6 +146,7 @@ impl CleanEngine {
             rule,
             engine: self,
             now,
+            min_age_days: scan.min_age_days,
             max_depth: rule.constraints.max_depth.min(MAX_DEPTH_LIMIT),
             scan: &mut scan,
         };
@@ -112,6 +160,7 @@ struct Walker<'a> {
     rule: &'a CleaningRule,
     engine: &'a CleanEngine,
     now: Timestamp,
+    min_age_days: u32,
     max_depth: u32,
     scan: &'a mut RuleScan,
 }
@@ -124,6 +173,7 @@ impl Walker<'_> {
             SkipReason::TooNew => counts.too_new += 1,
             SkipReason::AgeUnknown => counts.age_unknown += 1,
             SkipReason::BeyondMaxDepth => counts.beyond_max_depth += 1,
+            SkipReason::AccessDenied => counts.access_denied += 1,
             SkipReason::Unreadable(_) => counts.unreadable += 1,
             SkipReason::InvalidName => counts.invalid_name += 1,
         }
@@ -136,7 +186,7 @@ impl Walker<'_> {
     }
 
     fn age_ok(&self, modified: Option<Timestamp>) -> Result<(), SkipReason> {
-        age_allows(self.rule.constraints.min_age_days, modified, self.now)
+        age_allows(self.min_age_days, modified, self.now)
     }
 
     /// Scans the directory `dir`, whose path below the root is `relative`.
@@ -147,7 +197,13 @@ impl Walker<'_> {
         let entries = match self.engine.file_system.read_dir(dir) {
             Ok(entries) => entries,
             Err(error) => {
-                self.skip(dir, SkipReason::Unreadable(error_class(&error)));
+                if relative.is_empty() {
+                    // The root itself cannot be listed: the whole rule is
+                    // held back, which is a failure, not one skipped entry.
+                    self.scan.failure = Some(root_failure(&error));
+                } else {
+                    self.skip(dir, read_failure(&error));
+                }
                 return false;
             }
         };
@@ -162,7 +218,7 @@ impl Walker<'_> {
             let info = match entry.info {
                 Ok(info) => info,
                 Err(error) => {
-                    self.skip(&path, SkipReason::Unreadable(error_class(&error)));
+                    self.skip(&path, read_failure(&error));
                     all_planned = false;
                     continue;
                 }

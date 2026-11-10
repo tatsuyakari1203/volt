@@ -4,7 +4,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 use super::root::RootError;
-use super::rule::CleanCategory;
+use super::rule::{CleanCategory, MIN_AGE_SETTING_MAX, MIN_AGE_SETTING_MIN};
 use crate::label::Risk;
 use crate::time::Timestamp;
 
@@ -57,7 +57,12 @@ pub enum SkipReason {
     /// A folder deeper than the rule's maximum depth; its content was not
     /// looked at.
     BeyondMaxDepth,
-    /// The entry or folder could not be read; the text is the error class.
+    /// Windows refused to read the entry or folder (access denied). For a rule
+    /// that [`requires_admin`](RuleScan::requires_admin) this is the typed
+    /// sign that administrator rights are needed.
+    AccessDenied,
+    /// The entry or folder could not be read for another reason; the text is
+    /// the error class.
     Unreadable(&'static str),
     /// A name that is not a single path component.
     InvalidName,
@@ -70,6 +75,7 @@ impl fmt::Display for SkipReason {
             Self::TooNew => f.write_str("modified more recently than the rule's minimum age"),
             Self::AgeUnknown => f.write_str("modification time unknown"),
             Self::BeyondMaxDepth => f.write_str("deeper than the rule's maximum depth"),
+            Self::AccessDenied => f.write_str("could not be read (access denied)"),
             Self::Unreadable(class) => write!(f, "could not be read ({class})"),
             Self::InvalidName => f.write_str("name is not a single path component"),
         }
@@ -104,7 +110,9 @@ pub struct ScanCounts {
     pub age_unknown: usize,
     /// Folders deeper than the maximum depth.
     pub beyond_max_depth: usize,
-    /// Entries or folders that could not be read.
+    /// Entries or folders Windows refused to read (access denied).
+    pub access_denied: usize,
+    /// Entries or folders that could not be read for another reason.
     pub unreadable: usize,
     /// Entries with an invalid name.
     pub invalid_name: usize,
@@ -121,8 +129,20 @@ pub enum ScanFailure {
     RootIsLink,
     /// The root exists but is not a directory.
     RootNotDirectory,
-    /// The root could not be examined; the text is the error class.
+    /// Windows refused access to the root, or to a folder on the way to it.
+    /// For a rule that [`requires_admin`](RuleScan::requires_admin) this means
+    /// the scan needs administrator rights ([`RuleScan::needs_administrator`]).
+    RootAccessDenied,
+    /// The root could not be examined for another reason; the text is the
+    /// error class.
     RootUnreadable(&'static str),
+    /// The settings value that overrides the rule's minimum age could not be
+    /// read; the text is the error class. The rule is not scanned, because
+    /// guessing an age could take files the user meant to keep.
+    MinAgeSettingUnreadable(&'static str),
+    /// The settings value that overrides the rule's minimum age is not a whole
+    /// number of days in the allowed range. The rule is not scanned.
+    MinAgeSettingInvalid,
 }
 
 impl fmt::Display for ScanFailure {
@@ -133,7 +153,17 @@ impl fmt::Display for ScanFailure {
                 f.write_str("the root is a link or other reparse point, which is not followed")
             }
             Self::RootNotDirectory => f.write_str("the root is not a directory"),
+            Self::RootAccessDenied => f.write_str("access to the root was denied"),
             Self::RootUnreadable(class) => write!(f, "the root could not be read ({class})"),
+            Self::MinAgeSettingUnreadable(class) => write!(
+                f,
+                "the minimum age setting could not be read ({class}); the rule was not scanned"
+            ),
+            Self::MinAgeSettingInvalid => write!(
+                f,
+                "the minimum age setting is not a whole number of days from \
+                 {MIN_AGE_SETTING_MIN} to {MIN_AGE_SETTING_MAX}; the rule was not scanned"
+            ),
         }
     }
 }
@@ -150,6 +180,12 @@ pub struct RuleScan {
     pub category: CleanCategory,
     /// The rule's risk level.
     pub risk: Risk,
+    /// Whether the rule's location can only be cleaned with administrator
+    /// rights (a property of the rule, not something this scan found).
+    pub requires_admin: bool,
+    /// The minimum age in days this scan applied: the rule's own, or the one
+    /// from its settings key. An entry modified more recently is never listed.
+    pub min_age_days: u32,
     /// The resolved root, when it could be resolved.
     pub root: Option<PathBuf>,
     /// Whether the root exists. A missing root is not a failure: there is
@@ -168,6 +204,17 @@ pub struct RuleScan {
 }
 
 impl RuleScan {
+    /// Whether this scan was held back by missing administrator rights: the
+    /// rule is flagged [`requires_admin`](Self::requires_admin) and Windows
+    /// refused access to its root or to something inside it. The result of
+    /// such a scan is incomplete (or empty), not "nothing to clean".
+    #[must_use]
+    pub fn needs_administrator(&self) -> bool {
+        self.requires_admin
+            && (self.failure == Some(ScanFailure::RootAccessDenied)
+                || self.counts.access_denied > 0)
+    }
+
     /// Number of files that would be moved.
     #[must_use]
     pub fn file_count(&self) -> usize {
