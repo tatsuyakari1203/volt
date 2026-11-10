@@ -17,8 +17,11 @@ volt-store = { path = "crates/volt-store" }
 volt-win = { path = "crates/volt-win" }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
-# Dev-only: round-trip tests for the persisted and IPC data types.
 serde_json = "1"
+# SQLite is compiled in (`bundled`): no system library is needed.
+rusqlite = { version = "0.37", features = ["bundled"] }
+# Dev-only: temp directories for persistence tests.
+tempfile = "3"
 
 [workspace.lints.rust]
 # volt-win is the only crate allowed to opt back in (see its lib.rs).
