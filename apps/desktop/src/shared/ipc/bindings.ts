@@ -502,6 +502,31 @@ async endApp(id: string) : Promise<Result<EndAppResult, IpcError>> {
 }
 },
 /**
+ * Tauri command: the installed apps with size, publisher and install date. Reads the system
+ * only.
+ */
+async listApps() : Promise<Result<AppListView, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_apps") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: removes one app by running the vendor's own registered uninstaller (or asking
+ * Windows to remove a packaged app) and waits for it. This cannot be undone by Volt, so it is
+ * recorded in the activity log but not in the undo journal. The UI asks first.
+ */
+async uninstallApp(id: string) : Promise<Result<UninstallResult, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("uninstall_app", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Tauri command: runs Boost as saved and returns the before and after report.
  */
 async boost() : Promise<Result<BoostResult, IpcError>> {
@@ -726,11 +751,99 @@ name: string;
  */
 version: string }
 /**
+ * Every installed app and what could not be read.
+ */
+export type AppListView = { 
+/**
+ * The apps, sorted by name ignoring case. Hidden ones are included: the UI filters.
+ */
+apps: AppView[]; 
+/**
+ * Sources that could not be read completely. The rest of the list is valid.
+ */
+problems: AppProblemView[] }
+/**
+ * A source that could not be read completely.
+ */
+export type AppProblemView = { 
+/**
+ * Which source.
+ */
+source: AppSourceView; 
+/**
+ * The whole source could not be read.
+ */
+unreadable: boolean; 
+/**
+ * Entries of the source that are missing from the list.
+ */
+skipped: number }
+/**
  * Event emitted once the page has loaded, carrying the identity of the running app.
  * 
  * The sample typed event: generated as `events.appReady` on the TypeScript side.
  */
 export type AppReady = AppInfo
+/**
+ * Where an app was listed. Mirrors [`volt_core::AppSource`].
+ */
+export type AppSourceView = 
+/**
+ * Installed for every user (the 64-bit registry view).
+ */
+"machine64" | 
+/**
+ * Installed for every user (the 32-bit registry view).
+ */
+"machine32" | 
+/**
+ * Installed for the current user only.
+ */
+"currentUser" | 
+/**
+ * A packaged (Store) app of the current user.
+ */
+"packaged"
+/**
+ * One installed app.
+ */
+export type AppView = { 
+/**
+ * Stable identity; pass it to `uninstallApp`.
+ */
+id: string; 
+/**
+ * The name shown to the user.
+ */
+name: string; 
+/**
+ * Who published it, when known.
+ */
+publisher: string | null; 
+/**
+ * Its version, when known.
+ */
+version: string | null; 
+/**
+ * Its size on disk in bytes, when known.
+ */
+sizeBytes: number | null; 
+/**
+ * The day it was installed (`YYYY-MM-DD`), when known.
+ */
+installed: string | null; 
+/**
+ * Where it was listed (the current-user location is marked in the details).
+ */
+source: AppSourceView; 
+/**
+ * Why it is hidden by default; `null` for an ordinary app.
+ */
+hidden: HiddenReasonView | null; 
+/**
+ * Whether Volt can remove it.
+ */
+uninstallable: boolean }
 /**
  * Precise result of [`apply_tweak`].
  */
@@ -1488,6 +1601,30 @@ systemMount: string;
  * When the system was read, ISO 8601 in UTC.
  */
 checkedAt: string }
+/**
+ * Why an app is hidden by default. Mirrors [`volt_core::HiddenReason`].
+ */
+export type HiddenReasonView = 
+/**
+ * Marked as a system component.
+ */
+"systemComponent" | 
+/**
+ * An update or a patch.
+ */
+"update" | 
+/**
+ * A framework other apps depend on.
+ */
+"framework" | 
+/**
+ * Cannot be removed.
+ */
+"notRemovable" | 
+/**
+ * No usable uninstall command.
+ */
+"noUninstallCommand"
 /**
  * Whether the history on the Undo page is complete.
  */
@@ -2635,6 +2772,58 @@ export type UndoStatus =
  * acknowledged. `overwrites` lists them; call again with their `laterEntry` ids to go ahead.
  */
 "needsAcknowledgement"
+/**
+ * How removing one app ended. Mirrors [`volt_core::UninstallOutcome`].
+ */
+export type UninstallOutcomeView = 
+/**
+ * The app is no longer listed.
+ */
+"removed" | 
+/**
+ * The uninstaller finished (or was closed) and the app is still listed.
+ */
+"stillInstalled" | 
+/**
+ * Nothing ran: the uninstaller could not be started or Windows refused the removal.
+ */
+"failed" | 
+/**
+ * The uninstaller finished, but the list could not be read again to check.
+ */
+"unknown"
+/**
+ * What removing one app did.
+ */
+export type UninstallResult = { 
+/**
+ * The app that was removed.
+ */
+id: string; 
+/**
+ * Its name.
+ */
+name: string; 
+/**
+ * Where it was listed.
+ */
+source: AppSourceView; 
+/**
+ * How it ended.
+ */
+outcome: UninstallOutcomeView; 
+/**
+ * The exit code of the vendor's uninstaller, when it ran and Windows reported one.
+ */
+exitCode: number | null; 
+/**
+ * Whether it was written to the activity log (as a change that cannot be undone).
+ */
+recorded: boolean; 
+/**
+ * The list as it is now.
+ */
+listing: AppListView }
 
 /** tauri-specta globals **/
 

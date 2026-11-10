@@ -46,6 +46,11 @@
 //! needs and Volt itself (in the core, not only in the UI) and is recorded as an activity that
 //! cannot be undone.
 //!
+//! Installed apps are the [`apps`] module: desktop apps from the Uninstall registry keys and the
+//! packaged apps of the current user are listed read-only, and removing one starts the vendor's
+//! own registered uninstaller (or asks the package manager) and is recorded as an activity that
+//! cannot be undone.
+//!
 //! The elevated helper's wire protocol and the [`Elevator`] port live in the [`elevation`] module:
 //! a closed set of requests, bounded messages and strictly ordered ids, so the UI side can be built
 //! and tested without a helper.
@@ -58,6 +63,7 @@
 #![forbid(unsafe_code)]
 
 pub mod activity;
+pub mod apps;
 pub mod boost;
 pub mod clean;
 pub mod command;
@@ -88,6 +94,11 @@ pub mod fakes;
 pub use activity::{
     ActivityId, ActivityLog, ActivityOutcome, ActivityRecord, NewActivity, Retention,
     redacted_entry_error, render_text,
+};
+pub use apps::{
+    AppDate, AppListing, AppLocation, AppManager, AppProblem, AppSource, CommandRefusal,
+    HiddenReason, InstalledApp, OwnInstall, PackagedApp, PackagedApps, UNINSTALL_LABEL,
+    UninstallCommand, UninstallError, UninstallOutcome, UninstallReport, Uninstaller,
 };
 pub use boost::{
     BOOST_SETTINGS_KEY, BOOST_TEMP_RULE_ID, BoostConfig, BoostReport, JunkFound, SkippedOperation,

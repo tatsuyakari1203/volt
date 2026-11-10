@@ -8,6 +8,7 @@ import {
   type ActivityExport,
   type ActivityPage,
   type AppInfo,
+  type AppListView,
   type ApplyResult,
   type AppReady,
   type BoostConfigView,
@@ -47,6 +48,7 @@ import {
   type TweakPlanView,
   type UndoPreview,
   type UndoResult,
+  type UninstallResult,
 } from './bindings';
 
 export type {
@@ -56,9 +58,13 @@ export type {
   ActivitySource,
   ActivityStatus,
   AppInfo,
+  AppListView,
   ApplyResult,
   ApplyStatus,
+  AppProblemView,
   AppReady,
+  AppSourceView,
+  AppView,
   AreaResult,
   AreaStatus,
   ArgView,
@@ -89,6 +95,7 @@ export type {
   HealthCheckView,
   HealthLevelView,
   HealthView,
+  HiddenReasonView,
   IpcError,
   ItemPick,
   JunkView,
@@ -140,6 +147,8 @@ export type {
   UndoPreviewItem,
   UndoResult,
   UndoStatus,
+  UninstallOutcomeView,
+  UninstallResult,
 } from './bindings';
 
 /** Thrown by the wrappers below when a command returns an error; carries the typed value. */
@@ -585,4 +594,24 @@ export async function getLanguageSetting(): Promise<LanguageSetting> {
 /** Saves the language choice. The shell also rewrites the tray menu in the new language at once. */
 export async function saveLanguageSetting(choice: LanguageChoice): Promise<LanguageSetting> {
   return call(() => commands.setLanguage(choice));
+}
+
+/**
+ * Every installed app: desktop apps from the registry and the packaged apps of the current user,
+ * with size, publisher and install date where known. Entries that are system components, updates,
+ * frameworks or cannot be removed are included with a hidden reason: the screen hides them by
+ * default. Sources that could not be read come back in problems. Read-only.
+ */
+export async function listApps(): Promise<AppListView> {
+  return call(() => commands.listApps());
+}
+
+/**
+ * Removes one app by running its own registered uninstaller (or asking Windows to remove a
+ * packaged app) and waits until it exits. The result says whether the app is gone, still installed
+ * or could not be started, with the list as it is now. Volt cannot undo it. The id comes from
+ * listApps; a command is never passed.
+ */
+export async function uninstallApp(id: string): Promise<UninstallResult> {
+  return call(() => commands.uninstallApp(id));
 }
