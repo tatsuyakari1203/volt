@@ -1,8 +1,18 @@
-import { CircleCheck, Loader2, RefreshCw, ShieldAlert, TriangleAlert } from 'lucide-react';
+import {
+  CircleCheck,
+  Loader2,
+  RefreshCw,
+  ShieldAlert,
+  ShieldCheck,
+  TriangleAlert,
+} from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { t, tNodes } from '../../shared/i18n';
 import {
   cleanMemory,
+  cleanMemoryElevated,
+  type ElevationStatusView,
+  getElevationStatus,
   getMemoryState,
   type MemoryAreaView,
   type MemoryCleanResult,
@@ -12,6 +22,7 @@ import {
 import {
   describeArea,
   describeError,
+  elevationReasonText,
   formatChange,
   listRows,
   operationText,
@@ -156,15 +167,18 @@ function GuidanceCard() {
 
 /**
  * The Memory screen: how memory is used by list (in use, standby, modified, free), one button
- * per cleaning operation and a before and after report for each run. Operations that need
- * administrator rights are listed with the reason and cannot be started. All rules live in the
- * Rust core: this renders what the commands report.
+ * per cleaning operation and a before and after report for each run. An operation that needs
+ * administrator rights shows a shield: when administrator actions are available it runs through
+ * the elevated helper (one Windows prompt per session), otherwise it is locked and says why. All
+ * rules live in the Rust core: this renders what the commands report.
  */
 export function MemoryScreen() {
   const [load, setLoad] = useState<Load>({ status: 'loading' });
   const [running, setRunning] = useState<MemoryAreaView | null>(null);
   const [report, setReport] = useState<MemoryCleanResult | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // `null` until it is known, and when it could not be read: administrator actions stay locked.
+  const [elevation, setElevation] = useState<ElevationStatusView | null>(null);
   const alive = useRef(true);
 
   useEffect(() => {
@@ -187,15 +201,36 @@ export function MemoryScreen() {
 
   useEffect(() => read(), [read]);
 
-  const run = async (area: MemoryAreaView) => {
+  useEffect(() => {
+    getElevationStatus()
+      .then((status) => {
+        if (alive.current) setElevation(status);
+      })
+      .catch(() => {
+        if (alive.current) setElevation(null);
+      });
+  }, []);
+
+  const run = async (area: MemoryAreaView, asAdministrator: boolean) => {
     setRunning(area);
     setNotice(null);
     try {
-      const result = await cleanMemory([area]);
-      if (alive.current) {
-        setReport(result);
-        // Show what is true now, not the numbers from before the run.
-        read(true);
+      if (asAdministrator) {
+        const outcome = await cleanMemoryElevated([area]);
+        if (!alive.current) return;
+        if (outcome.outcome === 'declined') {
+          setNotice(t('memory.declined'));
+        } else {
+          setReport(outcome.report);
+          read(true);
+        }
+      } else {
+        const result = await cleanMemory([area]);
+        if (alive.current) {
+          setReport(result);
+          // Show what is true now, not the numbers from before the run.
+          read(true);
+        }
       }
     } catch (error) {
       if (alive.current) setNotice(describeError(error));
@@ -269,39 +304,62 @@ export function MemoryScreen() {
             {state.operations.map((operation) => {
               const text = operationText(operation.area);
               const available = operation.state === 'available';
+              const needsAdmin = operation.state === 'needsAdministrator';
+              const viaHelper = needsAdmin && elevation?.state === 'available';
+              const runnable = available || viaHelper;
+              // Why a locked administrator action cannot run: the helper's own reason when it is
+              // known, the operation's reason otherwise.
+              const lockedReason =
+                needsAdmin && elevation?.state === 'unavailable'
+                  ? elevationReasonText(elevation.reason)
+                  : operation.reason
+                    ? reasonText(operation.state, operation.reason)
+                    : null;
               return (
                 <ListRow
                   key={operation.area}
                   title={text.title}
                   badge={
-                    available ? null : (
+                    available ? null : viaHelper ? (
+                      <Badge>
+                        <ShieldCheck aria-hidden size={12} />
+                        {t('memory.admin.badge')}
+                      </Badge>
+                    ) : (
                       <Badge>
                         <ShieldAlert aria-hidden size={12} />
-                        {operation.state === 'needsAdministrator'
-                          ? t('common.needsAdmin')
-                          : t('common.notSupported')}
+                        {needsAdmin ? t('common.needsAdmin') : t('common.notSupported')}
                       </Badge>
                     )
                   }
                   description={
                     <>
                       <span className="block">{text.description}</span>
-                      {operation.reason ? (
-                        <span className="mt-0.5 block font-semibold text-fg">
-                          {reasonText(operation.state, operation.reason)}
-                        </span>
+                      {viaHelper ? (
+                        <span className="mt-0.5 block text-muted">{t('memory.runAdmin.hint')}</span>
+                      ) : lockedReason ? (
+                        <span className="mt-0.5 block font-semibold text-fg">{lockedReason}</span>
                       ) : null}
                     </>
                   }
                   trailing={
                     <Button
                       size="sm"
-                      aria-label={t('memory.run.label', { title: text.title })}
+                      aria-label={
+                        viaHelper
+                          ? t('memory.runAdmin.label', { title: text.title })
+                          : t('memory.run.label', { title: text.title })
+                      }
+                      icon={viaHelper ? <ShieldCheck aria-hidden size={16} /> : undefined}
                       loading={running === operation.area}
-                      disabled={!available || (running !== null && running !== operation.area)}
-                      onClick={() => void run(operation.area)}
+                      disabled={!runnable || (running !== null && running !== operation.area)}
+                      onClick={() => void run(operation.area, viaHelper)}
                     >
-                      {running === operation.area ? t('memory.running') : t('memory.run')}
+                      {running === operation.area
+                        ? t('memory.running')
+                        : viaHelper
+                          ? t('memory.runAdmin')
+                          : t('memory.run')}
                     </Button>
                   }
                 />

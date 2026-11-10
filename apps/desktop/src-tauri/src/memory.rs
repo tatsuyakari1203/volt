@@ -248,7 +248,7 @@ pub(crate) fn area_result(
     })
 }
 
-fn clean_result(report: &MemoryCleanReport) -> MemoryCleanResult {
+pub(crate) fn clean_result(report: &MemoryCleanReport) -> MemoryCleanResult {
     MemoryCleanResult {
         before: report.before.map(MemoryListsView::from),
         after: report.after.map(MemoryListsView::from),

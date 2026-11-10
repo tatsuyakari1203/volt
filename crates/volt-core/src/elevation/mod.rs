@@ -31,8 +31,8 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::error::PortError;
-use crate::memory::MemoryCleanReport;
-use crate::ports::{MemoryArea, MemoryLists};
+use crate::memory::{AreaReport, MemoryCleanReport};
+use crate::ports::{MemoryArea, MemoryLists, PurgeOutcome};
 
 #[cfg(any(test, feature = "fakes"))]
 pub mod fakes;
@@ -213,6 +213,35 @@ impl From<&MemoryCleanReport> for MemoryPurgeReply {
     }
 }
 
+impl From<&MemoryPurgeReply> for MemoryCleanReport {
+    /// The report of a purge the helper ran, in the form the activity record is written from. The
+    /// record has not been written yet, so `activity_write_failed` is `false`.
+    fn from(reply: &MemoryPurgeReply) -> Self {
+        Self {
+            before: reply.before,
+            after: reply.after,
+            areas: reply
+                .areas
+                .iter()
+                .map(|entry| AreaReport {
+                    area: entry.area,
+                    result: match &entry.status {
+                        AreaStatus::Purged {
+                            processes_trimmed,
+                            processes_skipped,
+                        } => Ok(PurgeOutcome {
+                            processes_trimmed: *processes_trimmed,
+                            processes_skipped: *processes_skipped,
+                        }),
+                        AreaStatus::Failed { error } => Err(error.clone()),
+                    },
+                })
+                .collect(),
+            activity_write_failed: false,
+        }
+    }
+}
+
 /// Why the helper refused a request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Error, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -376,9 +405,77 @@ pub enum ElevationError {
     /// request was sent.
     #[error("the helper does not match this version of Volt: {0}")]
     Mismatch(String),
+    /// The process that serves the pipe could not be shown to be the helper that was started (it
+    /// is another process, or the pipe is not owned by Administrators or SYSTEM). No request was
+    /// sent.
+    #[error("the helper could not be verified: {0}")]
+    Untrusted(String),
     /// The session ended before the answer arrived.
     #[error("the administrator session ended")]
     Disconnected,
+}
+
+/// Why administrator features cannot be used, one typed reason each so the UI can say it in its
+/// own words. None of them starts a prompt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum UnavailableReason {
+    /// Volt is not installed for all users in the Program Files folder (a per-user, portable or
+    /// development copy). It never starts the helper from a folder a user can write to.
+    NotAllUsersInstall,
+    /// The helper executable is not next to the app.
+    HelperMissing,
+    /// The install folder, the app or the helper can be changed by a non-administrator (or could
+    /// not be checked), so the helper must not be started from it.
+    InstallNotProtected {
+        /// What is wrong, for the log and a details line.
+        detail: String,
+    },
+    /// The account is a standard user: Windows would ask for an administrator's credentials, so
+    /// no prompt is started and the user is told to ask an administrator.
+    StandardUser,
+    /// Anything else (the account's token could not be read, for example).
+    Unknown {
+        /// What happened.
+        detail: String,
+    },
+}
+
+impl std::fmt::Display for UnavailableReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotAllUsersInstall => {
+                f.write_str("Administrator features need Volt to be installed for all users.")
+            }
+            Self::HelperMissing => {
+                f.write_str("The administrator helper is missing from the install folder.")
+            }
+            Self::InstallNotProtected { detail } => write!(
+                f,
+                "The install folder is not protected against changes by other programs ({detail})."
+            ),
+            Self::StandardUser => f.write_str(
+                "This account cannot approve administrator actions. Ask an administrator.",
+            ),
+            Self::Unknown { detail } => f.write_str(detail),
+        }
+    }
+}
+
+/// Whether administrator features can be used now, decided without starting anything.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ElevationStatus {
+    /// A shield action may start the helper (one administrator prompt, or none when the user's own
+    /// policy gives none).
+    Available,
+    /// It cannot, for this reason.
+    Unavailable {
+        /// Why.
+        reason: UnavailableReason,
+    },
 }
 
 /// Port: administrator-level actions through the elevated helper.
@@ -387,6 +484,10 @@ pub enum ElevationError {
 /// An implementation authenticates the helper before it sends anything (see decision on the
 /// helper), so a returned `Ok` means the answer came from the real helper.
 pub trait Elevator: Send + Sync {
+    /// Whether administrator features can be used now. Reads only: it never starts the helper and
+    /// never shows a prompt.
+    fn status(&self) -> ElevationStatus;
+
     /// Starts the session if needed, agrees on the protocol and returns what the helper holds.
     fn hello(&self) -> Result<HelloReply, ElevationError>;
 

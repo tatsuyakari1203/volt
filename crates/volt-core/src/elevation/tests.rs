@@ -307,3 +307,74 @@ fn the_fake_reports_what_hello_would() {
         Err(ElevationError::Refused(ErrorCode::InvalidRequest))
     );
 }
+
+#[test]
+fn the_fake_reports_a_status_without_starting_a_session() {
+    let memory = Arc::new(FakeMemory::new());
+    let granted = FakeElevator::granted(Arc::clone(&memory) as Arc<dyn Memory>);
+    assert_eq!(granted.status(), ElevationStatus::Available);
+    assert_eq!(granted.prompts(), 0, "reading the status never prompts");
+    assert!(!granted.is_active());
+
+    let standard = FakeElevator::unavailable_because(
+        Arc::clone(&memory) as Arc<dyn Memory>,
+        UnavailableReason::StandardUser,
+    );
+    assert_eq!(
+        standard.status(),
+        ElevationStatus::Unavailable {
+            reason: UnavailableReason::StandardUser
+        }
+    );
+    assert_eq!(standard.calls(), vec![ElevatorCall::Status]);
+}
+
+#[test]
+fn every_unavailable_reason_has_words_and_a_wire_form() {
+    for reason in [
+        UnavailableReason::NotAllUsersInstall,
+        UnavailableReason::HelperMissing,
+        UnavailableReason::InstallNotProtected { detail: "x".into() },
+        UnavailableReason::StandardUser,
+        UnavailableReason::Unknown { detail: "y".into() },
+    ] {
+        assert!(!reason.to_string().is_empty());
+        let json = serde_json::to_string(&reason).expect("encodes");
+        assert_eq!(
+            serde_json::from_str::<UnavailableReason>(&json).expect("decodes"),
+            reason
+        );
+    }
+}
+
+#[test]
+fn a_purge_reply_becomes_the_report_an_activity_record_is_written_from() {
+    use crate::error::PortError;
+    use crate::memory::MemoryCleanReport;
+
+    let reply = MemoryPurgeReply {
+        before: None,
+        after: None,
+        areas: vec![
+            AreaResult {
+                area: MemoryArea::WorkingSets,
+                status: AreaStatus::Purged {
+                    processes_trimmed: 5,
+                    processes_skipped: 2,
+                },
+            },
+            AreaResult {
+                area: MemoryArea::StandbyList,
+                status: AreaStatus::Failed {
+                    error: PortError::AccessDenied("x".into()),
+                },
+            },
+        ],
+    };
+    let report = MemoryCleanReport::from(&reply);
+    assert!(!report.activity_write_failed);
+    assert!(report.any_purged());
+    let first = report.areas[0].result.as_ref().expect("purged");
+    assert_eq!((first.processes_trimmed, first.processes_skipped), (5, 2));
+    assert!(report.areas[1].result.is_err());
+}

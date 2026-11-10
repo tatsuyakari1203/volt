@@ -18,6 +18,8 @@ import {
   type CleanScanResult,
   type ClearResult,
   commands,
+  type ElevatedCleanResult,
+  type ElevationStatusView,
   type EmptyBinResult,
   type EndAppResult,
   type ExportResult,
@@ -70,6 +72,9 @@ export type {
   ClearResult,
   DeductionView,
   DiskView,
+  ElevatedCleanResult,
+  ElevationReasonView,
+  ElevationStatusView,
   EmptyBinResult,
   EndAppResult,
   EndabilityView,
@@ -514,6 +519,23 @@ export async function getMemoryState(): Promise<MemoryState> {
  */
 export async function cleanMemory(areas: MemoryAreaView[]): Promise<MemoryCleanResult> {
   return call(() => commands.cleanMemory(areas));
+}
+
+/**
+ * Whether administrator actions can be used now, and if not, why. Reads only: it never starts the
+ * helper and never shows a prompt.
+ */
+export async function getElevationStatus(): Promise<ElevationStatusView> {
+  return call(() => commands.elevationStatus());
+}
+
+/**
+ * Runs the selected memory operations as administrator through the helper. The first call of a
+ * session shows one administrator prompt; cancelling it resolves with `outcome: 'declined'` and
+ * nothing is changed or recorded. Otherwise the report is the same as `cleanMemory`'s.
+ */
+export async function cleanMemoryElevated(areas: MemoryAreaView[]): Promise<ElevatedCleanResult> {
+  return call(() => commands.cleanMemoryElevated(areas));
 }
 
 /**

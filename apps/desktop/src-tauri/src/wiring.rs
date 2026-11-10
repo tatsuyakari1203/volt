@@ -18,19 +18,19 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use tauri::{AppHandle, Manager as _};
 use volt_core::{
-    ActivityLog, Catalogue, CatalogueError, CleanEngine, CleaningRules, Clock, Executor,
+    ActivityLog, Catalogue, CatalogueError, CleanEngine, CleaningRules, Clock, Elevator, Executor,
     FilePublisher, Journal, KnownFolders, LargeFilesFinder, LogonTasks, MemoryCleaner, PortError,
     Ports, ProcessMonitor, ReconcileReport, RecycleBinManager, Resolution, RulesError, Settings,
     ShortcutResolver, StartupManager, StartupSources, SystemClock, TweakEngine,
 };
 use volt_store::{CorruptionRecovery, OpenOutcome, Store, StoreError};
 use volt_win::{
-    WinCommands, WinFilePublisher, WinFileSystem, WinKnownFolders, WinLogonTasks, WinMemory,
-    WinProcesses, WinRecycleBin, WinRegistry, WinServices, WinShortcuts,
+    WinCommands, WinElevator, WinFilePublisher, WinFileSystem, WinKnownFolders, WinLogonTasks,
+    WinMemory, WinProcesses, WinRecycleBin, WinRegistry, WinServices, WinShortcuts,
 };
 
 use crate::IpcError;
-use crate::catalogue::{EMBEDDED_CATALOGUE, EMBEDDED_CLEANING_RULES};
+use crate::catalogue::{EMBEDDED_CATALOGUE, EMBEDDED_CLEANING_RULES, embedded_hashes};
 use crate::cleaner::CleanSession;
 use crate::large_files::LargeFilesSession;
 
@@ -116,6 +116,7 @@ pub struct AppCore {
     recycle_bin: Option<RecycleBinManager>,
     memory_cleaner: Option<MemoryCleaner>,
     process_monitor: Option<ProcessMonitor>,
+    elevator: Option<Arc<dyn Elevator>>,
 }
 
 impl fmt::Debug for AppCore {
@@ -155,6 +156,7 @@ impl AppCore {
             recycle_bin: None,
             memory_cleaner: None,
             process_monitor: None,
+            elevator: None,
         }
     }
 
@@ -227,6 +229,22 @@ impl AppCore {
             .ok_or_else(|| IpcError::Unsupported {
                 message: "memory cleaning is not available in this build".to_owned(),
             })
+    }
+
+    /// The same core with the administrator-session elevator attached. The real app does in
+    /// [`init`]; [`build_core`] never does, so a test cannot start the real helper by accident.
+    #[must_use]
+    pub fn with_elevator(mut self, elevator: Arc<dyn Elevator>) -> Self {
+        self.elevator = Some(elevator);
+        self
+    }
+
+    /// The elevator, or the error the administrator commands return without one. Only the Memory
+    /// page's shield actions call it: Boost and the tray never do.
+    pub fn elevator(&self) -> Result<&Arc<dyn Elevator>, IpcError> {
+        self.elevator.as_ref().ok_or_else(|| IpcError::Unsupported {
+            message: "administrator actions are not available in this build".to_owned(),
+        })
     }
 
     /// The same core with the process monitor attached. [`build_core`] always does; a core
@@ -623,5 +641,8 @@ fn build_real_core(app: &AppHandle) -> Result<AppCore, InitError> {
     // The real Recycle Bin is attached here only: the one place that runs against a real machine.
     let bin = RecycleBinManager::new(Arc::new(WinRecycleBin::new()), Arc::new(SystemClock))
         .with_activity_log(core.activity.clone());
-    Ok(core.with_recycle_bin(bin))
+    // The real elevator is attached here only: it starts the helper (through the administrator
+    // prompt) the first time a shield action asks, and never before.
+    let elevator = Arc::new(WinElevator::new(embedded_hashes()));
+    Ok(core.with_recycle_bin(bin).with_elevator(elevator))
 }

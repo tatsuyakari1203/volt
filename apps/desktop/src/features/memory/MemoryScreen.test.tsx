@@ -1,7 +1,12 @@
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { MemoryCleanResult, MemoryListsView, MemoryState } from '../../shared/ipc';
+import type {
+  ElevationReasonView,
+  MemoryCleanResult,
+  MemoryListsView,
+  MemoryState,
+} from '../../shared/ipc';
 import { IpcCommandError, IpcUnavailableError } from '../../shared/ipc';
 import { describeArea, formatChange } from '../../shared/text/memory';
 import { formatBytes } from '../../shared/text/size';
@@ -10,6 +15,8 @@ import { MemoryScreen } from './MemoryScreen';
 const ipc = vi.hoisted(() => ({
   getMemoryState: vi.fn(),
   cleanMemory: vi.fn(),
+  getElevationStatus: vi.fn(),
+  cleanMemoryElevated: vi.fn(),
 }));
 vi.mock('../../shared/ipc', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../shared/ipc')>()),
@@ -60,6 +67,10 @@ const report: MemoryCleanResult = {
 beforeEach(() => {
   ipc.getMemoryState.mockReset();
   ipc.cleanMemory.mockReset();
+  ipc.cleanMemoryElevated.mockReset();
+  // Outside the Volt window the status cannot be read: administrator actions stay locked.
+  ipc.getElevationStatus.mockReset();
+  ipc.getElevationStatus.mockRejectedValue(new IpcUnavailableError());
 });
 
 describe('MemoryScreen', () => {
@@ -108,6 +119,104 @@ describe('MemoryScreen', () => {
     expect(within(result).getByText(/cannot be undone/)).toBeTruthy();
     // The state is read again so the numbers on the page are true now.
     await waitFor(() => expect(ipc.getMemoryState).toHaveBeenCalledTimes(2));
+  });
+
+  it('runs an administrator action through the helper when it is available', async () => {
+    const user = userEvent.setup();
+    ipc.getMemoryState.mockResolvedValue(state);
+    ipc.getElevationStatus.mockResolvedValue({ state: 'available' });
+    ipc.cleanMemoryElevated.mockResolvedValue({ outcome: 'done', report });
+    render(<MemoryScreen />);
+
+    const button = await screen.findByRole('button', {
+      name: 'Run as administrator: Flush the modified list',
+    });
+    expect((button as HTMLButtonElement).disabled).toBe(false);
+    expect(button.textContent).toContain('Run as administrator');
+    // The same shield action is offered for every operation that needs administrator rights, and
+    // an operation that works without them still runs without them.
+    expect(screen.getAllByRole('button', { name: /^Run as administrator:/ })).toHaveLength(3);
+    expect(screen.getByRole('button', { name: 'Run: Trim working sets' })).toBeTruthy();
+    // This Windows cannot do the standby purge at all: no shield, still locked.
+    expect(
+      (screen.getByRole('button', { name: 'Run: Purge the standby list' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    expect(screen.getAllByText(/approve once/).length).toBe(3);
+
+    await user.click(button);
+
+    expect(ipc.cleanMemoryElevated).toHaveBeenCalledWith(['modifiedList']);
+    expect(ipc.cleanMemory).not.toHaveBeenCalled();
+    const result = await screen.findByRole('region', { name: 'Result of the last run' });
+    expect(within(result).getByText('+1 GB')).toBeTruthy();
+    await waitFor(() => expect(ipc.getMemoryState).toHaveBeenCalledTimes(2));
+  });
+
+  it('says so when the administrator prompt is cancelled and shows no report', async () => {
+    const user = userEvent.setup();
+    ipc.getMemoryState.mockResolvedValue(state);
+    ipc.getElevationStatus.mockResolvedValue({ state: 'available' });
+    ipc.cleanMemoryElevated.mockResolvedValue({ outcome: 'declined' });
+    render(<MemoryScreen />);
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Run as administrator: Trim the file cache' }),
+    );
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain(
+      'You cancelled the administrator prompt. Nothing was changed.',
+    );
+    expect(screen.queryByRole('region', { name: 'Result of the last run' })).toBeNull();
+    // The page is usable again.
+    await waitFor(() =>
+      expect(
+        (
+          screen.getByRole('button', {
+            name: 'Run as administrator: Trim the file cache',
+          }) as HTMLButtonElement
+        ).disabled,
+      ).toBe(false),
+    );
+  });
+
+  it('shows a failed administrator run as a notice', async () => {
+    const user = userEvent.setup();
+    ipc.getMemoryState.mockResolvedValue(state);
+    ipc.getElevationStatus.mockResolvedValue({ state: 'available' });
+    ipc.cleanMemoryElevated.mockRejectedValue(
+      new IpcCommandError({ kind: 'other', message: 'The administrator session ended.' }),
+    );
+    render(<MemoryScreen />);
+    await user.click(
+      await screen.findByRole('button', { name: 'Run as administrator: Trim the file cache' }),
+    );
+    expect((await screen.findByRole('alert')).textContent).toContain(
+      'The administrator session ended.',
+    );
+  });
+
+  it('locks administrator actions with the reason when the helper cannot be used', async () => {
+    const reasons: Array<[ElevationReasonView, RegExp]> = [
+      ['notAllUsers', /Install Volt for all users/],
+      ['helperMissing', /helper is missing/],
+      ['installNotProtected', /Other programs can change the Volt folder/],
+      ['standardUser', /Ask an administrator/],
+      ['unknown', /not available on this PC right now/],
+    ];
+    for (const [reason, text] of reasons) {
+      ipc.getMemoryState.mockResolvedValue(state);
+      ipc.getElevationStatus.mockResolvedValue({ state: 'unavailable', reason, detail: 'x' });
+      const { unmount } = render(<MemoryScreen />);
+
+      const locked = await screen.findByRole('button', { name: 'Run: Trim the file cache' });
+      expect((locked as HTMLButtonElement).disabled).toBe(true);
+      expect(screen.queryByRole('button', { name: /^Run as administrator:/ })).toBeNull();
+      await waitFor(() => expect(screen.getAllByText(text).length).toBe(3));
+      expect(ipc.cleanMemoryElevated).not.toHaveBeenCalled();
+      unmount();
+    }
   });
 
   it('disables every button while an operation runs', async () => {

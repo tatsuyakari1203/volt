@@ -33,7 +33,8 @@ use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeClientProcessId,
     GetNamedPipeServerProcessId, NAMED_PIPE_MODE, PIPE_READMODE_MESSAGE,
-    PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_MESSAGE, PIPE_WAIT, SetNamedPipeHandleState,
+    PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_MESSAGE, PIPE_WAIT, PeekNamedPipe,
+    SetNamedPipeHandleState,
 };
 use windows::Win32::System::Threading::{CreateEventW, INFINITE, ResetEvent, WaitForSingleObject};
 use windows::core::{Error, PCWSTR};
@@ -483,6 +484,14 @@ impl PipeClient {
         }
     }
 
+    /// Whether the server's end is still there. A peek reads nothing and changes nothing; it fails
+    /// once the server has closed or disconnected the pipe.
+    #[must_use]
+    pub fn is_open(&self) -> bool {
+        // SAFETY: a valid pipe handle; every optional out parameter is omitted.
+        unsafe { PeekNamedPipe(self.pipe.handle.raw(), None, 0, None, None, None) }.is_ok()
+    }
+
     /// The process id of the server, as the system reports it.
     ///
     /// # Errors
@@ -757,6 +766,18 @@ mod tests {
         if owner != "S-1-5-32-544" {
             assert!(!is_trusted_owner(&owner), "{owner}");
         }
+    }
+
+    #[test]
+    fn a_client_sees_when_the_server_end_is_gone() {
+        let (name, server) = server();
+        let thread = serving(server, |server| server.accept(SECOND));
+        let client = PipeClient::open(&name).expect("open");
+        let (server, accepted) = thread.join().expect("server thread");
+        accepted.expect("accept");
+        assert!(client.is_open());
+        drop(server);
+        assert!(!client.is_open());
     }
 
     #[test]

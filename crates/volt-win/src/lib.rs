@@ -10,7 +10,7 @@
 //!
 //! Adapters in this crate: [`WinRegistry`], [`WinServices`], [`WinFileSystem`],
 //! [`WinKnownFolders`], [`WinRecycleBin`], [`WinMetrics`], [`WinMemory`], [`WinProcesses`],
-//! [`WinCommands`], [`WinFilePublisher`], [`WinShortcuts`], [`WinLogonTasks`].
+//! [`WinCommands`], [`WinFilePublisher`], [`WinShortcuts`], [`WinLogonTasks`], [`WinElevator`].
 //! The [`helper`] module holds the Windows side of the elevated helper: its named pipe, the checks on
 //! who may use it, the install-folder check and the helper's self-hardening.
 //! The crate is empty on non-Windows targets.
@@ -38,6 +38,7 @@ mod wide;
 pub use command::{DEFAULT_MAX_OUTPUT, DEFAULT_TIMEOUT, WinCommands};
 pub use files::WinFileSystem;
 pub use folders::WinKnownFolders;
+pub use helper::elevator::WinElevator;
 pub use memory::WinMemory;
 pub use metrics::WinMetrics;
 pub use processes::WinProcesses;

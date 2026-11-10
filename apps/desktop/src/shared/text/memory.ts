@@ -1,5 +1,11 @@
 import { getLocale, type MessageKey, t, tn } from '../i18n';
-import type { AreaResult, MemoryAreaView, MemoryListsView, OperationState } from '../ipc';
+import type {
+  AreaResult,
+  ElevationReasonView,
+  MemoryAreaView,
+  MemoryListsView,
+  OperationState,
+} from '../ipc';
 import { formatBytes } from './size';
 
 export { describeError } from './errors';
@@ -99,6 +105,24 @@ export function reasonText(state: OperationState, reason: string | null): string
       return t('memory.reason.unsupported');
     default:
       return assertNever(state);
+  }
+}
+
+/** Why administrator actions cannot be used, in the user's language. */
+export function elevationReasonText(reason: ElevationReasonView): string {
+  switch (reason) {
+    case 'notAllUsers':
+      return t('memory.elevation.notAllUsers');
+    case 'helperMissing':
+      return t('memory.elevation.helperMissing');
+    case 'installNotProtected':
+      return t('memory.elevation.installNotProtected');
+    case 'standardUser':
+      return t('memory.elevation.standardUser');
+    case 'unknown':
+      return t('memory.elevation.unknown');
+    default:
+      return assertNever(reason);
   }
 }
 
