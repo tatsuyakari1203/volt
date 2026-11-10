@@ -19,7 +19,10 @@ use crate::ports::{
     DirEntry, EntryInfo, EntryKind, FileStat, FileSystem, Memory, MemoryArea, MemoryStatus, Ports,
     ProcessInfo, Processes, Services,
 };
-use crate::registry::{Registry, RegistryHive, RegistryValue, RegistryValueRef, RegistryView};
+use crate::registry::{
+    NamedValue, Registry, RegistryHive, RegistryKeyRef, RegistryValue, RegistryValueRef,
+    RegistryView,
+};
 use crate::service::ServiceStartType;
 use crate::settings::Settings;
 use crate::time::{Clock, Timestamp};
@@ -92,6 +95,8 @@ type KeyPath = (RegistryHive, RegistryView, String);
 #[derive(Debug, Default)]
 pub struct FakeRegistry {
     values: Mutex<HashMap<Key, RegistryValue>>,
+    /// The spelling of each value name as it was written, for listings.
+    names: Mutex<HashMap<Key, String>>,
     failures: Mutex<HashMap<Key, PortError>>,
     /// Keys that exist without any value in them (see [`FakeRegistry::add_key`]).
     keys: Mutex<HashSet<KeyPath>>,
@@ -117,7 +122,13 @@ impl FakeRegistry {
 
     /// Sets a value directly, without logging. For arranging a test.
     pub fn set(&self, target: &RegistryValueRef, value: RegistryValue) {
-        lock(&self.values).insert(Key::of(target), value);
+        self.store(target, value);
+    }
+
+    fn store(&self, target: &RegistryValueRef, value: RegistryValue) {
+        let key = Key::of(target);
+        lock(&self.names).insert(key.clone(), target.name.clone());
+        lock(&self.values).insert(key, value);
     }
 
     /// Reads a value directly. For asserting in a test.
@@ -162,6 +173,22 @@ impl FakeRegistry {
 }
 
 impl Registry for FakeRegistry {
+    fn list_values(&self, key: &RegistryKeyRef) -> Result<Vec<NamedValue>, PortError> {
+        let wanted = key.subkey.to_lowercase();
+        let values = lock(&self.values);
+        let names = lock(&self.names);
+        let mut listing: Vec<NamedValue> = values
+            .iter()
+            .filter(|(k, _)| k.0 == key.hive && k.1 == key.view && k.2 == wanted)
+            .map(|(k, value)| NamedValue {
+                name: names.get(k).cloned().unwrap_or_else(|| k.3.clone()),
+                value: Ok(value.clone()),
+            })
+            .collect();
+        listing.sort_by_key(|entry| entry.name.to_lowercase());
+        Ok(listing)
+    }
+
     fn read_value(&self, target: &RegistryValueRef) -> Result<Option<RegistryValue>, PortError> {
         Ok(self.get(target))
     }
@@ -173,7 +200,7 @@ impl Registry for FakeRegistry {
     ) -> Result<(), PortError> {
         let key = Key::of(target);
         self.check_failure(&key)?;
-        lock(&self.values).insert(key, data.clone());
+        self.store(target, data.clone());
         self.log.push(Event::RegistryWrite(target.clone()));
         Ok(())
     }
@@ -184,6 +211,7 @@ impl Registry for FakeRegistry {
         if lock(&self.values).remove(&key).is_none() {
             return Err(PortError::NotFound(target.to_string()));
         }
+        lock(&self.names).remove(&key);
         self.log.push(Event::RegistryDelete(target.clone()));
         Ok(())
     }

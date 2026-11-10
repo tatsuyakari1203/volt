@@ -1,0 +1,289 @@
+import { Loader2, Power, SearchX, ShieldAlert, TriangleAlert } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  listStartupEntries,
+  type StartupEntryView,
+  type StartupProblemView,
+  setStartupEntryEnabled,
+} from '../../shared/ipc';
+import {
+  Badge,
+  Button,
+  Card,
+  ListGroup,
+  ListRow,
+  PageHeader,
+  SearchField,
+  Switch,
+  useToast,
+} from '../../shared/ui';
+import {
+  describeChange,
+  describeChangeFailure,
+  describeError,
+  describeProblems,
+  shortenCommand,
+} from './messages';
+
+type Load =
+  | { status: 'loading' }
+  | { status: 'error'; message: string }
+  | { status: 'ready'; entries: StartupEntryView[]; problems: StartupProblemView[] };
+
+/** What an entry is doing right now, while a command runs. */
+type Busy = 'turning-on' | 'turning-off';
+
+function publisherLine(entry: StartupEntryView): string {
+  return entry.publisher ? `Publisher: ${entry.publisher}` : 'Publisher unknown';
+}
+
+function summaryLine(entries: readonly StartupEntryView[]): string {
+  const on = entries.filter((entry) => entry.enabled).length;
+  const count = entries.length === 1 ? '1 entry' : `${entries.length} entries`;
+  return `${count}, ${on} on`;
+}
+
+function CommandText({ entry }: { entry: StartupEntryView }) {
+  const [open, setOpen] = useState(false);
+  const shortened = shortenCommand(entry.command);
+  // A command that already fits has nothing more to show.
+  if (shortened === entry.command.trim()) {
+    return <code className="mt-0.5 block font-mono wrap-anywhere">{entry.command}</code>;
+  }
+  return (
+    <button
+      type="button"
+      aria-expanded={open}
+      aria-label={`Command of ${entry.name}: ${open ? 'show less' : 'show the full command'}`}
+      title={entry.command}
+      onClick={() => setOpen((value) => !value)}
+      className="mt-0.5 block w-full rounded-sm text-left hover:bg-hover"
+    >
+      <code className="block font-mono wrap-anywhere">{open ? entry.command : shortened}</code>
+    </button>
+  );
+}
+
+/**
+ * The Startup screen: what starts with Windows, with a switch to turn each entry on or off the way
+ * Windows does (Task Manager and Settings show the same state). Every change goes through the undo
+ * journal and can be undone on the Undo page. Entries that apply to every user are listed but
+ * cannot be changed yet, because that needs administrator rights. All rules live in the Rust core:
+ * this renders what the commands report.
+ */
+export function StartupScreen() {
+  const toast = useToast();
+  const [load, setLoad] = useState<Load>({ status: 'loading' });
+  const [query, setQuery] = useState('');
+  const [busy, setBusy] = useState<Readonly<Record<string, Busy>>>({});
+  const [notice, setNotice] = useState<string | null>(null);
+  const alive = useRef(true);
+
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+
+  const read = useCallback((quiet = false) => {
+    if (!quiet) setLoad({ status: 'loading' });
+    listStartupEntries()
+      .then((list) => {
+        if (alive.current) {
+          setLoad({ status: 'ready', entries: list.entries, problems: list.problems });
+        }
+      })
+      .catch((error: unknown) => {
+        if (alive.current) setLoad({ status: 'error', message: describeError(error) });
+      });
+  }, []);
+
+  useEffect(() => read(), [read]);
+
+  const setBusyFor = (id: string, value: Busy | undefined) => {
+    if (!alive.current) return;
+    setBusy((current) => {
+      const next = { ...current };
+      if (value) next[id] = value;
+      else delete next[id];
+      return next;
+    });
+  };
+
+  const patchEnabled = (id: string, enabled: boolean) => {
+    setLoad((current) =>
+      current.status === 'ready'
+        ? {
+            ...current,
+            entries: current.entries.map((entry) =>
+              entry.id === id ? { ...entry, enabled } : entry,
+            ),
+          }
+        : current,
+    );
+  };
+
+  const change = async (entry: StartupEntryView, wanted: boolean) => {
+    setBusyFor(entry.id, wanted ? 'turning-on' : 'turning-off');
+    setNotice(null);
+    try {
+      const result = await setStartupEntryEnabled(entry.id, wanted);
+      if (alive.current) {
+        if (result.enabled === null) read(true);
+        else patchEnabled(entry.id, result.enabled);
+      }
+      const outcome = describeChange(entry, wanted, result);
+      if (outcome.tone === 'problem') {
+        if (alive.current) setNotice(outcome.message);
+      } else {
+        toast.show({ message: outcome.message });
+      }
+    } catch (error) {
+      if (alive.current) {
+        setNotice(describeChangeFailure(entry, wanted, error));
+        // The entry may be gone or changed outside Volt: show what is true now.
+        read(true);
+      }
+    } finally {
+      setBusyFor(entry.id, undefined);
+    }
+  };
+
+  const entries = load.status === 'ready' ? load.entries : [];
+  const problems = load.status === 'ready' ? describeProblems(load.problems) : null;
+  const visible = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return entries;
+    return entries.filter((entry) =>
+      `${entry.name} ${entry.publisher ?? ''} ${entry.command} ${entry.sourceLabel}`
+        .toLowerCase()
+        .includes(needle),
+    );
+  }, [entries, query]);
+
+  return (
+    <>
+      <PageHeader
+        title="Startup"
+        description="Programs that start when you sign in. Turning one off keeps it listed, and Task Manager shows the same state."
+      />
+      <div className="flex flex-col gap-3">
+        {notice ? (
+          <div
+            role="alert"
+            className="flex items-start gap-3 rounded-md bg-caution p-3 text-body text-caution-fg"
+          >
+            <TriangleAlert aria-hidden size={18} className="mt-0.5 shrink-0" />
+            <p className="min-w-0 flex-1">{notice}</p>
+            <button
+              type="button"
+              className="shrink-0 rounded-sm px-2 py-1 font-semibold underline hover:no-underline"
+              onClick={() => setNotice(null)}
+            >
+              Dismiss
+            </button>
+          </div>
+        ) : null}
+
+        {problems ? (
+          <div
+            role="status"
+            className="flex items-start gap-3 rounded-md bg-caution p-3 text-body text-caution-fg"
+          >
+            <TriangleAlert aria-hidden size={18} className="mt-0.5 shrink-0" />
+            <p className="min-w-0 flex-1">{problems}</p>
+          </div>
+        ) : null}
+
+        {load.status === 'loading' ? (
+          <Card role="status" className="flex items-center justify-center gap-2 py-10 text-muted">
+            <Loader2 aria-hidden size={18} className="animate-spin motion-reduce:animate-none" />
+            <p>Reading what starts with Windows...</p>
+          </Card>
+        ) : null}
+
+        {load.status === 'error' ? (
+          <Card role="alert" className="flex flex-col items-center gap-3 py-10 text-center">
+            <TriangleAlert aria-hidden size={24} className="text-muted" />
+            <p className="font-semibold">Startup entries could not be loaded</p>
+            <p className="max-w-xs text-body text-muted">{load.message}</p>
+            <Button onClick={() => read()}>Try again</Button>
+          </Card>
+        ) : null}
+
+        {load.status === 'ready' && entries.length === 0 ? (
+          <Card className="flex flex-col items-center gap-2 py-10 text-center">
+            <Power aria-hidden size={24} className="text-muted" />
+            <p className="font-semibold">Nothing starts with Windows</p>
+            <p className="max-w-xs text-body text-muted">
+              No program is registered to start when you sign in, in the places Volt looks at.
+            </p>
+          </Card>
+        ) : null}
+
+        {load.status === 'ready' && entries.length > 0 ? (
+          <>
+            <SearchField
+              label="Search startup entries"
+              placeholder="Search startup entries"
+              value={query}
+              onValueChange={setQuery}
+            />
+            <p className="text-caption text-muted">{summaryLine(entries)}</p>
+            {visible.length > 0 ? (
+              <ListGroup aria-label="Startup entries">
+                {visible.map((entry) => {
+                  const working = busy[entry.id];
+                  return (
+                    <ListRow
+                      key={entry.id}
+                      title={entry.name}
+                      badge={
+                        <>
+                          <Badge>{entry.sourceLabel}</Badge>
+                          {entry.needsAdmin ? (
+                            <Badge>
+                              <ShieldAlert aria-hidden size={12} />
+                              Needs administrator rights
+                            </Badge>
+                          ) : null}
+                        </>
+                      }
+                      description={
+                        <>
+                          <span className="block">{publisherLine(entry)}</span>
+                          <CommandText entry={entry} />
+                          {working ? (
+                            <span className="mt-0.5 block font-semibold text-fg">
+                              {working === 'turning-on' ? 'Turning on...' : 'Turning off...'}
+                            </span>
+                          ) : null}
+                        </>
+                      }
+                      trailing={
+                        <Switch
+                          aria-label={entry.name}
+                          aria-busy={working !== undefined}
+                          checked={entry.enabled}
+                          disabled={working !== undefined || entry.needsAdmin}
+                          onCheckedChange={(value) => void change(entry, value)}
+                        />
+                      }
+                    />
+                  );
+                })}
+              </ListGroup>
+            ) : (
+              <Card className="flex flex-col items-center gap-2 py-10 text-center">
+                <SearchX aria-hidden size={24} className="text-muted" />
+                <p className="font-semibold">No startup entries match "{query.trim()}"</p>
+                <p className="text-body text-muted">Try a different word.</p>
+              </Card>
+            )}
+          </>
+        ) : null}
+      </div>
+    </>
+  );
+}

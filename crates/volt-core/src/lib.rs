@@ -28,6 +28,9 @@
 //!
 //! The health score (the [`health`] module) is a pure function of a few read-only inputs and
 //! lists every deduction with its reason, so the number never changes without a visible cause.
+//! Startup entries are managed by the [`startup`] module: it lists what starts
+//! with Windows and switches entries on and off through the same executor, with
+//! the `StartupApproved` records Task Manager uses.
 //!
 //! Cleaning is its own engine (the [`clean`] module): rules are data, a scan
 //! is read-only and returns a plan, and only a confirmed plan can be cleaned,
@@ -55,6 +58,7 @@ pub mod ports;
 pub mod registry;
 pub mod service;
 pub mod settings;
+pub mod startup;
 pub mod time;
 pub mod tweak;
 
@@ -91,9 +95,17 @@ pub use ports::{
     DirEntry, EntryInfo, EntryKind, FileStat, FileSystem, Memory, MemoryArea, MemoryStatus, Ports,
     ProcessInfo, Processes, Services,
 };
-pub use registry::{Registry, RegistryHive, RegistryValue, RegistryValueRef, RegistryView};
+pub use registry::{
+    NamedValue, Registry, RegistryHive, RegistryKeyRef, RegistryValue, RegistryValueRef,
+    RegistryView,
+};
 pub use service::ServiceStartType;
 pub use settings::{Settings, SettingsExt};
+pub use startup::{
+    ChangeOutcome, FilePublisher, NoPublisher, SourceProblem, StartupChange, StartupEntry,
+    StartupError, StartupListing, StartupManager, StartupOrigin, StartupScope, StartupSources,
+    StartupState,
+};
 pub use time::{Clock, SystemClock, Timestamp};
 pub use tweak::{
     ApplyOutcome, BatchRevert, Catalogue, CatalogueError, CatalogueIssue, Category, IssueKind,

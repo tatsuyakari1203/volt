@@ -17,12 +17,14 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use tauri::{AppHandle, Manager as _};
 use volt_core::{
-    ActivityLog, Catalogue, CatalogueError, CleanEngine, CleaningRules, Clock, Executor, Journal,
-    KnownFolders, PortError, Ports, ReconcileReport, Resolution, RulesError, Settings, SystemClock,
-    TweakEngine,
+    ActivityLog, Catalogue, CatalogueError, CleanEngine, CleaningRules, Clock, Executor,
+    FilePublisher, Journal, KnownFolders, PortError, Ports, ReconcileReport, Resolution,
+    RulesError, Settings, StartupManager, StartupSources, SystemClock, TweakEngine,
 };
 use volt_store::{CorruptionRecovery, OpenOutcome, Store, StoreError};
-use volt_win::{WinCommands, WinFileSystem, WinKnownFolders, WinRegistry, WinServices};
+use volt_win::{
+    WinCommands, WinFilePublisher, WinFileSystem, WinKnownFolders, WinRegistry, WinServices,
+};
 
 use crate::IpcError;
 use crate::catalogue::{EMBEDDED_CATALOGUE, EMBEDDED_CLEANING_RULES};
@@ -100,6 +102,7 @@ pub struct AppCore {
     pub activity: Arc<dyn ActivityLog>,
     /// What building the core found.
     pub startup: StartupReport,
+    startup_apps: Option<StartupManager>,
     gate: Mutex<()>,
     clean: Option<CleanEngine>,
 }
@@ -131,6 +134,7 @@ impl AppCore {
             settings,
             activity,
             startup,
+            startup_apps: None,
             gate: Mutex::new(()),
             clean: None,
         }
@@ -149,6 +153,23 @@ impl AppCore {
     #[must_use]
     pub fn clean_engine(&self) -> Option<&CleanEngine> {
         self.clean.as_ref()
+    }
+
+    /// The same core with the startup apps manager attached. [`build_core_with`] does this;
+    /// a core built without it answers the startup commands with `unsupported`.
+    #[must_use]
+    pub fn with_startup_apps(mut self, manager: StartupManager) -> Self {
+        self.startup_apps = Some(manager);
+        self
+    }
+
+    /// The startup apps manager, or the error the startup commands return without one.
+    pub fn startup_apps(&self) -> Result<&StartupManager, IpcError> {
+        self.startup_apps
+            .as_ref()
+            .ok_or_else(|| IpcError::Unsupported {
+                message: "the startup apps manager is not available in this build".to_owned(),
+            })
     }
 
     /// Serialises the operations that read or change tweak state, so two quick clicks (or a
@@ -205,6 +226,36 @@ impl CleaningSetup<'static> {
     }
 }
 
+/// What the startup apps manager reads and where: the registry keys and folders, and the port
+/// that tells who published a program. The app uses [`StartupWiring::windows`]; tests point the
+/// sources at a throwaway key and temp folders ([`StartupSources::sandboxed_in_hkcu`]).
+pub struct StartupWiring {
+    /// Where entries are read from and approved.
+    pub sources: StartupSources,
+    /// Reads the publisher of a program.
+    pub publisher: Arc<dyn FilePublisher>,
+}
+
+impl fmt::Debug for StartupWiring {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StartupWiring")
+            .field("sources", &self.sources)
+            .finish_non_exhaustive()
+    }
+}
+
+impl StartupWiring {
+    /// The real machine: the Run keys and Startup folders of Windows and the version-information
+    /// reader.
+    #[must_use]
+    pub fn windows() -> Self {
+        Self {
+            sources: StartupSources::windows(&WinKnownFolders::new()),
+            publisher: Arc::new(WinFilePublisher::new()),
+        }
+    }
+}
+
 /// [`build_core`] with the clean engine's rules and known folders given. The clean engine is
 /// built from `ports.file_system`, the system clock and the one store (as activity log and as
 /// settings, for the minimum age of the temp rules).
@@ -216,6 +267,33 @@ pub fn build_core_with_cleaning(
     store_path: &Path,
     catalogue_toml: &str,
     cleaning: CleaningSetup<'_>,
+) -> Result<AppCore, InitError> {
+    build_core_inner(ports, store_path, catalogue_toml, cleaning, None)
+}
+
+/// [`build_core`] plus the startup apps manager, which reads and approves entries through the
+/// registry and file system of `ports` at the places `startup` names.
+pub fn build_core_with(
+    ports: Ports,
+    store_path: &Path,
+    catalogue_toml: &str,
+    startup: StartupWiring,
+) -> Result<AppCore, InitError> {
+    build_core_inner(
+        ports,
+        store_path,
+        catalogue_toml,
+        CleaningSetup::windows(),
+        Some(startup),
+    )
+}
+
+fn build_core_inner(
+    ports: Ports,
+    store_path: &Path,
+    catalogue_toml: &str,
+    cleaning: CleaningSetup<'_>,
+    startup: Option<StartupWiring>,
 ) -> Result<AppCore, InitError> {
     let catalogue = Arc::new(Catalogue::from_toml(catalogue_toml)?);
     let rules = CleaningRules::from_toml(cleaning.rules_toml)?;
@@ -250,9 +328,23 @@ pub fn build_core_with_cleaning(
     .with_activity_log(activity.clone())
     .with_settings(settings.clone());
 
+    let (registry, file_system) = (ports.registry.clone(), ports.file_system.clone());
+    let startup_clock = clock.clone();
     let engine = TweakEngine::new(catalogue, ports, journal.clone(), clock)
         .with_activity_log(activity.clone());
-    Ok(AppCore::new(
+    let startup_apps = startup.map(|wiring| {
+        StartupManager::new(
+            registry,
+            file_system,
+            wiring.publisher,
+            // A handle on the engine's executor: the same journal, activity log and
+            // write-failure counter, so every startup change is recorded like a tweak's.
+            engine.executor().clone(),
+            startup_clock,
+            wiring.sources,
+        )
+    });
+    let core = AppCore::new(
         engine,
         journal,
         settings,
@@ -263,7 +355,11 @@ pub fn build_core_with_cleaning(
             reconcile,
         },
     )
-    .with_clean_engine(clean))
+    .with_clean_engine(clean);
+    Ok(match startup_apps {
+        Some(manager) => core.with_startup_apps(manager),
+        None => core,
+    })
 }
 
 /// The ports of the real machine: the Windows adapters of `volt-win`, plus
@@ -372,9 +468,10 @@ fn build_real_core(app: &AppHandle) -> Result<AppCore, InitError> {
         .app_data_dir()
         .map_err(|error| InitError::DataDir(error.to_string()))?;
     std::fs::create_dir_all(&dir).map_err(|error| InitError::DataDir(error.to_string()))?;
-    build_core(
+    build_core_with(
         windows_ports(),
         &dir.join(STORE_FILE_NAME),
         EMBEDDED_CATALOGUE,
+        StartupWiring::windows(),
     )
 }

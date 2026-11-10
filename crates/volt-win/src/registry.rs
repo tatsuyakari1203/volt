@@ -1,18 +1,21 @@
 //! [`Registry`] port on the Windows registry API.
 
-use volt_core::{PortError, Registry, RegistryHive, RegistryValue, RegistryValueRef, RegistryView};
+use volt_core::{
+    NamedValue, PortError, Registry, RegistryHive, RegistryKeyRef, RegistryValue, RegistryValueRef,
+    RegistryView,
+};
 use windows::Win32::Foundation::{
-    ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_PATH_NOT_FOUND,
-    ERROR_SUCCESS, WIN32_ERROR,
+    ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_NO_MORE_ITEMS,
+    ERROR_PATH_NOT_FOUND, ERROR_SUCCESS, WIN32_ERROR,
 };
 use windows::Win32::System::Registry::{
     HKEY, HKEY_CLASSES_ROOT, HKEY_CURRENT_CONFIG, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE,
     HKEY_USERS, KEY_QUERY_VALUE, KEY_SET_VALUE, KEY_WOW64_32KEY, KEY_WOW64_64KEY, REG_BINARY,
     REG_DWORD, REG_EXPAND_SZ, REG_MULTI_SZ, REG_OPTION_NON_VOLATILE, REG_QWORD, REG_SAM_FLAGS,
-    REG_SZ, REG_VALUE_TYPE, RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegOpenKeyExW,
-    RegQueryValueExW, RegSetValueExW,
+    REG_SZ, REG_VALUE_TYPE, RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegEnumValueW,
+    RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
 };
-use windows::core::PCWSTR;
+use windows::core::{PCWSTR, PWSTR};
 
 use crate::error::from_win32;
 use crate::wide::to_wide_nul;
@@ -103,6 +106,65 @@ fn open(
 }
 
 impl Registry for WinRegistry {
+    fn list_values(&self, key: &RegistryKeyRef) -> Result<Vec<NamedValue>, PortError> {
+        // A key reference is validated like a value reference with an empty name.
+        let as_value = key.value(String::new());
+        let (subkey, _) = validate(&as_value)?;
+        let handle = match open(&as_value, &subkey, KEY_QUERY_VALUE) {
+            Ok(handle) => handle,
+            Err(e) if e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND => {
+                return Ok(Vec::new());
+            }
+            Err(e) => return Err(from_win32(e.0, &format!("open {key}"))),
+        };
+        let mut listing = Vec::new();
+        // A value name is at most 16,383 characters long.
+        let mut name_buffer = vec![0_u16; 16_384];
+        for index in 0_u32.. {
+            let mut name_len = u32::try_from(name_buffer.len())
+                .map_err(|_| PortError::Other("registry value name too long".into()))?;
+            // SAFETY: `handle` is open with KEY_QUERY_VALUE; `name_buffer` is
+            // valid for `name_len` UTF-16 units of writes and `name_len` is a
+            // valid in/out pointer; the reserved, type and data arguments are
+            // optional and passed as None, all for the duration of the call.
+            let status = unsafe {
+                RegEnumValueW(
+                    handle.0,
+                    index,
+                    Some(PWSTR(name_buffer.as_mut_ptr())),
+                    &raw mut name_len,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            };
+            if status == ERROR_NO_MORE_ITEMS {
+                break;
+            }
+            if status != ERROR_SUCCESS {
+                return Err(from_win32(status.0, &format!("list {key}")));
+            }
+            let name = String::from_utf16_lossy(&name_buffer[..name_len as usize]);
+            let mut wide_name: Vec<u16> = name_buffer[..name_len as usize].to_vec();
+            wide_name.push(0);
+            match read_open(&handle, &wide_name, &as_value) {
+                // Deleted between the enumeration and the read.
+                Ok(None) => {}
+                Ok(Some(value)) => listing.push(NamedValue {
+                    name,
+                    value: Ok(value),
+                }),
+                Err(error) => listing.push(NamedValue {
+                    name,
+                    value: Err(error),
+                }),
+            }
+        }
+        listing.sort_by_key(|entry| entry.name.to_lowercase());
+        Ok(listing)
+    }
+
     fn read_value(&self, target: &RegistryValueRef) -> Result<Option<RegistryValue>, PortError> {
         let (subkey, name) = validate(target)?;
         let key = match open(target, &subkey, KEY_QUERY_VALUE) {
@@ -110,44 +172,7 @@ impl Registry for WinRegistry {
             Err(e) if e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND => return Ok(None),
             Err(e) => return Err(from_win32(e.0, &format!("open {target}"))),
         };
-
-        let mut buffer = vec![0_u8; 256];
-        loop {
-            let mut kind = REG_VALUE_TYPE(0);
-            let mut len = u32::try_from(buffer.len())
-                .map_err(|_| PortError::Other("registry value too large".into()))?;
-            // SAFETY: `key` is open with KEY_QUERY_VALUE; `name` is a
-            // NUL-terminated UTF-16 buffer; `buffer` is valid for `len` bytes
-            // of writes and `kind`/`len` are valid out-pointers, all for the
-            // duration of the call.
-            let status = unsafe {
-                RegQueryValueExW(
-                    key.0,
-                    PCWSTR(name.as_ptr()),
-                    None,
-                    Some(&raw mut kind),
-                    Some(buffer.as_mut_ptr()),
-                    Some(&raw mut len),
-                )
-            };
-            if status == ERROR_MORE_DATA {
-                // `len` holds the required size; add slack in case the value
-                // grows between the two calls.
-                buffer.resize(len as usize + 16, 0);
-                continue;
-            }
-            if status == ERROR_FILE_NOT_FOUND {
-                return Ok(None);
-            }
-            if status != ERROR_SUCCESS {
-                return Err(from_win32(status.0, &format!("read {target}")));
-            }
-            buffer.truncate(len as usize);
-            return decode(kind, &buffer).map(Some).map_err(|e| match e {
-                PortError::Unsupported(m) => PortError::Unsupported(format!("{target}: {m}")),
-                other => other,
-            });
-        }
+        read_open(&key, &name, target)
     }
 
     fn write_value(
@@ -222,6 +247,52 @@ impl Registry for WinRegistry {
             Err(e) if e == ERROR_ACCESS_DENIED => Ok(true),
             Err(e) => Err(from_win32(e.0, &format!("open {hive:?}\\{subkey}"))),
         }
+    }
+}
+
+/// Reads the value `name` (NUL-terminated UTF-16) of an open key. A missing
+/// value is `Ok(None)`. `target` only names the value in error messages.
+fn read_open(
+    key: &KeyHandle,
+    name: &[u16],
+    target: &RegistryValueRef,
+) -> Result<Option<RegistryValue>, PortError> {
+    let mut buffer = vec![0_u8; 256];
+    loop {
+        let mut kind = REG_VALUE_TYPE(0);
+        let mut len = u32::try_from(buffer.len())
+            .map_err(|_| PortError::Other("registry value too large".into()))?;
+        // SAFETY: `key` is open with KEY_QUERY_VALUE; `name` is a
+        // NUL-terminated UTF-16 buffer; `buffer` is valid for `len` bytes
+        // of writes and `kind`/`len` are valid out-pointers, all for the
+        // duration of the call.
+        let status = unsafe {
+            RegQueryValueExW(
+                key.0,
+                PCWSTR(name.as_ptr()),
+                None,
+                Some(&raw mut kind),
+                Some(buffer.as_mut_ptr()),
+                Some(&raw mut len),
+            )
+        };
+        if status == ERROR_MORE_DATA {
+            // `len` holds the required size; add slack in case the value
+            // grows between the two calls.
+            buffer.resize(len as usize + 16, 0);
+            continue;
+        }
+        if status == ERROR_FILE_NOT_FOUND {
+            return Ok(None);
+        }
+        if status != ERROR_SUCCESS {
+            return Err(from_win32(status.0, &format!("read {target}")));
+        }
+        buffer.truncate(len as usize);
+        return decode(kind, &buffer).map(Some).map_err(|e| match e {
+            PortError::Unsupported(m) => PortError::Unsupported(format!("{target}: {m}")),
+            other => other,
+        });
     }
 }
 
@@ -436,6 +507,49 @@ mod tests {
         assert_eq!(exists(&format!("{}\\other", key.subkey)), Ok(false));
         // Case does not matter, like the registry itself.
         assert_eq!(exists(&key.subkey.to_uppercase()), Ok(true));
+        // Listing returns the values directly in a key, with the spelling they
+        // were written with, sorted by name ignoring case; a missing key is empty.
+        reg.write_value(&key.child("deep\\er", "MiXed"), &RegistryValue::Dword(9))
+            .expect("write");
+        let listing = reg
+            .list_values(&RegistryKeyRef::new(
+                RegistryHive::CurrentUser,
+                format!("{}\\deep\\er", key.subkey),
+                RegistryView::Native,
+            ))
+            .expect("list");
+        let names: Vec<_> = listing.iter().map(|v| v.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "",
+                "bin",
+                "dword",
+                "empty_bin",
+                "empty_multi",
+                "empty_sz",
+                "expand",
+                "MiXed",
+                "multi",
+                "qword",
+                "sz"
+            ]
+        );
+        let dword = listing.iter().find(|v| v.name == "dword").expect("dword");
+        assert_eq!(dword.value, Ok(RegistryValue::Dword(0xDEAD_BEEF)));
+        // Subkeys are not values: `deep` holds only the key `er`.
+        let parent = RegistryKeyRef::new(
+            RegistryHive::CurrentUser,
+            format!("{}\\deep", key.subkey),
+            RegistryView::Native,
+        );
+        assert_eq!(reg.list_values(&parent), Ok(vec![]));
+        let missing = RegistryKeyRef::new(
+            RegistryHive::CurrentUser,
+            format!("{}\\no\\such", key.subkey),
+            RegistryView::Native,
+        );
+        assert_eq!(reg.list_values(&missing), Ok(vec![]));
 
         // Overwrite may change the type.
         let target = key.value("morph");
