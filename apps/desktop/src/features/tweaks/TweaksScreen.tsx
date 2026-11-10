@@ -2,74 +2,88 @@ import { Loader2, SearchX, SlidersHorizontal, TriangleAlert } from 'lucide-react
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   applyTweak,
+  getTweakPlan,
   listTweaks,
+  resetTweak,
   revertTweak,
+  type TweakCategory,
   type TweakInfo,
   type TweakStateView,
 } from '../../shared/ipc';
+import { getStorage } from '../../shared/theme/theme';
 import {
-  Badge,
   Button,
   Card,
   Dialog,
   ListGroup,
-  ListRow,
   PageHeader,
   SearchField,
-  Switch,
+  SegmentedControl,
   useToast,
 } from '../../shared/ui';
 import {
+  CATEGORY_ORDER,
+  categoryLabel,
   describeApply,
   describeError,
   describeFailure,
+  describeReset,
   describeRevert,
   type Outcome,
-  restartNote,
 } from './messages';
+import { type Busy, type PlanLoad, StepList, TweakRow } from './TweakRow';
 
 type Load =
   | { status: 'loading' }
   | { status: 'error'; message: string }
   | { status: 'ready'; tweaks: TweakInfo[] };
 
-/** What a tweak is doing right now, while a command runs. */
-type Busy = 'applying' | 'undoing';
+type Mode = 'simple' | 'advanced';
+type CategoryFilter = 'all' | TweakCategory;
 
-function evidenceLine(tweak: TweakInfo): string {
-  const label = tweak.evidence === 'measured' ? 'Measured' : 'Anecdotal';
-  return `Evidence: ${label}. ${tweak.evidenceNote}${restartNote(tweak.restart)}`;
-}
+/** localStorage key of the remembered mode. */
+export const MODE_STORAGE_KEY = 'volt.tweaks.mode';
 
-function stateLine(tweak: TweakInfo, busy: Busy | undefined): string | null {
-  if (busy === 'applying') return 'Turning on...';
-  if (busy === 'undoing') return 'Undoing...';
-  if (tweak.needsAdmin) return 'Needs administrator rights. It cannot be changed from here yet.';
-  const state = tweak.state;
-  switch (state.kind) {
-    case 'partial':
-      return 'Only partly on. Turn it on to finish, or use Undo to put things back.';
-    case 'unreadable':
-      return `Could not read the current setting. ${state.message}`;
-    default:
-      return null;
+function readMode(): Mode {
+  try {
+    return getStorage()?.getItem(MODE_STORAGE_KEY) === 'advanced' ? 'advanced' : 'simple';
+  } catch {
+    return 'simple';
   }
 }
 
+function writeMode(mode: Mode) {
+  try {
+    getStorage()?.setItem(MODE_STORAGE_KEY, mode);
+  } catch {
+    // The choice is only a convenience; the screen works without remembering it.
+  }
+}
+
+/** A question waiting for the user: turn on something above Safe, or turn off what Volt did not. */
+interface Confirmation {
+  kind: 'apply' | 'reset';
+  tweak: TweakInfo;
+  plan: PlanLoad;
+}
+
 /**
- * The Tweaks screen: the catalogue tweaks with their state read live from the system, a switch
- * to turn each on (apply) or off (revert), and a toast with Undo after every change. The state
- * is read again whenever the screen is mounted, which includes a freshly created window, so it
- * is never older than the window itself. All rules live in the Rust core: this renders what the
- * commands report.
+ * The Tweaks screen. Simple mode (the default) lists only Safe tweaks as switches grouped by
+ * category. Advanced mode lists every tweak with its risk, evidence, restart requirement and the
+ * exact changes the engine would make. State is detected whenever the screen opens, so a tweak
+ * that was changed outside Volt shows as it is. All rules live in the Rust core: this renders
+ * what the commands report.
  */
 export function TweaksScreen() {
   const toast = useToast();
   const [load, setLoad] = useState<Load>({ status: 'loading' });
+  const [mode, setMode] = useState<Mode>(readMode);
   const [query, setQuery] = useState('');
+  const [category, setCategory] = useState<CategoryFilter>('all');
   const [busy, setBusy] = useState<Readonly<Record<string, Busy>>>({});
+  const [plans, setPlans] = useState<Readonly<Record<string, PlanLoad>>>({});
   const [notice, setNotice] = useState<string | null>(null);
-  const [confirming, setConfirming] = useState<TweakInfo | null>(null);
+  const [confirming, setConfirming] = useState<Confirmation | null>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
   const alive = useRef(true);
 
@@ -93,15 +107,28 @@ export function TweaksScreen() {
 
   useEffect(read, [read]);
 
-  const patchState = (id: string, state: TweakStateView) => {
+  const patch = (id: string, change: Partial<TweakInfo>) => {
     setLoad((current) =>
       current.status === 'ready'
         ? {
             status: 'ready',
-            tweaks: current.tweaks.map((tweak) => (tweak.id === id ? { ...tweak, state } : tweak)),
+            tweaks: current.tweaks.map((tweak) =>
+              tweak.id === id ? { ...tweak, ...change } : tweak,
+            ),
           }
         : current,
     );
+  };
+
+  /** Records a new state; a change Volt made is Volt's to undo, one it reset is not. */
+  const patchState = (id: string, state: TweakStateView, appliedByVolt: boolean) => {
+    patch(id, { state, appliedByVolt });
+    setPlans((current) => {
+      if (!(id in current)) return current;
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
   };
 
   const setBusyFor = (id: string, value: Busy | undefined) => {
@@ -132,7 +159,8 @@ export function TweaksScreen() {
     setNotice(null);
     try {
       const result = await applyTweak(tweak.id);
-      if (alive.current) patchState(tweak.id, result.state);
+      const changed = result.status === 'applied' || result.status === 'needsAttention';
+      if (alive.current) patchState(tweak.id, result.state, changed || tweak.appliedByVolt);
       report(describeApply(tweak, result), tweak);
     } catch (error) {
       if (alive.current) setNotice(describeFailure('turn on', tweak, error));
@@ -146,7 +174,7 @@ export function TweaksScreen() {
     setNotice(null);
     try {
       const result = await revertTweak(tweak.id);
-      if (alive.current) patchState(tweak.id, result.state);
+      if (alive.current) patchState(tweak.id, result.state, false);
       report(describeRevert(tweak, result, afterUndo), tweak);
     } catch (error) {
       if (alive.current) setNotice(describeFailure('undo', tweak, error));
@@ -155,22 +183,105 @@ export function TweaksScreen() {
     }
   };
 
-  const toggle = (tweak: TweakInfo, value: boolean) => {
-    if (value && tweak.risk === 'advanced') {
-      setConfirming(tweak);
+  const reset = async (tweak: TweakInfo) => {
+    setBusyFor(tweak.id, 'undoing');
+    setNotice(null);
+    try {
+      const result = await resetTweak(tweak.id);
+      if (alive.current) patchState(tweak.id, result.state, false);
+      report(describeReset(tweak, result), tweak);
+    } catch (error) {
+      if (alive.current) setNotice(describeFailure('undo', tweak, error));
+    } finally {
+      setBusyFor(tweak.id, undefined);
+    }
+  };
+
+  /** Reads what a tweak changes; `null` plan state is reported as an error line. */
+  const readPlan = (tweak: TweakInfo, done: (plan: PlanLoad) => void) => {
+    getTweakPlan(tweak.id)
+      .then((plan) => {
+        if (alive.current) done({ status: 'ready', plan });
+      })
+      .catch((error: unknown) => {
+        if (alive.current) done({ status: 'error', message: describeError(error) });
+      });
+  };
+
+  const showPlan = (tweak: TweakInfo, open: boolean) => {
+    if (!open) {
+      setPlans((current) => {
+        const next = { ...current };
+        delete next[tweak.id];
+        return next;
+      });
       return;
     }
-    void (value ? apply(tweak) : revert(tweak, false));
+    setPlans((current) => ({ ...current, [tweak.id]: { status: 'loading' } }));
+    readPlan(tweak, (plan) => setPlans((current) => ({ ...current, [tweak.id]: plan })));
+  };
+
+  const confirm = (kind: Confirmation['kind'], tweak: TweakInfo) => {
+    setConfirming({ kind, tweak, plan: { status: 'loading' } });
+    readPlan(tweak, (plan) =>
+      setConfirming((current) =>
+        current && current.tweak.id === tweak.id && current.kind === kind
+          ? { ...current, plan }
+          : current,
+      ),
+    );
+  };
+
+  const toggle = (tweak: TweakInfo, value: boolean) => {
+    if (value) {
+      if (tweak.risk === 'safe') void apply(tweak);
+      else confirm('apply', tweak);
+    } else if (tweak.state.kind === 'applied' && !tweak.appliedByVolt) {
+      confirm('reset', tweak);
+    } else {
+      void revert(tweak, false);
+    }
+  };
+
+  const changeMode = (value: Mode) => {
+    setMode(value);
+    writeMode(value);
   };
 
   const tweaks = load.status === 'ready' ? load.tweaks : [];
+  const detailed = mode === 'advanced';
+  const inMode = useMemo(
+    () =>
+      detailed ? tweaks : tweaks.filter((tweak) => tweak.risk === 'safe' && !tweak.needsAdmin),
+    [tweaks, detailed],
+  );
+  const categories = useMemo(
+    () => CATEGORY_ORDER.filter((name) => inMode.some((tweak) => tweak.category === name)),
+    [inMode],
+  );
+  const activeCategory: CategoryFilter = categories.includes(category as TweakCategory)
+    ? category
+    : 'all';
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    if (!needle) return tweaks;
-    return tweaks.filter((tweak) =>
-      `${tweak.title} ${tweak.description} ${tweak.risk}`.toLowerCase().includes(needle),
+    return inMode.filter(
+      (tweak) =>
+        (activeCategory === 'all' || tweak.category === activeCategory) &&
+        (!needle ||
+          `${tweak.title} ${tweak.description} ${tweak.risk}`.toLowerCase().includes(needle)),
     );
-  }, [tweaks, query]);
+  }, [inMode, query, activeCategory]);
+  const groups = CATEGORY_ORDER.map((name) => ({
+    name,
+    items: visible.filter((tweak) => tweak.category === name),
+  })).filter((group) => group.items.length > 0);
+  const hidden = tweaks.length - inMode.length;
+
+  const confirmTitle =
+    confirming?.kind === 'reset'
+      ? 'Turn this off?'
+      : `Turn on ${confirming?.tweak.risk === 'caution' ? 'a Caution' : 'an Advanced'} tweak?`;
+  const closeConfirm = () => setConfirming(null);
 
   return (
     <>
@@ -222,98 +333,143 @@ export function TweaksScreen() {
 
         {load.status === 'ready' && tweaks.length > 0 ? (
           <>
-            <SearchField
-              label="Search tweaks"
-              placeholder="Search tweaks"
-              value={query}
-              onValueChange={setQuery}
-            />
-            {visible.length > 0 ? (
-              <ListGroup aria-label="Tweaks">
-                {visible.map((tweak) => {
-                  const working = busy[tweak.id];
-                  const status = stateLine(tweak, working);
-                  return (
-                    <ListRow
-                      key={tweak.id}
-                      title={tweak.title}
-                      description={
-                        <>
-                          <span className="block">{tweak.description}</span>
-                          <span className="mt-0.5 block">{evidenceLine(tweak)}</span>
-                          {status ? (
-                            <span className="mt-0.5 block font-semibold text-fg">{status}</span>
-                          ) : null}
-                        </>
-                      }
-                      badge={<Badge risk={tweak.risk} />}
-                      trailing={
-                        <div className="flex items-center gap-2">
-                          {tweak.state.kind === 'partial' && !tweak.needsAdmin ? (
-                            <Button
-                              size="sm"
-                              aria-label={`Undo ${tweak.title}`}
-                              disabled={working !== undefined}
-                              onClick={() => void revert(tweak, true)}
-                            >
-                              Undo
-                            </Button>
-                          ) : null}
-                          <Switch
-                            aria-label={tweak.title}
-                            aria-busy={working !== undefined}
-                            checked={tweak.state.kind === 'applied'}
-                            disabled={
-                              working !== undefined ||
-                              tweak.needsAdmin ||
-                              tweak.state.kind === 'unreadable'
-                            }
-                            onCheckedChange={(value) => toggle(tweak, value)}
-                          />
-                        </div>
-                      }
-                    />
-                  );
-                })}
-              </ListGroup>
+            <div className="flex flex-col gap-2">
+              <SegmentedControl<Mode>
+                label="Mode"
+                options={[
+                  { value: 'simple', label: 'Simple' },
+                  { value: 'advanced', label: 'Advanced' },
+                ]}
+                value={mode}
+                onValueChange={changeMode}
+              />
+              <SearchField
+                label="Search tweaks"
+                placeholder="Search tweaks"
+                value={query}
+                onValueChange={setQuery}
+              />
+              {categories.length > 1 ? (
+                <div className="overflow-x-auto">
+                  <SegmentedControl<CategoryFilter>
+                    label="Category"
+                    options={[
+                      { value: 'all', label: 'All' },
+                      ...categories.map((name) => ({ value: name, label: categoryLabel(name) })),
+                    ]}
+                    value={activeCategory}
+                    onValueChange={setCategory}
+                  />
+                </div>
+              ) : null}
+            </div>
+            {groups.length > 0 ? (
+              groups.map((group) => (
+                <section key={group.name} aria-label={categoryLabel(group.name)}>
+                  <h2 className="mb-1.5 px-1 text-caption font-semibold tracking-wide text-muted uppercase">
+                    {categoryLabel(group.name)}
+                  </h2>
+                  <ListGroup aria-label={`${categoryLabel(group.name)} tweaks`}>
+                    {group.items.map((tweak) => (
+                      <TweakRow
+                        key={tweak.id}
+                        tweak={tweak}
+                        detailed={detailed}
+                        busy={busy[tweak.id]}
+                        plan={plans[tweak.id]}
+                        onToggle={toggle}
+                        onUndo={(target) => void revert(target, true)}
+                        onShowPlan={showPlan}
+                      />
+                    ))}
+                  </ListGroup>
+                </section>
+              ))
             ) : (
               <Card className="flex flex-col items-center gap-2 py-10 text-center">
                 <SearchX aria-hidden size={24} className="text-muted" />
                 <p className="font-semibold">No tweaks match "{query.trim()}"</p>
-                <p className="text-body text-muted">Try a different word.</p>
+                <p className="text-body text-muted">Try a different word or category.</p>
               </Card>
             )}
+            {!detailed && hidden > 0 ? (
+              <p className="px-1 text-caption text-muted">
+                {hidden} more {hidden === 1 ? 'tweak is' : 'tweaks are'} in Advanced mode: they
+                carry more risk or need administrator rights.
+              </p>
+            ) : null}
           </>
         ) : null}
       </div>
       <Dialog
         open={confirming !== null}
-        onClose={() => setConfirming(null)}
-        title="Turn on an Advanced tweak?"
+        onClose={closeConfirm}
+        title={confirmTitle}
         description={
-          confirming
-            ? `"${confirming.title}" can change how Windows behaves. Volt records the old value so you can undo it.`
-            : undefined
+          confirming?.kind === 'reset'
+            ? `"${confirming.tweak.title}" is on, but Volt did not turn it on, so it has no earlier value to restore.`
+            : confirming
+              ? `"${confirming.tweak.title}" can change how Windows behaves. Volt records the old value so you can undo it.`
+              : undefined
         }
         initialFocusRef={cancelRef}
         footer={
           <>
-            <Button ref={cancelRef} onClick={() => setConfirming(null)}>
+            <Button ref={cancelRef} onClick={closeConfirm}>
               Cancel
             </Button>
             <Button
               variant="primary"
+              disabled={
+                confirming?.plan.status !== 'ready' ||
+                (confirming.kind === 'reset' && confirming.plan.plan.reset === null)
+              }
               onClick={() => {
-                const tweak = confirming;
+                const current = confirming;
                 setConfirming(null);
-                if (tweak) void apply(tweak);
+                if (!current) return;
+                void (current.kind === 'reset' ? reset(current.tweak) : apply(current.tweak));
               }}
             >
-              Turn on
+              {confirming?.kind === 'reset' ? 'Turn off' : 'Turn on'}
             </Button>
           </>
         }
-      />
+      >
+        {confirming?.plan.status === 'loading' ? (
+          <p className="text-body text-muted">Reading what it changes...</p>
+        ) : null}
+        {confirming?.plan.status === 'error' ? (
+          <p className="text-body text-muted">{confirming.plan.message}</p>
+        ) : null}
+        {confirming?.plan.status === 'ready' ? (
+          <div className="max-h-64 overflow-y-auto text-body">
+            {confirming.kind === 'apply' ? (
+              <>
+                <p className="font-semibold">It will change</p>
+                <StepList
+                  label="Changes"
+                  steps={confirming.plan.plan.steps.filter((step) => !step.atTarget)}
+                />
+              </>
+            ) : confirming.plan.plan.reset ? (
+              <>
+                <p className="font-semibold">Volt will write instead</p>
+                <p className="text-caption text-muted">
+                  It removes these values so Windows uses its own default. The Undo page can bring
+                  them back.
+                </p>
+                <StepList label="Changes" steps={confirming.plan.plan.reset} />
+              </>
+            ) : (
+              <p className="text-muted">
+                Volt cannot switch this off safely: it has no earlier value and does not know the
+                Windows default. Change it in Windows yourself.
+              </p>
+            )}
+          </div>
+        ) : null}
+      </Dialog>
     </>
   );
 }

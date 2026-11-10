@@ -1,15 +1,23 @@
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ApplyResult, RevertResult, TweakInfo, TweakStateView } from '../../shared/ipc';
+import type {
+  ApplyResult,
+  RevertResult,
+  TweakInfo,
+  TweakPlanView,
+  TweakStateView,
+} from '../../shared/ipc';
 import { IpcCommandError, IpcUnavailableError } from '../../shared/ipc';
 import { ToastProvider } from '../../shared/ui';
-import { TweaksScreen } from './TweaksScreen';
+import { MODE_STORAGE_KEY, TweaksScreen } from './TweaksScreen';
 
 const ipc = vi.hoisted(() => ({
   listTweaks: vi.fn(),
   applyTweak: vi.fn(),
   revertTweak: vi.fn(),
+  getTweakPlan: vi.fn(),
+  resetTweak: vi.fn(),
 }));
 vi.mock('../../shared/ipc', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../shared/ipc')>()),
@@ -27,6 +35,7 @@ const fileExtensions: TweakInfo = {
   restart: 'none',
   needsAdmin: false,
   state: { kind: 'notApplied' },
+  appliedByVolt: false,
 };
 
 const advanced: TweakInfo = {
@@ -63,6 +72,26 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+function plan(over: Partial<TweakPlanView> = {}): TweakPlanView {
+  return {
+    id: 'x',
+    steps: [
+      {
+        subject: 'HKCU\\Software\\X\\Flag',
+        current: '(not set)',
+        target: 'dword:0',
+        atTarget: false,
+      },
+    ],
+    reset: null,
+    ...over,
+  };
+}
+
+function advancedMode() {
+  window.localStorage.setItem(MODE_STORAGE_KEY, 'advanced');
+}
+
 function renderScreen() {
   return render(
     <ToastProvider>
@@ -79,6 +108,9 @@ beforeEach(() => {
   ipc.listTweaks.mockReset();
   ipc.applyTweak.mockReset();
   ipc.revertTweak.mockReset();
+  ipc.getTweakPlan.mockReset();
+  ipc.resetTweak.mockReset();
+  ipc.getTweakPlan.mockResolvedValue(plan());
 });
 
 describe('loading, empty and error states', () => {
@@ -87,15 +119,16 @@ describe('loading, empty and error states', () => {
     ipc.listTweaks.mockReturnValue(pending.promise);
     renderScreen();
     expect(screen.getByRole('status').textContent).toContain('Reading your settings');
-    expect(screen.queryByRole('list', { name: 'Tweaks' })).toBeNull();
+    expect(screen.queryByRole('list', { name: 'Appearance tweaks' })).toBeNull();
 
     pending.resolve([fileExtensions]);
-    const list = await screen.findByRole('list', { name: 'Tweaks' });
+    const list = await screen.findByRole('list', { name: 'Appearance tweaks' });
     expect(within(list).getAllByRole('listitem')).toHaveLength(1);
     expect(screen.queryByRole('status')).toBeNull();
   });
 
   it('shows the real labels: risk, honest evidence and the note', async () => {
+    advancedMode();
     ipc.listTweaks.mockResolvedValue([fileExtensions]);
     renderScreen();
     const row = (await screen.findByRole('listitem')) as HTMLElement;
@@ -105,6 +138,7 @@ describe('loading, empty and error states', () => {
   });
 
   it('shows a tweak that needs administrator rights disabled, with a label', async () => {
+    advancedMode();
     ipc.listTweaks.mockResolvedValue([
       fileExtensions,
       { ...fileExtensions, id: 'machine-wide', title: 'Machine wide', needsAdmin: true },
@@ -209,7 +243,9 @@ describe('turning a tweak on and off', () => {
 
   it('turns an applied tweak off through revert', async () => {
     const user = userEvent.setup();
-    ipc.listTweaks.mockResolvedValue([{ ...fileExtensions, state: { kind: 'applied' } }]);
+    ipc.listTweaks.mockResolvedValue([
+      { ...fileExtensions, state: { kind: 'applied' }, appliedByVolt: true },
+    ]);
     ipc.revertTweak.mockResolvedValue(reverted());
     renderScreen();
 
@@ -219,25 +255,6 @@ describe('turning a tweak on and off', () => {
     expect(ipc.revertTweak).toHaveBeenCalledWith('show-file-extensions');
     await vi.waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('false'));
     expect(await screen.findByText('"Show file extensions" is off again.')).toBeTruthy();
-  });
-
-  it('says plainly when Volt did not make the change and so cannot undo it', async () => {
-    const user = userEvent.setup();
-    ipc.listTweaks.mockResolvedValue([{ ...fileExtensions, state: { kind: 'applied' } }]);
-    ipc.revertTweak.mockResolvedValue({
-      ...reverted({ kind: 'applied' }),
-      status: 'nothingToRevert',
-      restored: 0,
-    });
-    renderScreen();
-
-    const toggle = await theSwitch();
-    await user.click(toggle);
-    const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toContain('Volt has nothing to undo');
-    expect(alert.textContent).toContain('did not turn it on');
-    // The switch keeps showing the truth.
-    expect(toggle.getAttribute('aria-checked')).toBe('true');
   });
 
   it('explains a rolled back apply: nothing changed', async () => {
@@ -317,10 +334,11 @@ describe('turning a tweak on and off', () => {
 
 describe('search and the Advanced confirmation', () => {
   it('filters the list as the user types and says when nothing matches', async () => {
+    advancedMode();
     const user = userEvent.setup();
     ipc.listTweaks.mockResolvedValue([fileExtensions, advanced]);
     renderScreen();
-    const list = await screen.findByRole('list', { name: 'Tweaks' });
+    const list = await screen.findByRole('list', { name: 'Appearance tweaks' });
     expect(within(list).getAllByRole('listitem')).toHaveLength(2);
 
     await user.type(screen.getByRole('searchbox', { name: 'Search tweaks' }), 'sysmain');
@@ -328,11 +346,12 @@ describe('search and the Advanced confirmation', () => {
 
     await user.clear(screen.getByRole('searchbox', { name: 'Search tweaks' }));
     await user.type(screen.getByRole('searchbox', { name: 'Search tweaks' }), 'zzzz');
-    expect(screen.queryByRole('list', { name: 'Tweaks' })).toBeNull();
+    expect(screen.queryByRole('list', { name: 'Appearance tweaks' })).toBeNull();
     expect(screen.getByText(/No tweaks match/)).toBeTruthy();
   });
 
   it('an Advanced tweak asks first, and Cancel applies nothing and returns focus to the switch', async () => {
+    advancedMode();
     const user = userEvent.setup();
     ipc.listTweaks.mockResolvedValue([advanced]);
     ipc.applyTweak.mockResolvedValue({ ...applied(), tweak: 'sysmain' });
@@ -341,7 +360,8 @@ describe('search and the Advanced confirmation', () => {
     const toggle = await theSwitch('Stop the SysMain service');
     toggle.focus();
     await user.keyboard(' ');
-    expect(screen.getByRole('dialog', { name: 'Turn on an Advanced tweak?' })).toBeTruthy();
+    expect(await screen.findByRole('dialog', { name: 'Turn on an Advanced tweak?' })).toBeTruthy();
+    expect(ipc.getTweakPlan).toHaveBeenCalledWith('sysmain');
     expect(ipc.applyTweak).not.toHaveBeenCalled();
 
     await user.keyboard('{Escape}');
@@ -350,6 +370,7 @@ describe('search and the Advanced confirmation', () => {
     expect(document.activeElement).toBe(toggle);
 
     await user.keyboard(' ');
+    await screen.findByText('HKCU\\Software\\X\\Flag');
     await user.click(screen.getByRole('button', { name: 'Turn on' }));
     expect(ipc.applyTweak).toHaveBeenCalledWith('sysmain');
     await vi.waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('true'));

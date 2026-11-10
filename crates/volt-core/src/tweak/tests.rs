@@ -1183,3 +1183,120 @@ fn an_engine_told_it_has_administrator_rights_applies_and_reverts_such_a_tweak()
     assert!(engine.revert("sample-tweak").expect("revert").is_complete());
     assert_before(&system);
 }
+
+// ---- describe, provenance and reset -------------------------------------------------------
+
+const REGISTRY_ONLY: &str = r#"
+[[tweak]]
+id = "reg-tweak"
+title = "Registry tweak"
+description = "Sets two values."
+category = "appearance"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "A preference."
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\VoltTest\Tweaks'
+name = "Flag"
+value = { dword = 0 }
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\VoltTest\Tweaks'
+name = "Other"
+value = { dword = 5 }
+"#;
+
+#[test]
+fn describe_lists_every_step_with_its_state_even_when_the_tweak_is_on() {
+    let system = machine();
+    let catalogue = catalogue(SAMPLE);
+    let engine = engine(&system, &catalogue);
+    let before = engine.describe("sample-tweak").expect("describe");
+    assert_eq!(before.len(), 4);
+    assert!(before.iter().all(|step| !step.at_target));
+    engine.apply("sample-tweak", Source::Manual).expect("apply");
+    let after = engine.describe("sample-tweak").expect("describe");
+    assert_eq!(after.len(), 4);
+    assert!(after.iter().all(|step| step.at_target));
+    assert!(engine.plan("sample-tweak").expect("plan").is_empty());
+}
+
+#[test]
+fn a_tweak_is_applied_by_volt_only_when_the_journal_says_so() {
+    let system = machine();
+    let catalogue = catalogue(SAMPLE);
+    let engine = engine(&system, &catalogue);
+    assert_eq!(engine.applied_by_volt("sample-tweak"), Ok(false));
+    engine.apply("sample-tweak", Source::Manual).expect("apply");
+    assert_eq!(engine.applied_by_volt("sample-tweak"), Ok(true));
+    engine.revert("sample-tweak").expect("revert");
+    assert_eq!(engine.applied_by_volt("sample-tweak"), Ok(false));
+}
+
+#[test]
+fn reset_removes_the_values_of_a_tweak_set_outside_volt_and_can_be_undone() {
+    let system = FakeSystem::new();
+    let catalogue = catalogue(REGISTRY_ONLY);
+    let engine = engine(&system, &catalogue);
+    system
+        .registry
+        .set(&registry_ref("Flag"), RegistryValue::Dword(0));
+    system
+        .registry
+        .set(&registry_ref("Other"), RegistryValue::Dword(5));
+
+    let plan = engine.reset_plan("reg-tweak").expect("plan").expect("some");
+    assert_eq!(plan.items.len(), 2);
+    assert_eq!(plan.items[0].preview.target, "(not set)");
+
+    let report = engine.reset("reg-tweak", Source::Manual).expect("reset");
+    assert_eq!(report.outcome, ApplyOutcome::Applied);
+    assert_eq!(system.registry.get(&registry_ref("Flag")), None);
+    assert_eq!(system.registry.get(&registry_ref("Other")), None);
+    assert_eq!(engine.state("reg-tweak"), Ok(TweakState::NotApplied));
+
+    // Filed under its own label, so reverting the tweak never switches it back on.
+    assert_eq!(
+        engine.revert("reg-tweak"),
+        Err(TweakError::NothingToRevert("reg-tweak".to_owned()))
+    );
+    assert_eq!(
+        engine
+            .reset("reg-tweak", Source::Manual)
+            .expect("again")
+            .outcome,
+        ApplyOutcome::AlreadyApplied
+    );
+    // The journal can take it back.
+    let batches = system
+        .journal
+        .batches_with_label("reg-tweak:reset")
+        .expect("batches");
+    assert_eq!(batches.len(), 1);
+    engine
+        .executor()
+        .revert_batch_labelled(batches[0], Some("reg-tweak:reset"))
+        .expect("undo");
+    assert_eq!(
+        system.registry.get(&registry_ref("Flag")),
+        Some(RegistryValue::Dword(0))
+    );
+}
+
+#[test]
+fn a_tweak_with_a_service_or_command_cannot_be_reset() {
+    let system = machine();
+    let catalogue = catalogue(SAMPLE);
+    let engine = engine(&system, &catalogue);
+    assert_eq!(engine.reset_plan("sample-tweak"), Ok(None));
+    assert_eq!(
+        engine.reset("sample-tweak", Source::Manual),
+        Err(TweakError::NothingToReset("sample-tweak".to_owned()))
+    );
+    assert_before(&system);
+}

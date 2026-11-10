@@ -44,7 +44,7 @@ export function ListRow({ icon, title, badge, description, trailing }: ListRowPr
           <span className="font-semibold">{title}</span>
           {badge}
         </div>
-        {description ? <p className="mt-0.5 text-caption text-muted">{description}</p> : null}
+        {description ? <div className="mt-0.5 text-caption text-muted">{description}</div> : null}
       </div>
       {trailing ? <div className="shrink-0">{trailing}</div> : null}
     </li>

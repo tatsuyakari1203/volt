@@ -5,6 +5,7 @@ import {
   IpcUnavailableError,
   type RestartKind,
   type RevertResult,
+  type TweakCategory,
   type TweakInfo,
 } from '../../shared/ipc';
 
@@ -123,4 +124,56 @@ export function describeError(error: unknown): string {
     return describeIpcError(error.error);
   }
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Every category, in the order the screen lists them. */
+export const CATEGORY_ORDER: readonly TweakCategory[] = [
+  'appearance',
+  'performance',
+  'gaming',
+  'privacy',
+  'network',
+  'windowsUpdate',
+  'security',
+  'debloat',
+];
+
+/** Display name of a category. */
+export function categoryLabel(category: TweakCategory): string {
+  switch (category) {
+    case 'appearance':
+      return 'Appearance';
+    case 'performance':
+      return 'Performance';
+    case 'gaming':
+      return 'Gaming';
+    case 'privacy':
+      return 'Privacy';
+    case 'network':
+      return 'Network';
+    case 'windowsUpdate':
+      return 'Windows Update';
+    case 'security':
+      return 'Security';
+    case 'debloat':
+      return 'Debloat';
+    default:
+      return assertNever(category);
+  }
+}
+
+/** Explains how turning off a tweak that Volt did not apply ended. */
+export function describeReset(tweak: TweakInfo, result: RevertResult): Outcome {
+  if (result.status === 'reverted') {
+    return {
+      message: `"${tweak.title}" is off. Volt removed its value, so Windows uses its own default. You can undo this on the Undo page.`,
+      tone: 'done',
+      undoable: false,
+    };
+  }
+  return {
+    message: `Could not fully turn off "${tweak.title}".${reason(result.detail)} Check the setting in Windows.`,
+    tone: 'problem',
+    undoable: false,
+  };
 }

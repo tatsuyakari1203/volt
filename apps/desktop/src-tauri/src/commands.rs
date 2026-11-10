@@ -11,7 +11,7 @@ use tauri_specta::Event as _;
 use crate::IpcError;
 use crate::api::{
     self, ActivityExport, ActivityPage, ApplyResult, ExportResult, RevertResult,
-    StartupChangeResult, StartupList, TweakInfo, UndoPreview, UndoResult,
+    StartupChangeResult, StartupList, TweakInfo, TweakPlanView, UndoPreview, UndoResult,
 };
 use crate::cleaner::{
     self, CleanRunResult, CleanScanResult, CleaningRuleInfo, EmptyBinResult, RecycleBinView,
@@ -59,6 +59,28 @@ pub(crate) async fn revert_tweak(
     id: String,
 ) -> Result<RevertResult, IpcError> {
     blocking(&state, move |core| api::revert_tweak(core, &id)).await
+}
+
+/// Tauri command: what a tweak changes (every step with its current and target value) and what
+/// turning it off would do when Volt has no earlier value to restore. Reads the system only.
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn get_tweak_plan(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<TweakPlanView, IpcError> {
+    blocking(&state, move |core| api::get_tweak_plan(core, &id)).await
+}
+
+/// Tauri command: turns off a tweak that Volt did not apply by removing the registry values it
+/// sets, so Windows uses its own default. Journaled, so the Undo page can bring it back.
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn reset_tweak(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<RevertResult, IpcError> {
+    blocking(&state, move |core| api::reset_tweak(core, &id)).await
 }
 
 /// Tauri command: reads the activity history, newest first. `limit` is clamped to 1 to 200;

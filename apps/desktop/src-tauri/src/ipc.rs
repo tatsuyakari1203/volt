@@ -134,7 +134,8 @@ impl From<TweakError> for IpcError {
                 error: RevertError::EntryNotFound(_),
                 ..
             } => Self::NotFound { message },
-            TweakError::Revert {
+            TweakError::NothingToReset(_)
+            | TweakError::Revert {
                 error: RevertError::NotRevertible(_),
                 ..
             } => Self::InvalidInput { message },
@@ -214,6 +215,8 @@ pub fn bindings_builder() -> Builder<tauri::Wry> {
             crate::commands::list_tweaks,
             crate::commands::apply_tweak,
             crate::commands::revert_tweak,
+            crate::commands::get_tweak_plan,
+            crate::commands::reset_tweak,
             crate::commands::list_activity,
             crate::metrics::latest_metrics,
             crate::health::health_report,

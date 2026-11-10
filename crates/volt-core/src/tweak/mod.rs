@@ -19,8 +19,8 @@ mod engine;
 pub use catalogue::{Catalogue, CatalogueError, CatalogueIssue, IssueKind};
 pub use definition::{Category, RestartRequirement, Tweak, TweakStep};
 pub use engine::{
-    ApplyOutcome, BatchRevert, TweakApplyReport, TweakEngine, TweakError, TweakRevertReport,
-    TweakState,
+    ApplyOutcome, BatchRevert, RESET_LABEL_SUFFIX, StepPreview, TweakApplyReport, TweakEngine,
+    TweakError, TweakRevertReport, TweakState,
 };
 
 #[cfg(test)]

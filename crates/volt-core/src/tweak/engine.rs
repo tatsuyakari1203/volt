@@ -16,8 +16,10 @@ use crate::activity::ActivityLog;
 use crate::error::{ExecError, PlanError, PortError, RevertError};
 use crate::executor::{ApplyReport, Executor, RevertReport};
 use crate::journal::{BatchId, EntryState, Journal, Source};
-use crate::plan::{OperationRequest, Plan};
+use crate::operation::Operation;
+use crate::plan::{OperationRequest, Plan, Preview};
 use crate::ports::Ports;
+use crate::registry::RegistryValueRef;
 use crate::time::Clock;
 
 /// Whether a tweak's changes are in place right now.
@@ -81,6 +83,10 @@ pub enum TweakError {
     /// undone by Volt because its prior state was never recorded.
     #[error("tweak `{0}`: the undo journal has no applied change to revert")]
     NothingToRevert(String),
+    /// The tweak cannot be reset to the Windows default: it changes more than registry values
+    /// it sets, and Volt does not know what the default of those is.
+    #[error("tweak `{0}` cannot be reset to the Windows default")]
+    NothingToReset(String),
     /// A journal batch could not be read for revert.
     #[error("tweak `{tweak}`: {error}")]
     Revert {
@@ -148,6 +154,20 @@ impl TweakRevertReport {
         self.batches.iter().all(|b| b.report.is_complete())
     }
 }
+
+/// What one step of a tweak does, and whether it is already in place.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StepPreview {
+    /// What is changed, the value now and the value after the tweak.
+    pub preview: Preview,
+    /// Whether the system is already in this step's target state.
+    pub at_target: bool,
+}
+
+/// Suffix of the journal label of a reset (`<tweak id>:reset`). It differs from the tweak id on
+/// purpose: [`TweakEngine::revert`] undoes the batches labelled with the plain id, and must never
+/// find a reset and switch the tweak back on.
+pub const RESET_LABEL_SUFFIX: &str = ":reset";
 
 /// Reads, applies and reverts the tweaks of a [`Catalogue`].
 ///
@@ -254,6 +274,131 @@ impl TweakEngine {
         self.build_plan(tweak, &at_target)
     }
 
+    /// Every step of the tweak with its current and target value, whether or not it is in place
+    /// already. Read-only. [`TweakEngine::plan`] leaves out the steps already in place; this does
+    /// not, so the screen can say exactly what a tweak changes even when it is on.
+    pub fn describe(&self, id: &str) -> Result<Vec<StepPreview>, TweakError> {
+        let tweak = self.tweak(id)?;
+        let at_target = self.steps_at_target(tweak)?;
+        let requests = tweak
+            .steps
+            .iter()
+            .map(|step| OperationRequest::new(step.operation(), tweak.risk, tweak.evidence))
+            .collect();
+        let plan = Plan::build(requests, &self.ports).map_err(|error| TweakError::Plan {
+            tweak: tweak.id.clone(),
+            error,
+        })?;
+        Ok(plan
+            .items
+            .into_iter()
+            .zip(at_target)
+            .map(|(item, at_target)| StepPreview {
+                preview: item.preview,
+                at_target,
+            })
+            .collect())
+    }
+
+    /// Whether the undo journal holds a change Volt made for this tweak that is still applied.
+    /// `false` for a tweak that is on because the user or another program set it: Volt then has
+    /// no earlier value to restore. Read-only.
+    pub fn applied_by_volt(&self, id: &str) -> Result<bool, TweakError> {
+        let tweak = self.tweak(id)?;
+        let journal_error = |error| TweakError::Journal {
+            tweak: tweak.id.clone(),
+            error,
+        };
+        for batch in self
+            .journal
+            .batches_with_label(&tweak.id)
+            .map_err(journal_error)?
+        {
+            let entries = self.journal.batch_entries(batch).map_err(journal_error)?;
+            if entries
+                .iter()
+                .any(|entry| entry.state == EntryState::Applied)
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// What [`TweakEngine::reset`] would do right now: remove the registry values the tweak sets,
+    /// so Windows uses its own default. Read-only. `None` when the tweak cannot be reset this way
+    /// (it has a service, a command or a deleted value, whose default Volt does not know), and an
+    /// empty plan when nothing of it is in place.
+    pub fn reset_plan(&self, id: &str) -> Result<Option<Plan>, TweakError> {
+        let tweak = self.tweak(id)?;
+        let Some(targets) = Self::reset_targets(tweak) else {
+            return Ok(None);
+        };
+        let at_target = self.steps_at_target(tweak)?;
+        self.build_reset_plan(tweak, &targets, &at_target).map(Some)
+    }
+
+    /// Turns a tweak off that Volt has no record of applying, by removing the registry values it
+    /// sets. The removal is journaled like any change (so the Undo page can bring the tweak back)
+    /// under the label `<id>:reset`, not under the tweak id. Refused with
+    /// [`TweakError::NothingToReset`] when the tweak cannot be reset this way.
+    pub fn reset(&self, id: &str, source: Source) -> Result<TweakApplyReport, TweakError> {
+        let tweak = self.tweak(id)?;
+        self.check_rights(tweak)?;
+        let targets = Self::reset_targets(tweak)
+            .ok_or_else(|| TweakError::NothingToReset(tweak.id.clone()))?;
+        let before = self.steps_at_target(tweak)?;
+        let plan = self.build_reset_plan(tweak, &targets, &before)?;
+        if plan.is_empty() {
+            return Ok(TweakApplyReport {
+                tweak: tweak.id.clone(),
+                outcome: ApplyOutcome::AlreadyApplied,
+                report: None,
+            });
+        }
+        self.execute(tweak, &plan, &before, source)
+    }
+
+    /// The registry value of each step, when every step sets one.
+    fn reset_targets(tweak: &Tweak) -> Option<Vec<RegistryValueRef>> {
+        tweak
+            .steps
+            .iter()
+            .map(|step| match step.operation() {
+                Operation::SetRegistryValue { target, .. } => Some(target),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn build_reset_plan(
+        &self,
+        tweak: &Tweak,
+        targets: &[RegistryValueRef],
+        at_target: &[bool],
+    ) -> Result<Plan, TweakError> {
+        let requests = targets
+            .iter()
+            .zip(at_target)
+            .filter(|(_, at_target)| **at_target)
+            .map(|(target, _)| {
+                OperationRequest::new(
+                    Operation::DeleteRegistryValue {
+                        target: target.clone(),
+                    },
+                    tweak.risk,
+                    tweak.evidence,
+                )
+            })
+            .collect();
+        Plan::build(requests, &self.ports)
+            .map(|plan| plan.with_label(format!("{}{RESET_LABEL_SUFFIX}", tweak.id)))
+            .map_err(|error| TweakError::Plan {
+                tweak: tweak.id.clone(),
+                error,
+            })
+    }
+
     /// Applies the steps that are not yet in their target state, in order, as
     /// one journal batch labelled with the tweak id.
     ///
@@ -273,9 +418,21 @@ impl TweakEngine {
             });
         }
         let plan = self.build_plan(tweak, &before)?;
+        self.execute(tweak, &plan, &before, source)
+    }
+
+    /// Runs `plan` as one journal batch and classifies how it ended. `before` is the per-step
+    /// state to compare with after a failure.
+    fn execute(
+        &self,
+        tweak: &Tweak,
+        plan: &Plan,
+        before: &[bool],
+        source: Source,
+    ) -> Result<TweakApplyReport, TweakError> {
         let report = self
             .executor
-            .apply_or_rollback(&plan, source)
+            .apply_or_rollback(plan, source)
             .map_err(|error| TweakError::Exec {
                 tweak: tweak.id.clone(),
                 error,

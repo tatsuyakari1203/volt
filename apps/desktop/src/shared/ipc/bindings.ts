@@ -81,6 +81,30 @@ async revertTweak(id: string) : Promise<Result<RevertResult, IpcError>> {
 }
 },
 /**
+ * Tauri command: what a tweak changes (every step with its current and target value) and what
+ * turning it off would do when Volt has no earlier value to restore. Reads the system only.
+ */
+async getTweakPlan(id: string) : Promise<Result<TweakPlanView, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_tweak_plan", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: turns off a tweak that Volt did not apply by removing the registry values it
+ * sets, so Windows uses its own default. Journaled, so the Undo page can bring it back.
+ */
+async resetTweak(id: string) : Promise<Result<RevertResult, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("reset_tweak", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Tauri command: reads the activity history, newest first. `limit` is clamped to 1 to 200;
  * `cursor` is the `nextCursor` of the previous page.
  */
@@ -1478,7 +1502,30 @@ needsAdmin: boolean;
 /**
  * The state read just now.
  */
-state: TweakStateView }
+state: TweakStateView; 
+/**
+ * Whether the undo journal holds a change Volt made for this tweak. When it is on and this
+ * is `false`, it was set outside Volt: Volt has no earlier value to restore.
+ */
+appliedByVolt: boolean }
+/**
+ * What a tweak changes, for the Advanced list and the confirmation dialog.
+ */
+export type TweakPlanView = { 
+/**
+ * The tweak id.
+ */
+id: string; 
+/**
+ * Every step of the tweak, in order.
+ */
+steps: TweakStepView[]; 
+/**
+ * What turning the tweak off would write when Volt has no earlier value to restore: the
+ * values are removed so Windows uses its default. `None` when the tweak cannot be turned
+ * off that way (it has a service or a command).
+ */
+reset: TweakStepView[] | null }
 /**
  * Whether a tweak is in effect right now, read live from the system.
  */
@@ -1499,6 +1546,26 @@ export type TweakStateView =
  * The state could not be read. Nothing was guessed.
  */
 { kind: "unreadable"; message: string }
+/**
+ * One step of a tweak: what it touches and the value now and after.
+ */
+export type TweakStepView = { 
+/**
+ * What is changed, such as `HKCU\Software\X\Y`, `service Spooler start type` or a command.
+ */
+subject: string; 
+/**
+ * The value right now, as text.
+ */
+current: string; 
+/**
+ * The value the tweak sets (or, in a reset, the value that is left), as text.
+ */
+target: string; 
+/**
+ * Whether the system is already in the target state for this step.
+ */
+atTarget: boolean }
 /**
  * One change an undo could not restore.
  */
