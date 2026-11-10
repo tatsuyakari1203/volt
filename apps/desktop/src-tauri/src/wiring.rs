@@ -24,14 +24,13 @@ use volt_core::{
 };
 use volt_store::{CorruptionRecovery, OpenOutcome, Store, StoreError};
 use volt_win::{
-    WinCommands, WinFilePublisher, WinFileSystem, WinKnownFolders, WinMemory, WinRecycleBin,
-    WinRegistry, WinServices,
+    WinCommands, WinFilePublisher, WinFileSystem, WinKnownFolders, WinMemory, WinProcesses,
+    WinRecycleBin, WinRegistry, WinServices,
 };
 
 use crate::IpcError;
 use crate::catalogue::{EMBEDDED_CATALOGUE, EMBEDDED_CLEANING_RULES};
 use crate::cleaner::CleanSession;
-use crate::unsupported::UnsupportedProcesses;
 
 /// File name of the database inside the app data directory.
 pub const STORE_FILE_NAME: &str = "volt.db";
@@ -371,6 +370,7 @@ fn build_core_inner(
         ports.file_system.clone(),
         clock.clone(),
     )
+    .with_processes(ports.processes.clone())
     .with_activity_log(activity.clone())
     .with_settings(settings.clone());
 
@@ -421,7 +421,7 @@ pub fn windows_ports() -> Ports {
         registry: Arc::new(WinRegistry::new()),
         file_system: Arc::new(WinFileSystem::new()),
         services: Arc::new(WinServices::new()),
-        processes: Arc::new(UnsupportedProcesses),
+        processes: Arc::new(WinProcesses::new()),
         memory: Arc::new(WinMemory::new()),
         commands: Arc::new(WinCommands::new()),
     }

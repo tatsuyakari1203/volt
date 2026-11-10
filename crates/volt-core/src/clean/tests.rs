@@ -1759,3 +1759,51 @@ mod recycle_bin {
         assert_eq!(bin.empty_calls(), 1);
     }
 }
+
+// ---- running programs that hold a rule's files -----------------------------------------------
+
+fn locked_rule(locked_by: &str) -> String {
+    default_rule().replacen(
+        "risk = \"safe\"",
+        &format!("risk = \"safe\"\nlocked_by = {locked_by}"),
+        1,
+    )
+}
+
+#[test]
+fn locked_by_is_lower_cased_and_must_name_plain_executables() {
+    let rules = CleaningRules::from_toml(&locked_rule(r#"["Chrome.EXE"]"#)).expect("valid");
+    assert_eq!(rules.rules()[0].locked_by, ["chrome.exe"]);
+    for bad in [
+        r#"["chrome"]"#,
+        r#"["C:/x/chrome.exe"]"#,
+        r#"["..\chrome.exe"]"#,
+        r#"[".exe"]"#,
+        "[1]",
+        r#""chrome.exe""#,
+    ] {
+        assert!(
+            CleaningRules::from_toml(&locked_rule(bad)).is_err(),
+            "{bad} must be refused"
+        );
+    }
+}
+
+#[test]
+fn a_scan_names_the_running_programs_of_the_rule_only() {
+    let f = Fixture::new();
+    let processes = Arc::new(crate::fakes::FakeProcesses::new());
+    processes.add(1, "Chrome.exe", 0);
+    processes.add(2, "other.exe", 0);
+    let toml = locked_rule(r#"["chrome.exe", "firefox.exe"]"#);
+    let with = f.engine(&toml).with_processes(processes.clone());
+    assert_eq!(only(&with.scan_all()).running_programs, ["chrome.exe"]);
+    // Without a process port, or for a rule that names no program, nothing is reported.
+    assert!(
+        only(&f.engine(&toml).scan_all())
+            .running_programs
+            .is_empty()
+    );
+    let plain = f.engine(&default_rule()).with_processes(processes);
+    assert!(only(&plain.scan_all()).running_programs.is_empty());
+}

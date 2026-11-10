@@ -325,6 +325,27 @@ fn explorer_cache_tree(prefix: &'static str, other: &'static str) -> Tree {
         .collect()
 }
 
+/// A Chromium profile folder tree: two profiles, caches to take, the user's own data to keep.
+fn chromium_tree() -> Tree {
+    vec![
+        ("Default/Cache/Cache_Data/f_000001", Taken),
+        ("Default/Cache/Cache_Data/index", Taken),
+        ("Default/Cache/a/b/last", Taken),
+        ("Profile 1/Code Cache/js/abc_0", Taken),
+        ("Default/GPUCache/data_0", Taken),
+        ("Default/GPUCache/limit", TakenAtAgeLimit),
+        ("Default/GPUCache/fresh", TooNew),
+        ("Default/Cookies", NotMatching),
+        ("Default/Network/Cookies", Excluded),
+        ("Default/History", NotMatching),
+        ("Default/Login Data", NotMatching),
+        ("Default/Extensions/ext1/Cache/blob", Excluded),
+        ("Local State", NotMatching),
+        ("Default/Cache/link", Link),
+        ("Default/Cache/a/b/c/d/deep", TooDeep),
+    ]
+}
+
 fn fixture(id: &str) -> Option<Tree> {
     Some(match id {
         "user-temp" | "windows-temp" => {
@@ -383,6 +404,24 @@ fn fixture(id: &str) -> Option<Tree> {
             ("link", Link),
             ("e1/e2/e3/e4/e5/too-deep", TooDeep),
         ],
+        "chrome-cache" | "edge-cache" | "brave-cache" => chromium_tree(),
+        "firefox-cache" => vec![
+            ("abcd1234.default-release/cache2/entries/ABCDEF", Taken),
+            ("abcd1234.default-release/cache2/index", Taken),
+            ("abcd1234.default-release/cache2/doomed/old", Taken),
+            ("efgh5678.dev-edition/cache2/entries/FEDCBA", Taken),
+            ("abcd1234.default-release/cache2/limit", TakenAtAgeLimit),
+            ("abcd1234.default-release/cache2/fresh", TooNew),
+            ("abcd1234.default-release/cookies.sqlite", NotMatching),
+            ("abcd1234.default-release/places.sqlite", NotMatching),
+            ("abcd1234.default-release/key4.db", NotMatching),
+            (
+                "abcd1234.default-release/storage/default/site/ls/data.sqlite",
+                Excluded,
+            ),
+            ("abcd1234.default-release/cache2/link", Link),
+            ("abcd1234.default-release/cache2/a/b/c/d/deep", TooDeep),
+        ],
         _ => return None,
     })
 }
@@ -412,6 +451,10 @@ fn every_rule_has_a_fixture_and_every_fixture_covers_what_the_rule_allows() {
         "icon-cache",
         "windows-update-logs",
         "delivery-optimization-cache",
+        "chrome-cache",
+        "edge-cache",
+        "brave-cache",
+        "firefox-cache",
     ] {
         assert!(ids.contains(known), "fixture for {known} but no such rule");
     }
@@ -610,4 +653,179 @@ fn a_missing_root_is_nothing_to_clean_and_never_a_sign_of_missing_rights() {
         assert!(!scan.root_exists, "{}", scan.rule_id);
         assert!(!scan.needs_administrator(), "{}", scan.rule_id);
     }
+}
+
+// ---- browser caches ---------------------------------------------------------------------------
+
+const BROWSER_RULES: [&str; 4] = ["chrome-cache", "edge-cache", "brave-cache", "firefox-cache"];
+const CACHE_FOLDERS: [&str; 4] = ["cache", "code cache", "gpucache", "cache2"];
+
+/// What a browser keeps next to its cache, in Chromium and Firefox profiles alike. A clean must
+/// never list any of it.
+const USER_DATA: [&str; 24] = [
+    "Cookies",
+    "History",
+    "Login Data",
+    "Web Data",
+    "Bookmarks",
+    "Preferences",
+    "Favicons",
+    "Top Sites",
+    "Sessions",
+    "Local Storage",
+    "IndexedDB",
+    "Extensions",
+    "Local Extension Settings",
+    "Network",
+    "Service Worker",
+    "cookies.sqlite",
+    "places.sqlite",
+    "key4.db",
+    "logins.json",
+    "formhistory.sqlite",
+    "prefs.js",
+    "sessionstore-backups",
+    "extensions",
+    "storage",
+];
+
+/// A realistic set of profiles for a rule: cache entries to take, and every kind of user data
+/// (as files and as folders with files inside) beside them. Returns the root.
+fn realistic_profiles(world: &World, rule: &CleaningRule) -> PathBuf {
+    let root = world.root_of(rule);
+    let firefox = rule.id == "firefox-cache";
+    let profiles: &[&str] = if firefox {
+        &["abcd1234.default-release", "efgh5678.dev-edition"]
+    } else {
+        &["Default", "Profile 1", "Guest Profile"]
+    };
+    let caches: &[&str] = if firefox {
+        &["cache2/entries/ABCDEF", "cache2/index"]
+    } else {
+        &[
+            "Cache/Cache_Data/f_000001",
+            "Code Cache/js/abc_0",
+            "GPUCache/data_0",
+        ]
+    };
+    for profile in profiles {
+        for cache in caches {
+            let path = below(&root, &format!("{profile}/{cache}"));
+            world.fs.add_file_at(path, 100, ago(30 * DAY));
+        }
+        for data in USER_DATA {
+            let path = below(&root, &format!("{profile}/{data}/entry.bin"));
+            world.fs.add_file_at(path, 100, ago(30 * DAY));
+        }
+    }
+    world
+        .fs
+        .add_file_at(below(&root, "Local State"), 10, ago(30 * DAY));
+    root
+}
+
+/// The path below the root as lower-case components.
+fn parts_below(root: &Path, path: &Path) -> Vec<String> {
+    path.strip_prefix(root)
+        .expect("inside the root")
+        .components()
+        .map(|part| part.as_os_str().to_string_lossy().to_lowercase())
+        .collect()
+}
+
+#[test]
+fn browser_rules_never_list_cookies_history_logins_sessions_bookmarks_or_extensions() {
+    for id in BROWSER_RULES {
+        let world = World::new();
+        let rule = world.engine.rules().get(id).expect("rule").clone();
+        let root = realistic_profiles(&world, &rule);
+        let plan = world.engine.scan(&[id]).expect("scan");
+        let scan = &plan.rules[0];
+        assert!(scan.items.len() >= 4, "{id}: caches are found per profile");
+        for item in &scan.items {
+            let parts = parts_below(&root, &item.path);
+            // Always a file inside <profile>/<cache folder>, never user data.
+            assert!(
+                parts.len() >= 3 && CACHE_FOLDERS.contains(&parts[1].as_str()),
+                "{id}: {parts:?} is not inside a cache folder of a profile"
+            );
+        }
+        // A clean moves nothing else either, and leaves every user data file in place.
+        let report = world.engine.clean(&plan.confirm(), Source::Manual);
+        assert_eq!(report.skipped_count(), 0, "{id}");
+        for trashed in world.fs.trashed() {
+            let parts = parts_below(&root, &trashed);
+            assert!(
+                parts.len() >= 3 && CACHE_FOLDERS.contains(&parts[1].as_str()),
+                "{id}: {parts:?} was moved"
+            );
+        }
+        assert!(
+            world.fs.exists(&below(&root, "Local State")),
+            "{id}: files in the root stay"
+        );
+        let user_data = world.fs.trashed().iter().any(|path| {
+            USER_DATA
+                .iter()
+                .any(|name| parts_below(&root, path).contains(&name.to_lowercase()))
+        });
+        assert!(!user_data, "{id}: user data was moved");
+    }
+}
+
+#[test]
+fn browser_rules_are_ordinary_safe_rules_in_the_browser_group() {
+    let rules = rules();
+    for id in BROWSER_RULES {
+        let rule = rules.get(id).expect("rule");
+        assert_eq!(
+            rule.category,
+            volt_core::CleanCategory::BrowserCache,
+            "{id}"
+        );
+        assert!(!rule.requires_admin, "{id}");
+        assert_eq!(rule.root.location(), Location::LocalAppData, "{id}");
+        assert!(
+            !rule.locked_by.is_empty(),
+            "{id}: a browser keeps its cache open"
+        );
+        assert!(rule.constraints.min_age_days >= 1, "{id}");
+    }
+}
+
+#[test]
+fn a_running_browser_is_named_by_the_scan_and_a_stopped_one_is_not() {
+    let world = World::new();
+    let processes = Arc::new(volt_core::fakes::FakeProcesses::new());
+    let engine = CleanEngine::new(
+        rules(),
+        world.folders.clone(),
+        world.fs.clone(),
+        Arc::new(ManualClock::new(NOW)),
+    )
+    .with_processes(processes.clone());
+
+    let plan = engine.scan(&BROWSER_RULES).expect("scan");
+    assert!(
+        plan.rules
+            .iter()
+            .all(|scan| scan.running_programs.is_empty())
+    );
+
+    processes.add(10, "Chrome.EXE", 0);
+    processes.add(11, "firefox.exe", 0);
+    processes.add(12, "notepad.exe", 0);
+    let plan = engine.scan(&BROWSER_RULES).expect("scan");
+    let running = |id: &str| {
+        plan.rules
+            .iter()
+            .find(|scan| scan.rule_id == id)
+            .expect("scan")
+            .running_programs
+            .clone()
+    };
+    assert_eq!(running("chrome-cache"), ["chrome.exe"]);
+    assert_eq!(running("firefox-cache"), ["firefox.exe"]);
+    assert!(running("edge-cache").is_empty());
+    assert!(running("brave-cache").is_empty());
 }

@@ -79,6 +79,7 @@ function view(rule: CleaningRuleInfo, extra: Partial<RuleScanView> = {}): RuleSc
     bytes: 0,
     truncated: false,
     skipped: null,
+    lockedNote: null,
     problem: null,
     samples: [],
     ...extra,
@@ -413,6 +414,18 @@ describe('helpers', () => {
     expect(tickedByDefault(temp)).toBe(true);
     expect(tickedByDefault(careful)).toBe(false);
     expect(tickedByDefault({ ...temp, needsAdministrator: true })).toBe(false);
+  });
+
+  it('leaves browser caches unticked', () => {
+    const chrome: CleaningRuleInfo = {
+      ...temp,
+      id: 'chrome-cache',
+      title: 'Chrome cache',
+      category: 'browserCache',
+      categoryLabel: 'Browser caches',
+      minAgeDays: 1,
+    };
+    expect(tickedByDefault(chrome)).toBe(false);
   });
 
   it('never counts a rule that needs administrator rights, even when it is in the set', () => {

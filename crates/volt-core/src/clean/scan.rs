@@ -89,6 +89,31 @@ impl CleanEngine {
         }
     }
 
+    /// The programs of the rule's `locked_by` list that are running now. A
+    /// process list that cannot be read says nothing: it is not a claim that
+    /// no program runs, and the clean skips locked files either way.
+    fn running_programs(&self, rule: &CleaningRule) -> Vec<String> {
+        let Some(processes) = self
+            .processes
+            .as_ref()
+            .filter(|_| !rule.locked_by.is_empty())
+        else {
+            return Vec::new();
+        };
+        let Ok(running) = processes.list() else {
+            return Vec::new();
+        };
+        rule.locked_by
+            .iter()
+            .filter(|wanted| {
+                running
+                    .iter()
+                    .any(|process| process.name.to_lowercase() == **wanted)
+            })
+            .cloned()
+            .collect()
+    }
+
     pub(super) fn scan_rule(&self, rule: &CleaningRule, now: Timestamp) -> RuleScan {
         let mut scan = RuleScan {
             rule_id: rule.id.clone(),
@@ -104,6 +129,7 @@ impl CleanEngine {
             items: Vec::new(),
             skipped: Vec::new(),
             counts: ScanCounts::default(),
+            running_programs: self.running_programs(rule),
         };
         match self.effective_min_age(rule) {
             Ok(days) => scan.min_age_days = days,

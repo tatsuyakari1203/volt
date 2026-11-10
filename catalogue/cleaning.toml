@@ -143,6 +143,115 @@ path = "Microsoft/Windows/Explorer"
 min_age_days = 0
 max_depth = 0
 
+# ---- browser caches ----------------------------------------------------------------------------
+#
+# The profile folder of a browser also holds cookies, history, saved logins, bookmarks, sessions,
+# extensions and local storage. A rule here therefore names the cache folders it takes in `include`
+# (`*` stands for the profile folder, "Default", "Profile 1" and so on, one level below the root) and
+# never a whole profile. The `exclude` list keeps the walk out of the folders that hold the user's
+# own data, as a second guard. A browser keeps the files of its cache open while it runs: those
+# files are skipped, and a scan says so when the browser is running (`locked_by`).
+
+[[rule]]
+id = "chrome-cache"
+title = "Chrome cache"
+description = """
+Copies of web pages, pictures and scripts that Chrome saved in each of its profiles so that sites load faster, plus the compiled code and graphics caches it builds from them. Only those cache folders are taken: cookies, history, saved passwords, bookmarks, open tabs, extensions and site data are never touched, so you stay signed in. Files modified in the last day are kept, and files Chrome has open while it runs are skipped. Sites load a little slower the first time afterwards while the cache fills again."""
+category = "browser_cache"
+risk = "safe"
+include = ["*/Cache/**", "*/Code Cache/**", "*/GPUCache/**"]
+exclude = [
+    "*/Extensions",
+    "*/IndexedDB",
+    "*/Local Storage",
+    "*/Network",
+    "*/Service Worker",
+    "*/Sessions",
+    "*/Storage",
+]
+locked_by = ["chrome.exe"]
+
+[rule.root]
+location = "local_app_data"
+path = "Google/Chrome/User Data"
+
+[rule.constraints]
+min_age_days = 1
+max_depth = 4
+
+[[rule]]
+id = "edge-cache"
+title = "Edge cache"
+description = """
+Copies of web pages, pictures and scripts that Edge saved in each of its profiles so that sites load faster, plus the compiled code and graphics caches it builds from them. Only those cache folders are taken: cookies, history, saved passwords, bookmarks, open tabs, extensions and site data are never touched, so you stay signed in. Files modified in the last day are kept, and files Edge has open while it runs are skipped. Sites load a little slower the first time afterwards while the cache fills again."""
+category = "browser_cache"
+risk = "safe"
+include = ["*/Cache/**", "*/Code Cache/**", "*/GPUCache/**"]
+exclude = [
+    "*/Extensions",
+    "*/IndexedDB",
+    "*/Local Storage",
+    "*/Network",
+    "*/Service Worker",
+    "*/Sessions",
+    "*/Storage",
+]
+locked_by = ["msedge.exe"]
+
+[rule.root]
+location = "local_app_data"
+path = "Microsoft/Edge/User Data"
+
+[rule.constraints]
+min_age_days = 1
+max_depth = 4
+
+[[rule]]
+id = "brave-cache"
+title = "Brave cache"
+description = """
+Copies of web pages, pictures and scripts that Brave saved in each of its profiles so that sites load faster, plus the compiled code and graphics caches it builds from them. Only those cache folders are taken: cookies, history, saved passwords, bookmarks, open tabs, extensions and site data are never touched, so you stay signed in. Files modified in the last day are kept, and files Brave has open while it runs are skipped. Sites load a little slower the first time afterwards while the cache fills again."""
+category = "browser_cache"
+risk = "safe"
+include = ["*/Cache/**", "*/Code Cache/**", "*/GPUCache/**"]
+exclude = [
+    "*/Extensions",
+    "*/IndexedDB",
+    "*/Local Storage",
+    "*/Network",
+    "*/Service Worker",
+    "*/Sessions",
+    "*/Storage",
+]
+locked_by = ["brave.exe"]
+
+[rule.root]
+location = "local_app_data"
+path = "BraveSoftware/Brave-Browser/User Data"
+
+[rule.constraints]
+min_age_days = 1
+max_depth = 4
+
+[[rule]]
+id = "firefox-cache"
+title = "Firefox cache"
+description = """
+Copies of web pages, pictures and scripts that Firefox saved in the cache folder of each of its profiles so that sites load faster. Only the cache folder (cache2) is taken: cookies, history, saved logins, bookmarks, open tabs, extensions and site data live elsewhere and are never touched, so you stay signed in. Files modified in the last day are kept, and files Firefox has open while it runs are skipped. Sites load a little slower the first time afterwards while the cache fills again."""
+category = "browser_cache"
+risk = "safe"
+include = ["*/cache2/**"]
+exclude = ["*/storage", "*/extensions", "*/sessionstore-backups"]
+locked_by = ["firefox.exe"]
+
+[rule.root]
+location = "local_app_data"
+path = "Mozilla/Firefox/Profiles"
+
+[rule.constraints]
+min_age_days = 1
+max_depth = 4
+
 # ---- machine-wide: administrator rights needed --------------------------------------------------
 
 [[rule]]

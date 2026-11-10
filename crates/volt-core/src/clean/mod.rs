@@ -60,7 +60,7 @@ pub use rule::{
 };
 
 use crate::activity::ActivityLog;
-use crate::ports::FileSystem;
+use crate::ports::{FileSystem, Processes};
 use crate::settings::Settings;
 use crate::time::Clock;
 
@@ -104,6 +104,7 @@ pub struct CleanEngine {
     clock: Arc<dyn Clock>,
     activity: Option<Arc<dyn ActivityLog>>,
     settings: Option<Arc<dyn Settings>>,
+    processes: Option<Arc<dyn Processes>>,
     item_cap: usize,
 }
 
@@ -134,6 +135,7 @@ impl CleanEngine {
             clock,
             activity: None,
             settings: None,
+            processes: None,
             item_cap: MAX_ITEMS_PER_RULE,
         }
     }
@@ -155,6 +157,14 @@ impl CleanEngine {
     #[must_use]
     pub fn with_settings(mut self, settings: Arc<dyn Settings>) -> Self {
         self.settings = Some(settings);
+        self
+    }
+
+    /// Lets a scan report which programs that hold a rule's files open are
+    /// running ([`RuleScan::running_programs`]). Without it none is reported.
+    #[must_use]
+    pub fn with_processes(mut self, processes: Arc<dyn Processes>) -> Self {
+        self.processes = Some(processes);
         self
     }
 

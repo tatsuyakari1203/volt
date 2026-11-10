@@ -28,6 +28,7 @@ const RULE_KEYS: &[&str] = &[
     "constraints",
     "requires_admin",
     "min_age_setting",
+    "locked_by",
 ];
 const MAX_MIN_AGE_DAYS: u32 = 3650;
 const MAX_RELATIVE_COMPONENTS: usize = 16;
@@ -339,6 +340,7 @@ impl Reader<'_> {
             Some(value) => self.convert::<bool>(value, "requires_admin".to_owned()),
         };
         let min_age_setting = self.min_age_setting(table);
+        let locked_by = self.locked_by(table);
 
         if self.issues.len() > before {
             return None;
@@ -355,7 +357,46 @@ impl Reader<'_> {
             constraints: constraints?,
             requires_admin: requires_admin?,
             min_age_setting,
+            locked_by: locked_by?,
         })
+    }
+
+    /// The optional list of program names that hold the rule's files open.
+    /// `None` after a reported problem.
+    fn locked_by(&mut self, table: &Table) -> Option<Vec<String>> {
+        let Some(value) = table.get("locked_by") else {
+            return Some(Vec::new());
+        };
+        let Some(items) = value.as_array() else {
+            self.report(
+                "locked_by".to_owned(),
+                RuleIssueKind::Invalid("must be an array of strings".to_owned()),
+            );
+            return None;
+        };
+        let mut names = Vec::with_capacity(items.len());
+        let mut ok = true;
+        for (index, item) in items.iter().enumerate() {
+            let field = format!("locked_by[{index}]");
+            match item.as_str().map(str::to_lowercase) {
+                Some(name) if is_program_name(&name) => names.push(name),
+                Some(_) => {
+                    self.report(
+                        field,
+                        RuleIssueKind::Malformed(
+                            "must be an executable file name such as `chrome.exe`, with no folder"
+                                .to_owned(),
+                        ),
+                    );
+                    ok = false;
+                }
+                None => {
+                    self.report(field, RuleIssueKind::Invalid("must be a string".to_owned()));
+                    ok = false;
+                }
+            }
+        }
+        ok.then_some(names)
     }
 
     /// The optional settings key that overrides the minimum age. `None` when
@@ -658,6 +699,17 @@ fn is_setting_key(key: &str) -> bool {
             let mut chars = word.chars();
             chars.next().is_some_and(|c| c.is_ascii_lowercase())
                 && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        })
+}
+
+/// Whether `name` is a plain executable file name (`chrome.exe`).
+fn is_program_name(name: &str) -> bool {
+    name.len() <= 64
+        && name.strip_suffix(".exe").is_some_and(|stem| {
+            !stem.is_empty()
+                && stem
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ' '))
         })
 }
 
