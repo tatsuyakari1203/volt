@@ -3,7 +3,7 @@ id: doc-003
 title: Architecture
 type: specification
 created_date: '2026-11-10T03:01:00Z'
-updated_date: '2026-11-10T03:43:00Z'
+updated_date: '2026-11-10T04:06:00Z'
 ---
 Volt follows a ports-and-adapters layout so that the rules about *what* to change on a system are
 separate from the code that *does* it. That separation is what makes a system-modifying tool
@@ -97,6 +97,19 @@ Still to be built:
   `reconcile_pending`. For each entry left pending by a crash: if the system state equals the prior
   state, the change was never applied and the entry is marked Failed; if it equals the target, the
   entry is marked Applied and stays undoable; otherwise it is marked Failed as unknown.
+
+## Windows adapters
+
+`volt-win` implements the registry, services and file system ports with the Windows API:
+`WinRegistry`, `WinServices` and `WinFileSystem`.
+
+- File deletion goes to the Recycle Bin through `IFileOperation`. There is no permanent-delete
+  fallback: if the Recycle Bin cannot take a file, the deletion fails.
+- `move_to_trash` takes a root. It refuses paths outside that root and anything whose path
+  traverses a reparse point (junction or symlink).
+- Tests are confined to `HKCU\Software\VoltTest` and temp directories.
+- Changing a real service's start type is deliberately not covered by an automated test, because
+  it would change the machine running the tests.
 
 ## Process and elevation model
 

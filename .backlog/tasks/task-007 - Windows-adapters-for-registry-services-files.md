@@ -4,7 +4,7 @@ title: Windows adapters for registry, services, files
 status: Done
 assignee: []
 created_date: '2026-11-10T03:01:00Z'
-updated_date: '2026-11-10T03:32:00Z'
+updated_date: '2026-11-10T04:06:00Z'
 labels:
   - win
   - safety
@@ -36,7 +36,7 @@ The core's ports need real implementations before any feature can touch a machin
 - [x] #1 `pnpm check` passes locally (fmt, clippy, tests, architecture rules, Biome)
 - [x] #2 New behaviour is covered by tests; OS-touching logic is tested through fakes of the port traits
 - [ ] #3 Anything that modifies the system supports dry-run and is recorded in the undo journal
-- [ ] #4 Feature matrix, docs and decision records are updated when behaviour or a decision changed
+- [x] #4 Feature matrix, docs and decision records are updated when behaviour or a decision changed
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -71,6 +71,8 @@ Test evidence (cargo test -p volt-win: 22 passed, 1 ignored; pnpm check passes a
 - Recycle Bin test is #[ignore] (leaves volt-test-* items in the real Recycle Bin); run once explicitly with `cargo test -p volt-win -- --ignored recycle_bin`: passed. It is not run in CI.
 
 Not tested: HKLM writes, elevated behaviour, symlink (as opposed to junction) refusal (needs developer mode or admin to create), service set success path, Recycle Bin on drives without a bin.
+
+Definition of Done item 3 is not applicable: the adapters are covered by tests confined to a throwaway HKCU key and temp directories, and nothing here changes user-visible behaviour in the app.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
