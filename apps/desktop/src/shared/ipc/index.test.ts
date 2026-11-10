@@ -1,6 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { commands } from './bindings';
-import { describeIpcError, getAppInfo, IpcCommandError, type IpcError, onAppReady } from './index';
+import {
+  describeIpcError,
+  getAppInfo,
+  getAutostartEnabled,
+  IpcCommandError,
+  type IpcError,
+  onAppReady,
+  onTrayBoostRequested,
+  setAutostartEnabled,
+} from './index';
 
 // Mock only the Tauri runtime, so the generated bindings and our wrapper run for real.
 const { invoke, listen } = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn() }));
@@ -73,6 +82,41 @@ describe('app-ready event', () => {
     const callback = listen.mock.calls[0]?.[1] as (event: { payload: unknown }) => void;
     callback({ payload: { name: 'Volt', version: '1.2.3' } });
     expect(handler).toHaveBeenCalledWith({ name: 'Volt', version: '1.2.3' });
+    expect(stop).toBe(unlisten);
+  });
+});
+
+describe('autostart commands', () => {
+  it('reads the state through the generated binding', async () => {
+    invoke.mockResolvedValue(true);
+    await expect(getAutostartEnabled()).resolves.toBe(true);
+    expect(invoke).toHaveBeenCalledWith('autostart_enabled');
+  });
+
+  it('sets the state and resolves with what the shell reports back', async () => {
+    invoke.mockResolvedValue(false);
+    await expect(setAutostartEnabled(true)).resolves.toBe(false);
+    expect(invoke).toHaveBeenCalledWith('set_autostart', { enabled: true });
+  });
+
+  it('rejects with the typed error when the shell cannot change it', async () => {
+    invoke.mockRejectedValue({ kind: 'other', message: 'registry unavailable' });
+    const failure = await setAutostartEnabled(true).catch((e: unknown) => e);
+    expect(failure).toBeInstanceOf(IpcCommandError);
+  });
+});
+
+describe('tray boost event', () => {
+  it('subscribes to the generated event name and calls the handler', async () => {
+    const unlisten = vi.fn();
+    listen.mockResolvedValue(unlisten);
+    const handler = vi.fn();
+
+    const stop = await onTrayBoostRequested(handler);
+    expect(listen).toHaveBeenCalledWith('tray-boost-requested', expect.any(Function));
+    const callback = listen.mock.calls[0]?.[1] as (event: { payload: unknown }) => void;
+    callback({ payload: null });
+    expect(handler).toHaveBeenCalledTimes(1);
     expect(stop).toBe(unlisten);
   });
 });

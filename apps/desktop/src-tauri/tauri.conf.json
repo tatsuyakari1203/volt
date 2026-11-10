@@ -12,6 +12,7 @@
     "windows": [
       {
         "label": "main",
+        "create": false,
         "title": "Volt",
         "width": 460,
         "height": 700,

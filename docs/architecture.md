@@ -136,13 +136,82 @@ Still to be built:
 
 ## Process and elevation model
 
-Not decided yet. The proposal, to be confirmed by a prototype before code depends on it: one
-elevated process that is both the tray agent and the Tauri host. The window and its WebView are
-created on demand and destroyed when hidden, so idle memory stays low. Start-with-Windows uses a
-scheduled task with highest privileges to avoid a UAC prompt at every login.
+The elevation model is not decided yet. The proposal, to be confirmed by a prototype before code
+depends on it: one elevated process that is both the tray agent and the Tauri host. The
+alternative, an unelevated UI talking to an elevated helper over a named pipe, has a smaller
+attack surface but costs an IPC protocol and a second binary. Everything below works unelevated
+and does not depend on that decision, except where it says so.
 
-The alternative, an unelevated UI talking to an elevated helper over a named pipe, has a smaller
-attack surface but costs an IPC protocol and a second binary.
+### Window lifecycle and tray
+
+Volt keeps very little memory while idle because the window and its WebView exist only while
+someone is looking at them. The code is in `apps/desktop/src-tauri/src`: `window.rs`, `tray.rs`
+and `autostart.rs`.
+
+- **On-demand window.** The `main` window stays declared in `tauri.conf.json` (460 x 700, minimum
+  420 x 600) with `create: false`, so Tauri does not build it at start-up. `open_main_window`
+  builds it from that declaration, or focuses it (restoring it first when hidden or minimised)
+  when it exists. The create-or-focus decision (`decide_open`) is a pure function. Open requests
+  are serialised and run on a worker thread, because building a window from inside a tray or
+  plugin callback on the main thread can deadlock on Windows.
+- **Closing destroys the WebView.** The close button destroys the window and its WebView. Tauri
+  then asks the process to exit because the last window is gone; `window::keep_running` refuses
+  that request (only requests without an exit code, so Quit, which exits with code 0, still
+  works). The process and the tray icon stay.
+- **Tray.** One icon with the menu Open, Boost and Quit. A left click (on release) opens or
+  focuses the window; the menu is on the right click. The menu id to action mapping
+  (`TrayAction`) is a pure function. **Boost has no engine yet:** it opens the window, which
+  starts on Home (a window that is already open is moved to Home by the UI), and emits the typed
+  event `TrayBoostRequested` for a later task to consume. It calls no memory purge. When the
+  window had to be created, the event is held until the page has loaded; it is best effort until
+  a pull command exists, because the UI registers its listener asynchronously.
+- **Single instance.** `tauri-plugin-single-instance` is registered before every other plugin. A
+  second launch focuses (or recreates) the window of the first instance and exits.
+- **Launch mode.** A launch with `--background` (what the Start with Windows entry passes) does
+  not open a window and stays in the tray; any other launch opens the window.
+- **Capabilities.** Both plugins are driven from Rust only, so no plugin permission is granted
+  and the default capability is unchanged. The plugins' own JavaScript commands are therefore
+  unreachable from the UI.
+
+### Start with Windows
+
+Optional and off by default. It is exposed as two typed commands, `autostart_enabled` and
+`set_autostart` (which returns the state read back afterwards), and a switch in Settings.
+
+- **Unelevated path only.** `tauri-plugin-autostart` writes a per-user entry under
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. It needs no administrator rights and
+  shows no UAC prompt. The entry carries `--background`.
+- **Port and fake.** The logic sits behind the small `Autostart` trait; `set_state` only touches
+  the registration when it differs from the request and reports the state read back. Unit tests
+  run against an in-memory fake. Only the plugin adapter writes the Run key, and no test or
+  script may call it on a developer machine.
+- **If Volt runs elevated, this entry no longer works.** Windows does not start an elevated
+  program from the Run key without a UAC prompt at every sign-in. An elevated build would need a
+  scheduled task with highest privileges instead, created by an elevated helper; that replaces
+  the adapter behind the same trait and is part of the elevation decision.
+- **Known limit.** The registration is found by name, so an entry written by another build of
+  Volt (for example a development build) counts as enabled.
+
+### Idle memory
+
+Measured on 2026-11-10 on the development machine (Windows 11, WebView2 runtime installed). Method:
+`pnpm tauri build --no-bundle` (release profile, no installer); start `volt-desktop.exe`; wait 15
+seconds with the window open and record the private working set (the `Working Set - Private`
+performance counter) of `volt-desktop.exe` and of every descendant `msedgewebview2.exe` process; close the
+window with `CloseMainWindow`; wait 30 seconds and record again. A second launch of the exe then
+recreated the window and the same close and measure was repeated (10 second wait).
+
+| State                                | `volt-desktop.exe` | WebView2 processes   | Total   |
+| ------------------------------------ | ------------------ | -------------------- | ------- |
+| Window open (Home), 15 s after start | 3.8 MB             | 6 processes, 81.2 MB | 85.0 MB |
+| Window closed, 30 s after close      | 3.8 MB             | none                 | 3.8 MB  |
+| Window recreated by a second launch  | 3.9 MB             | 6 processes, 71.9 MB | 75.8 MB |
+| Closed again, 10 s after close       | 3.9 MB             | none                 | 3.9 MB  |
+
+With the window closed no `msedgewebview2.exe` child of Volt remains, so the WebView is really
+destroyed, not hidden. The measurement shares the machine with other builds and applications, so
+treat the figures as an order of magnitude, not a benchmark. Memory shared between processes is
+not counted in a private working set.
 
 ## Frontend
 
@@ -155,6 +224,11 @@ attack surface but costs an IPC protocol and a second binary.
   is composed by `src/App.tsx`. It sits on top of both `features` and `shared`; nothing else may
   import from it, and the same boundary rule enforces that. Navigation is plain local state, with
   no router.
+- `features/settings` holds the Start with Windows switch (`StartupSettings`, built from the shared
+  Switch and ListRow); `SettingsScreen` mounts it. The switch reads and writes through the typed
+  commands and shows the state the shell reports back, not the state that was asked for.
+- The shell listens for the typed `tray-boost-requested` event and shows Home, so the tray's Boost
+  item lands on Home even when the window is already open on another section.
 - The UI holds no business rules: it renders plans and results produced by the core.
 - **Typed IPC.** The Rust shell registers every command, event and transfer type in one place
   (`apps/desktop/src-tauri/src/ipc.rs`, `bindings_builder`). `tauri-specta` generates the invoke
@@ -175,6 +249,8 @@ attack surface but costs an IPC protocol and a second binary.
     and switches on `kind`; the wrapper throws `IpcCommandError` carrying the typed value.
   - **Events.** Events are structs deriving `tauri_specta::Event` and registered in
     `bindings_builder`; the sample is `AppReady(AppInfo)`, listened to as `events.appReady`.
+    `TrayBoostRequested` (`events.trayBoostRequested`, payload `null`) is sent when the user
+    picks Boost in the tray menu.
   - **64-bit integers.** `specta-typescript` refuses to export `u64`/`i64` by default because
     JavaScript numbers lose precision above 2^53. A type that exposes one fails the export (and
     so the gate) until it is given an explicit representation, for example a decimal string.

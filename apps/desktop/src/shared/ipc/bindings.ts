@@ -21,6 +21,29 @@ async appInfo() : Promise<Result<AppInfo, IpcError>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Tauri command: whether Volt starts with Windows. Reads the Run key, changes nothing.
+ */
+async autostartEnabled() : Promise<Result<boolean, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("autostart_enabled") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: turns Volt starting with Windows on or off and returns the resulting state.
+ * Per-user, so it never asks for elevation.
+ */
+async setAutostart(enabled: boolean) : Promise<Result<boolean, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_autostart", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -28,9 +51,11 @@ async appInfo() : Promise<Result<AppInfo, IpcError>> {
 
 
 export const events = __makeEvents__<{
-appReady: AppReady
+appReady: AppReady,
+trayBoostRequested: TrayBoostRequested
 }>({
-appReady: "app-ready"
+appReady: "app-ready",
+trayBoostRequested: "tray-boost-requested"
 })
 
 /** user-defined constants **/
@@ -85,6 +110,15 @@ export type IpcError =
  * Any other failure.
  */
 { kind: "other"; message: string }
+/**
+ * Event emitted when the user picks Boost in the tray menu, after the window is open on Home.
+ * 
+ * Boost has no engine yet; a later task listens to this event and starts the real work. When
+ * the window had to be created, the event is sent once its page has loaded, so a listener
+ * registered at start-up sees it, but registration is asynchronous: treat it as best effort
+ * until a pull command exists.
+ */
+export type TrayBoostRequested = null
 
 /** tauri-specta globals **/
 

@@ -96,8 +96,12 @@ pub struct AppReady(pub AppInfo);
 #[must_use]
 pub fn bindings_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new()
-        .commands(collect_commands![crate::app_info])
-        .events(collect_events![AppReady])
+        .commands(collect_commands![
+            crate::app_info,
+            crate::autostart::autostart_enabled,
+            crate::autostart::set_autostart,
+        ])
+        .events(collect_events![AppReady, crate::TrayBoostRequested])
         .typ::<IpcError>()
 }
 

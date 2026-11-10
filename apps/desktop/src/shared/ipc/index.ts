@@ -64,3 +64,22 @@ export async function getAppInfo(): Promise<AppInfo> {
 export function onAppReady(handler: (info: AppReady) => void): Promise<() => void> {
   return events.appReady.listen((event) => handler(event.payload));
 }
+
+/** Whether Volt is registered to start with Windows (per-user, unelevated). */
+export async function getAutostartEnabled(): Promise<boolean> {
+  return unwrap(await commands.autostartEnabled());
+}
+
+/** Turns start with Windows on or off. Resolves with the state that is true afterwards. */
+export async function setAutostartEnabled(enabled: boolean): Promise<boolean> {
+  return unwrap(await commands.setAutostart(enabled));
+}
+
+/**
+ * Calls `handler` each time the user picks Boost in the tray menu. Boost has no engine yet, so
+ * today the shell only brings the window to Home; a later task starts the real work here.
+ * Returns the unlisten function.
+ */
+export function onTrayBoostRequested(handler: () => void): Promise<() => void> {
+  return events.trayBoostRequested.listen(() => handler());
+}
