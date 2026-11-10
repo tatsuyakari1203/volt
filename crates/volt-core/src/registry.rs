@@ -224,6 +224,29 @@ pub trait Registry: Send + Sync {
     /// never deleted.
     fn delete_value(&self, target: &RegistryValueRef) -> Result<(), PortError>;
 
+    /// Lists the names of the keys directly below `key`, sorted by name ignoring case. Read-only.
+    /// A missing key is `Ok` with an empty list.
+    ///
+    /// The default answers [`PortError::Unsupported`].
+    fn list_subkeys(&self, key: &RegistryKeyRef) -> Result<Vec<String>, PortError> {
+        Err(PortError::Unsupported(format!(
+            "listing the subkeys of {key}"
+        )))
+    }
+
+    /// Creates a key and any missing parents. A key that exists is left as it is. Single and
+    /// atomic. The default answers [`PortError::Unsupported`].
+    fn create_key(&self, key: &RegistryKeyRef) -> Result<(), PortError> {
+        Err(PortError::Unsupported(format!("creating {key}")))
+    }
+
+    /// Deletes a key together with the values in it. A missing key is [`PortError::NotFound`]; a
+    /// key that has subkeys is refused and nothing is deleted. The default answers
+    /// [`PortError::Unsupported`].
+    fn delete_key(&self, key: &RegistryKeyRef) -> Result<(), PortError> {
+        Err(PortError::Unsupported(format!("deleting {key}")))
+    }
+
     /// Whether a key exists, read-only. Some Windows markers are keys with no value in them
     /// (such as the pending-restart keys), so they cannot be tested with
     /// [`read_value`](Self::read_value). A key the caller may not open still exists: an adapter
@@ -235,4 +258,113 @@ pub trait Registry: Send + Sync {
         subkey: &str,
         view: RegistryView,
     ) -> Result<bool, PortError>;
+}
+
+/// Most values a key may hold for Volt to record it before deleting it.
+pub const MAX_RECORDED_VALUES: usize = 64;
+
+/// Most bytes of value data (strings counted in UTF-8, binary as it is) Volt records for a key.
+pub const MAX_RECORDED_BYTES: usize = 64 * 1024;
+
+/// What a key held when it was read: everything Volt needs to put it back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegistryKeyContents {
+    /// The values directly in the key, by name (empty for the default value), sorted by name.
+    pub values: Vec<(String, RegistryValue)>,
+    /// `false` when the key holds more than `values` shows: it has subkeys, a value the model
+    /// does not cover, or more data than Volt records. Such a key is never deleted.
+    pub complete: bool,
+}
+
+impl RegistryKeyContents {
+    /// Whether the key holds nothing at all: no values and no subkeys.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.complete && self.values.is_empty()
+    }
+}
+
+fn value_bytes(value: &RegistryValue) -> usize {
+    match value {
+        RegistryValue::Dword(_) => 4,
+        RegistryValue::Qword(_) => 8,
+        RegistryValue::Sz(v) | RegistryValue::ExpandSz(v) => v.len(),
+        RegistryValue::MultiSz(v) => v.iter().map(String::len).sum(),
+        RegistryValue::Binary(v) => v.len(),
+    }
+}
+
+/// Reads a key with its values; `None` when it does not exist.
+pub(crate) fn read_key_contents(
+    registry: &dyn Registry,
+    key: &RegistryKeyRef,
+) -> Result<Option<RegistryKeyContents>, PortError> {
+    if !registry.key_exists(key.hive, &key.subkey, key.view)? {
+        return Ok(None);
+    }
+    let mut complete = registry.list_subkeys(key)?.is_empty();
+    let mut values = Vec::new();
+    let mut bytes = 0_usize;
+    for named in registry.list_values(key)? {
+        let Ok(value) = named.value else {
+            complete = false;
+            continue;
+        };
+        bytes = bytes.saturating_add(value_bytes(&value));
+        if values.len() >= MAX_RECORDED_VALUES || bytes > MAX_RECORDED_BYTES {
+            // Too much to record: stop collecting, the key is not complete.
+            complete = false;
+            break;
+        }
+        values.push((named.name, value));
+    }
+    Ok(Some(RegistryKeyContents { values, complete }))
+}
+
+/// How many levels of `key`'s path do not exist yet, counted from the key itself upwards: `0`
+/// when the key exists. Writing a value or creating the key creates exactly these.
+pub(crate) fn missing_levels(
+    registry: &dyn Registry,
+    key: &RegistryKeyRef,
+) -> Result<u32, PortError> {
+    let mut missing = 0;
+    let mut path = key.subkey.as_str();
+    while !path.is_empty() && !registry.key_exists(key.hive, path, key.view)? {
+        missing += 1;
+        path = parent_path(path);
+    }
+    Ok(missing)
+}
+
+/// Removes `key` and then up to `levels - 1` of its parents, each only while it holds nothing:
+/// no value and no subkey. A key that is already gone is skipped. Stops at the first key that
+/// holds something, which then is not Volt's to remove.
+pub(crate) fn remove_empty_keys(
+    registry: &dyn Registry,
+    key: &RegistryKeyRef,
+    levels: u32,
+) -> Result<(), PortError> {
+    let mut path = key.subkey.as_str();
+    for _ in 0..levels {
+        if path.is_empty() {
+            break;
+        }
+        let current = RegistryKeyRef::new(key.hive, path, key.view);
+        if let Some(contents) = read_key_contents(registry, &current)? {
+            if !contents.is_empty() {
+                break;
+            }
+            match registry.delete_key(&current) {
+                Ok(()) | Err(PortError::NotFound(_)) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        path = parent_path(path);
+    }
+    Ok(())
+}
+
+/// The path one level up; empty for a top-level key.
+fn parent_path(path: &str) -> &str {
+    path.rsplit_once('\\').map_or("", |(parent, _)| parent)
 }

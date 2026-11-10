@@ -8,7 +8,7 @@ use crate::label::{Evidence, Risk};
 use crate::operation::{Operation, PriorState};
 use crate::plan::{OperationRequest, Plan};
 use crate::ports::Services;
-use crate::registry::{RegistryHive, RegistryValue, RegistryValueRef};
+use crate::registry::{Registry, RegistryHive, RegistryValue, RegistryValueRef, RegistryView};
 use crate::service::ServiceStartType;
 use crate::time::Timestamp;
 
@@ -624,9 +624,10 @@ fn reverting_a_value_that_did_not_exist_deletes_it() {
         .apply(&plan, Source::Manual)
         .expect("batch is created");
     let id = applied_entry(&report, 0);
+    // Neither the value nor its key existed, so the journal says the apply created the keys.
     assert_eq!(
         system.journal.entries()[0].prior,
-        PriorState::RegistryValue(None)
+        PriorState::RegistryValueInNewKey { missing_levels: 3 }
     );
     assert_eq!(
         system.registry.get(&value_ref("New")),
@@ -636,6 +637,20 @@ fn reverting_a_value_that_did_not_exist_deletes_it() {
     executor
         .revert_entry(id, Source::Manual, None)
         .expect("revert succeeds");
+    // The keys the apply created are gone again, not left behind empty.
+    for subkey in [
+        r"SOFTWARE\VoltTest\Tweaks",
+        r"SOFTWARE\VoltTest",
+        "SOFTWARE",
+    ] {
+        assert_eq!(
+            system
+                .registry
+                .key_exists(RegistryHive::LocalMachine, subkey, RegistryView::Native),
+            Ok(false),
+            "{subkey}"
+        );
+    }
 
     assert_eq!(
         system.registry.get(&value_ref("New")),

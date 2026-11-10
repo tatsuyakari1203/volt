@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::PortError;
 use crate::operation::{Operation, PriorState};
-use crate::registry::RegistryValueRef;
+use crate::registry::{RegistryKeyRef, RegistryValueRef};
 use crate::time::Timestamp;
 
 /// Identifier of a journal entry, assigned by the journal.
@@ -145,6 +145,7 @@ pub trait Journal: Send + Sync {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Target {
     Registry(RegistryValueRef),
+    Key(RegistryKeyRef),
     Service(String),
 }
 
@@ -152,6 +153,9 @@ fn target_of(operation: &Operation) -> Option<Target> {
     match operation {
         Operation::SetRegistryValue { target, .. } | Operation::DeleteRegistryValue { target } => {
             Some(Target::Registry(target.clone()))
+        }
+        Operation::EnsureRegistryKey { key } | Operation::DeleteRegistryKey { key } => {
+            Some(Target::Key(key.clone()))
         }
         Operation::SetServiceStartType { service, .. } => {
             Some(Target::Service(service.to_lowercase()))

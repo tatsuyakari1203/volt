@@ -248,7 +248,13 @@ pub fn redacted_value(value: &RegistryValue) -> String {
 pub fn redacted_prior(prior: &PriorState) -> String {
     match prior {
         PriorState::RegistryValue(Some(value)) => redacted_value(value),
-        PriorState::RegistryValue(None) => "(not set)".to_owned(),
+        PriorState::RegistryValue(None) | PriorState::RegistryValueInNewKey { .. } => {
+            "(not set)".to_owned()
+        }
+        PriorState::RegistryKeyMissing { .. } => "key missing".to_owned(),
+        PriorState::RegistryKeyPresent(contents) => {
+            format!("key exists ({} values)", contents.values.len())
+        }
         PriorState::ServiceStartType(start_type) => start_type.to_string(),
         PriorState::CommandState(true) => "applied".to_owned(),
         PriorState::CommandState(false) => "not applied".to_owned(),
@@ -263,6 +269,12 @@ pub fn restore_words(prior: &PriorState) -> String {
     match prior {
         PriorState::RegistryValue(Some(value)) => format!("set back to {}", redacted_value(value)),
         PriorState::RegistryValue(None) => "removed (it did not exist before)".to_owned(),
+        PriorState::RegistryValueInNewKey { .. } | PriorState::RegistryKeyMissing { .. } => {
+            "removed, with its empty parent keys (it did not exist before)".to_owned()
+        }
+        PriorState::RegistryKeyPresent(contents) => {
+            format!("put back with {} values", contents.values.len())
+        }
         PriorState::ServiceStartType(start_type) => format!("set back to {start_type}"),
         PriorState::CommandState(true) => "put back to in effect".to_owned(),
         PriorState::CommandState(false) => "put back to not in effect".to_owned(),
@@ -293,6 +305,9 @@ pub fn subject(operation: &Operation) -> String {
                 None => format!("registry value {target}"),
             }
         }
+        Operation::EnsureRegistryKey { key } | Operation::DeleteRegistryKey { key } => {
+            format!("registry key {key}")
+        }
         Operation::SetServiceStartType { service, .. } => {
             format!("service {service} start type")
         }
@@ -311,6 +326,8 @@ pub(crate) fn applied_summary(operation: &Operation) -> String {
             format!("Applied {subject} = {}", redacted_value(value))
         }
         Operation::DeleteRegistryValue { .. } => format!("Applied {subject} = (not set)"),
+        Operation::EnsureRegistryKey { .. } => format!("Applied {subject} = exists"),
+        Operation::DeleteRegistryKey { .. } => format!("Applied {subject} = removed"),
         Operation::SetServiceStartType { start_type, .. } => {
             format!("Applied {subject} = {start_type}")
         }
@@ -365,10 +382,8 @@ fn startup_restored_summary(
         return None;
     };
     let name = approved_entry_name(target)?;
-    let PriorState::RegistryValue(previous) = prior else {
-        return None;
-    };
-    let now = match previous.as_ref().map(decode_approval) {
+    let previous = prior.registry_value()?;
+    let now = match previous.map(decode_approval) {
         // No record means Windows starts the entry.
         None | Some(Some(StartupState::Enabled)) => "is enabled again",
         Some(Some(StartupState::Disabled)) => "is disabled again",
@@ -407,10 +422,8 @@ fn startup_prior_words(operation: &Operation, prior: &PriorState) -> Option<&'st
         return None;
     };
     approved_entry_name(target)?;
-    let PriorState::RegistryValue(previous) = prior else {
-        return None;
-    };
-    match previous.as_ref().map(decode_approval) {
+    let previous = prior.registry_value()?;
+    match previous.map(decode_approval) {
         None => Some("enabled (it had no record)"),
         Some(Some(StartupState::Enabled)) => Some("enabled"),
         Some(Some(StartupState::Disabled)) => Some("disabled"),

@@ -456,8 +456,8 @@ export function TweaksScreen() {
               <>
                 <p className="font-semibold">Volt will write instead</p>
                 <p className="text-caption text-muted">
-                  It removes these values so Windows uses its own default. The Undo page can bring
-                  them back.
+                  It puts these back to the Windows default: a value is written back or removed and
+                  a key is deleted. The Undo page can bring them back.
                 </p>
                 <StepList label="Changes" steps={confirming.plan.plan.reset} />
               </>

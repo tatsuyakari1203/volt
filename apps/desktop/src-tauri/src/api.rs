@@ -641,7 +641,8 @@ pub fn get_tweak_plan(core: &AppCore, id: &str) -> Result<TweakPlanView, IpcErro
     })
 }
 
-/// Turns off a tweak Volt did not apply by removing the registry values it sets. Journaled.
+/// Turns off a tweak Volt did not apply by putting each step back to its Windows default.
+/// Journaled. Refused for a tweak Volt applied itself: undo is the way back for that one.
 pub fn reset_tweak(core: &AppCore, id: &str) -> Result<RevertResult, IpcError> {
     let _exclusive = core.exclusive();
     let failures_before = core.engine.activity_write_failures();

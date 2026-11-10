@@ -15,6 +15,10 @@
 #     needs `requires_admin = true`: the engine then refuses it before touching anything.
 #   - `restart` says what is needed before the change is complete: "sign_out", "reboot" or, by
 #     default, nothing.
+#   - `off` is what the step goes back to when the tweak was set outside Volt and is turned off
+#     (the Windows default). Declare it only when the default is certain: a registry_set step
+#     without it is reset by removing the value, which is how Windows behaves for a value it does
+#     not write by default. A tweak applied by Volt is undone from the journal instead.
 #
 # The sections are Appearance, Performance and Privacy, in that order.
 
@@ -36,6 +40,7 @@ hive = "HKCU"
 subkey = 'Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
 name = "HideFileExt"
 value = { dword = 0 }
+off = { dword = 1 }
 
 [[tweak]]
 id = "show-hidden-files"
@@ -53,6 +58,7 @@ hive = "HKCU"
 subkey = 'Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
 name = "Hidden"
 value = { dword = 1 }
+off = { dword = 2 }
 
 [[tweak]]
 id = "open-explorer-to-this-pc"
@@ -104,6 +110,7 @@ hive = "HKCU"
 subkey = 'Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
 name = "TaskbarAl"
 value = { dword = 0 }
+off = { dword = 1 }
 
 [[tweak]]
 id = "hide-task-view-button"
@@ -121,6 +128,7 @@ hive = "HKCU"
 subkey = 'Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
 name = "ShowTaskViewButton"
 value = { dword = 0 }
+off = { dword = 1 }
 
 [[tweak]]
 id = "hide-taskbar-search-box"
@@ -155,6 +163,7 @@ hive = "HKCU"
 subkey = 'Software\Microsoft\Windows\CurrentVersion\Themes\Personalize'
 name = "AppsUseLightTheme"
 value = { dword = 0 }
+off = { dword = 1 }
 
 [[tweak.steps]]
 kind = "registry_set"
@@ -162,6 +171,7 @@ hive = "HKCU"
 subkey = 'Software\Microsoft\Windows\CurrentVersion\Themes\Personalize'
 name = "SystemUsesLightTheme"
 value = { dword = 0 }
+off = { dword = 1 }
 
 [[tweak]]
 id = "compact-explorer-view"
@@ -196,6 +206,7 @@ hive = "HKCU"
 subkey = 'Software\Microsoft\Windows\CurrentVersion\Themes\Personalize'
 name = "EnableTransparency"
 value = { dword = 0 }
+off = { dword = 1 }
 
 [[tweak]]
 id = "turn-off-window-animations"
@@ -213,6 +224,30 @@ hive = "HKCU"
 subkey = 'Control Panel\Desktop\WindowMetrics'
 name = "MinAnimate"
 value = { sz = "0" }
+off = { sz = "1" }
+
+[[tweak]]
+id = "classic-context-menu"
+title = "Use the classic right-click menu"
+description = "Brings back the full Windows 10 right-click menu in File Explorer and on the desktop, with every command shown at once instead of behind Show more options. Only the style of the menu changes; no command is removed. Restart File Explorer, or sign out and back in, for it to apply."
+category = "appearance"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "Windows 11 falls back to the classic menu when the per-user InprocServer32 key of the shell component {86ca1aa0-34aa-4e8b-a509-50c905bae2a2} exists with an empty default value. Widely verified by Windows users, but not documented by Microsoft, so a Windows update may stop it working. A preference, not a speed-up."
+restart = "sign_out"
+
+[[tweak.steps]]
+kind = "registry_key"
+hive = "HKCU"
+subkey = 'Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32'
+exists = true
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32'
+name = ""
+value = { sz = "" }
 
 # ==== Performance ==========================================================================
 
@@ -232,6 +267,7 @@ hive = "HKCU"
 subkey = 'Control Panel\Desktop'
 name = "MenuShowDelay"
 value = { sz = "0" }
+off = { sz = "400" }
 
 [[tweak]]
 id = "end-hung-apps-faster"
@@ -249,6 +285,7 @@ hive = "HKCU"
 subkey = 'Control Panel\Desktop'
 name = "HungAppTimeout"
 value = { sz = "3000" }
+off = { sz = "5000" }
 
 [[tweak.steps]]
 kind = "registry_set"
@@ -256,6 +293,7 @@ hive = "HKCU"
 subkey = 'Control Panel\Desktop'
 name = "WaitToKillAppTimeout"
 value = { sz = "3000" }
+off = { sz = "5000" }
 
 [[tweak]]
 id = "turn-off-game-recording"
@@ -273,6 +311,7 @@ hive = "HKCU"
 subkey = 'Software\Microsoft\Windows\CurrentVersion\GameDVR'
 name = "HistoricalCaptureEnabled"
 value = { dword = 0 }
+off = { dword = 1 }
 
 [[tweak]]
 id = "stop-edge-background-start"
@@ -314,6 +353,7 @@ requires_admin = true
 kind = "service"
 service = "WSearch"
 start_type = "disabled"
+off = "automatic_delayed"
 
 [[tweak]]
 id = "turn-off-fast-startup"
@@ -332,6 +372,7 @@ hive = "HKLM"
 subkey = 'SYSTEM\CurrentControlSet\Control\Session Manager\Power'
 name = "HiberbootEnabled"
 value = { dword = 0 }
+off = { dword = 1 }
 
 [[tweak]]
 id = "stop-sharing-updates-with-other-pcs"
@@ -369,6 +410,7 @@ hive = "HKCU"
 subkey = 'Software\Microsoft\Windows\CurrentVersion\AdvertisingInfo'
 name = "Enabled"
 value = { dword = 0 }
+off = { dword = 1 }
 
 [[tweak]]
 id = "turn-off-tailored-experiences"
@@ -403,6 +445,7 @@ hive = "HKCU"
 subkey = 'Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
 name = "Start_IrisRecommendations"
 value = { dword = 0 }
+off = { dword = 1 }
 
 [[tweak]]
 id = "turn-off-settings-suggestions"
@@ -506,6 +549,7 @@ hive = "HKCU"
 subkey = 'Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
 name = "Start_TrackProgs"
 value = { dword = 0 }
+off = { dword = 1 }
 
 [[tweak]]
 id = "hide-language-list-from-websites"
@@ -540,6 +584,7 @@ hive = "HKCU"
 subkey = 'Software\Microsoft\Windows\CurrentVersion\SearchSettings'
 name = "IsDynamicSearchBoxEnabled"
 value = { dword = 0 }
+off = { dword = 1 }
 
 [[tweak]]
 id = "turn-off-web-results-in-search"
@@ -591,6 +636,7 @@ hive = "HKCU"
 subkey = 'Software\Microsoft\Windows\CurrentVersion\Explorer'
 name = "ShowRecent"
 value = { dword = 0 }
+off = { dword = 1 }
 
 [[tweak.steps]]
 kind = "registry_set"
@@ -598,6 +644,7 @@ hive = "HKCU"
 subkey = 'Software\Microsoft\Windows\CurrentVersion\Explorer'
 name = "ShowFrequent"
 value = { dword = 0 }
+off = { dword = 1 }
 
 [[tweak]]
 id = "stop-inking-typing-data"

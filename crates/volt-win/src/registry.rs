@@ -10,10 +10,11 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::System::Registry::{
     HKEY, HKEY_CLASSES_ROOT, HKEY_CURRENT_CONFIG, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE,
-    HKEY_USERS, KEY_QUERY_VALUE, KEY_SET_VALUE, KEY_WOW64_32KEY, KEY_WOW64_64KEY, REG_BINARY,
-    REG_DWORD, REG_EXPAND_SZ, REG_MULTI_SZ, REG_OPTION_NON_VOLATILE, REG_QWORD, REG_SAM_FLAGS,
-    REG_SZ, REG_VALUE_TYPE, RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegEnumValueW,
-    RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
+    HKEY_USERS, KEY_ENUMERATE_SUB_KEYS, KEY_QUERY_VALUE, KEY_SET_VALUE, KEY_WOW64_32KEY,
+    KEY_WOW64_64KEY, REG_BINARY, REG_DWORD, REG_EXPAND_SZ, REG_MULTI_SZ, REG_OPTION_NON_VOLATILE,
+    REG_QWORD, REG_SAM_FLAGS, REG_SZ, REG_VALUE_TYPE, RegCloseKey, RegCreateKeyExW,
+    RegDeleteKeyExW, RegDeleteValueW, RegEnumKeyExW, RegEnumValueW, RegOpenKeyExW,
+    RegQueryValueExW, RegSetValueExW,
 };
 use windows::core::{PCWSTR, PWSTR};
 
@@ -65,6 +66,19 @@ fn view_flags(view: RegistryView) -> REG_SAM_FLAGS {
         RegistryView::Bit32 => KEY_WOW64_32KEY,
         RegistryView::Bit64 => KEY_WOW64_64KEY,
     }
+}
+
+/// Validates a key reference that has to name a key below a hive (not the hive itself) and
+/// returns it as the value reference the helpers below take, with its NUL-terminated subkey.
+fn validate_key(key: &RegistryKeyRef) -> Result<(RegistryValueRef, Vec<u16>), PortError> {
+    if key.subkey.is_empty() {
+        return Err(PortError::InvalidInput(
+            "a registry key to create or delete must be below a hive".into(),
+        ));
+    }
+    let as_value = key.value(String::new());
+    let (subkey, _) = validate(&as_value)?;
+    Ok((as_value, subkey))
 }
 
 /// Validates the target and returns NUL-terminated UTF-16 subkey and name.
@@ -163,6 +177,100 @@ impl Registry for WinRegistry {
         }
         listing.sort_by_key(|entry| entry.name.to_lowercase());
         Ok(listing)
+    }
+
+    fn list_subkeys(&self, key: &RegistryKeyRef) -> Result<Vec<String>, PortError> {
+        let as_value = key.value(String::new());
+        let (subkey, _) = validate(&as_value)?;
+        let handle = match open(&as_value, &subkey, KEY_ENUMERATE_SUB_KEYS) {
+            Ok(handle) => handle,
+            Err(e) if e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND => {
+                return Ok(Vec::new());
+            }
+            Err(e) => return Err(from_win32(e.0, &format!("open {key}"))),
+        };
+        let mut names = Vec::new();
+        // A key name is at most 255 characters long.
+        let mut name_buffer = vec![0_u16; 256];
+        for index in 0_u32.. {
+            let mut name_len = u32::try_from(name_buffer.len())
+                .map_err(|_| PortError::Other("registry key name too long".into()))?;
+            // SAFETY: `handle` is open with KEY_ENUMERATE_SUB_KEYS; `name_buffer` is valid for
+            // `name_len` UTF-16 units of writes and `name_len` is a valid in/out pointer; the
+            // reserved, class and last-write-time arguments are optional and passed as None, all
+            // for the duration of the call.
+            let status = unsafe {
+                RegEnumKeyExW(
+                    handle.0,
+                    index,
+                    Some(PWSTR(name_buffer.as_mut_ptr())),
+                    &raw mut name_len,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            };
+            if status == ERROR_NO_MORE_ITEMS {
+                break;
+            }
+            if status != ERROR_SUCCESS {
+                return Err(from_win32(status.0, &format!("list the subkeys of {key}")));
+            }
+            names.push(String::from_utf16_lossy(&name_buffer[..name_len as usize]));
+        }
+        names.sort_by_key(|name| name.to_lowercase());
+        Ok(names)
+    }
+
+    fn create_key(&self, key: &RegistryKeyRef) -> Result<(), PortError> {
+        let (as_value, subkey) = validate_key(key)?;
+        let mut handle = HKEY::default();
+        // SAFETY: `subkey` is NUL-terminated UTF-16 outliving the call; the class, security
+        // attributes and disposition arguments are optional and passed as null/None; `handle`
+        // is a valid out-pointer.
+        let status = unsafe {
+            RegCreateKeyExW(
+                root(as_value.hive),
+                PCWSTR(subkey.as_ptr()),
+                None,
+                PCWSTR::null(),
+                REG_OPTION_NON_VOLATILE,
+                KEY_QUERY_VALUE | view_flags(as_value.view),
+                None,
+                &raw mut handle,
+                None,
+            )
+        };
+        if status != ERROR_SUCCESS {
+            return Err(from_win32(status.0, &format!("create {key}")));
+        }
+        // Closed by its drop.
+        drop(KeyHandle(handle));
+        Ok(())
+    }
+
+    fn delete_key(&self, key: &RegistryKeyRef) -> Result<(), PortError> {
+        let (as_value, subkey) = validate_key(key)?;
+        if !self.list_subkeys(key)?.is_empty() {
+            return Err(PortError::Other(format!("{key} has subkeys")));
+        }
+        // SAFETY: `subkey` is NUL-terminated UTF-16 outliving the call; the view flag is the
+        // only access right the function takes and `reserved` must be zero. Windows itself
+        // refuses a key that has subkeys, and nothing but this one key is deleted.
+        let status = unsafe {
+            RegDeleteKeyExW(
+                root(as_value.hive),
+                PCWSTR(subkey.as_ptr()),
+                view_flags(as_value.view).0,
+                None,
+            )
+        };
+        if status == ERROR_SUCCESS {
+            Ok(())
+        } else {
+            Err(from_win32(status.0, &key.to_string()))
+        }
     }
 
     fn read_value(&self, target: &RegistryValueRef) -> Result<Option<RegistryValue>, PortError> {
@@ -578,6 +686,72 @@ mod tests {
             RegistryView::Native,
         );
         assert_eq!(reg.list_values(&missing), Ok(vec![]));
+    }
+
+    /// Creating, listing and deleting keys. Every key lives below the test key.
+    fn key_contract(reg: &dyn Registry, key: &TestKey) {
+        let at = |path: &str| {
+            RegistryKeyRef::new(
+                RegistryHive::CurrentUser,
+                format!("{}\\{path}", key.subkey),
+                RegistryView::Native,
+            )
+        };
+        let exists = |path: &str| {
+            reg.key_exists(
+                RegistryHive::CurrentUser,
+                &at(path).subkey,
+                RegistryView::Native,
+            )
+        };
+
+        // Creating makes the key and its parents; doing it again changes nothing.
+        reg.create_key(&at("a\\b")).expect("create");
+        reg.create_key(&at("a\\b")).expect("create again");
+        assert_eq!(exists("a"), Ok(true));
+        assert_eq!(exists("a\\b"), Ok(true));
+        assert_eq!(reg.list_subkeys(&at("a")), Ok(vec!["b".to_owned()]));
+        assert_eq!(reg.list_subkeys(&at("a\\b")), Ok(vec![]));
+        assert_eq!(reg.list_subkeys(&at("nope")), Ok(vec![]));
+        assert_eq!(reg.list_values(&at("a\\b")), Ok(vec![]));
+
+        // A key with a subkey is refused and nothing is deleted.
+        assert!(reg.delete_key(&at("a")).is_err());
+        assert_eq!(exists("a\\b"), Ok(true));
+
+        // A key is deleted with the values in it; its parent stays.
+        reg.write_value(&at("a\\b").value("v"), &RegistryValue::Dword(1))
+            .expect("write");
+        reg.delete_key(&at("a\\b")).expect("delete");
+        assert_eq!(exists("a\\b"), Ok(false));
+        assert_eq!(exists("a"), Ok(true));
+        assert_eq!(reg.read_value(&at("a\\b").value("v")), Ok(None));
+        reg.delete_key(&at("a")).expect("delete the parent");
+        assert_eq!(exists("a"), Ok(false));
+
+        // A missing key is NotFound.
+        assert!(matches!(
+            reg.delete_key(&at("a")),
+            Err(PortError::NotFound(_))
+        ));
+
+        // A hive itself is never created or deleted.
+        let hive = RegistryKeyRef::new(RegistryHive::CurrentUser, "", RegistryView::Native);
+        assert!(matches!(
+            reg.delete_key(&hive),
+            Err(PortError::InvalidInput(_))
+        ));
+    }
+
+    #[test]
+    fn key_operations_hold_for_the_fake() {
+        key_contract(&FakeRegistry::new(), &TestKey::new());
+    }
+
+    #[test]
+    fn key_operations_hold_for_the_real_registry() {
+        let key = TestKey::new();
+        key_contract(&WinRegistry::new(), &key);
     }
 
     #[test]

@@ -73,8 +73,9 @@ pub(crate) async fn get_tweak_plan(
     blocking(&state, move |core| api::get_tweak_plan(core, &id)).await
 }
 
-/// Tauri command: turns off a tweak that Volt did not apply by removing the registry values it
-/// sets, so Windows uses its own default. Journaled, so the Undo page can bring it back.
+/// Tauri command: turns off a tweak that Volt did not apply by putting each of its steps back to
+/// the Windows default. Journaled, so the Undo page can bring it back. Refused for a tweak that
+/// Volt applied itself: undo is the way back for that one.
 #[tauri::command]
 #[specta::specta]
 pub(crate) async fn reset_tweak(

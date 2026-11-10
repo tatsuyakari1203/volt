@@ -122,8 +122,8 @@ pub use process::{
     ProcessMonitor, ProcessSample, Protection, is_windows_critical,
 };
 pub use registry::{
-    NamedValue, Registry, RegistryHive, RegistryKeyRef, RegistryValue, RegistryValueRef,
-    RegistryView,
+    NamedValue, Registry, RegistryHive, RegistryKeyContents, RegistryKeyRef, RegistryValue,
+    RegistryValueRef, RegistryView,
 };
 pub use service::ServiceStartType;
 pub use settings::{Settings, SettingsExt};

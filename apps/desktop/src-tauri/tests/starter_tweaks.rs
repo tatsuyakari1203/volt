@@ -2,7 +2,8 @@
 //!
 //! The generic test here runs over EVERY tweak, so a tweak added to the catalogue is covered the
 //! moment it exists: detect, apply, the state reads applied, revert, and the exact previous state
-//! is back, including a value that was absent before. Nothing touches the real system: the real
+//! is back, including a value that was absent before, a key that was absent before (and its
+//! parents) and a key that existed before with other values in it. Nothing touches the real system: the real
 //! registry, services and commands are never reached.
 
 use std::collections::HashMap;
@@ -10,9 +11,9 @@ use std::sync::Arc;
 
 use volt_core::fakes::FakeSystem;
 use volt_core::{
-    ApplyOutcome, Catalogue, Category, EntryState, Evidence, RegistryHive, RegistryValue,
-    RegistryValueRef, ServiceStartType, Services, Source, Tweak, TweakEngine, TweakError,
-    TweakState, TweakStep,
+    ApplyOutcome, Catalogue, Category, EntryState, Evidence, Journal, Registry, RegistryHive,
+    RegistryKeyRef, RegistryValue, RegistryValueRef, RegistryView, ServiceStartType, Services,
+    Source, Tweak, TweakEngine, TweakError, TweakState, TweakStep,
 };
 use volt_desktop_lib::catalogue::EMBEDDED_CATALOGUE;
 
@@ -41,7 +42,13 @@ enum Before {
     Absent,
     /// Registry values the tweak sets exist with a different value of the same type.
     Different,
+    /// Like `Different`, and the keys the tweak makes exist already exist, with another value in
+    /// them. Only meaningful for a tweak that has such a key step.
+    KeyPresent,
 }
+
+/// The value `Before::KeyPresent` leaves in a key the tweak did not put there.
+const UNRELATED: &str = "VoltTestUnrelated";
 
 fn target_of(
     hive: RegistryHive,
@@ -85,8 +92,9 @@ fn arrange(system: &FakeSystem, tweak: &Tweak, before: Before) {
                 name,
                 view,
                 value,
+                ..
             } => {
-                if matches!(before, Before::Different) {
+                if matches!(before, Before::Different | Before::KeyPresent) {
                     system.registry.set(
                         &target_of(*hive, subkey, name, *view),
                         different_from(value),
@@ -98,15 +106,67 @@ fn arrange(system: &FakeSystem, tweak: &Tweak, before: Before) {
                 subkey,
                 name,
                 view,
+                ..
             } => system.registry.set(
                 &target_of(*hive, subkey, name, *view),
                 RegistryValue::Dword(7),
             ),
+            TweakStep::RegistryKey {
+                hive,
+                subkey,
+                view,
+                exists,
+            } => {
+                // A key that has to be absent is present, with a value, before.
+                if !*exists || matches!(before, Before::KeyPresent) {
+                    system.registry.set(
+                        &target_of(*hive, subkey, UNRELATED, *view),
+                        RegistryValue::Dword(9),
+                    );
+                }
+            }
             TweakStep::Service {
                 service,
                 start_type,
+                ..
             } => system.services.add(service, other_start_type(*start_type)),
             // A new step kind has no arrangement here: the test must learn about it, not skip it.
+            other => panic!("{}: no test arrangement for step {other:?}", tweak.id),
+        }
+    }
+}
+
+/// Puts the fake machine into the state the tweak leaves behind, as if it were set outside Volt.
+fn arrange_target(system: &FakeSystem, tweak: &Tweak) {
+    for step in &tweak.steps {
+        match step {
+            TweakStep::RegistrySet {
+                hive,
+                subkey,
+                name,
+                view,
+                value,
+                ..
+            } => system
+                .registry
+                .set(&target_of(*hive, subkey, name, *view), value.clone()),
+            // Absent is the target of a delete step; a key is made by the key step.
+            TweakStep::RegistryDelete { .. } => {}
+            TweakStep::RegistryKey {
+                hive,
+                subkey,
+                view,
+                exists,
+            } => {
+                if *exists {
+                    system.registry.add_key(*hive, subkey, *view);
+                }
+            }
+            TweakStep::Service {
+                service,
+                start_type,
+                ..
+            } => system.services.add(service, *start_type),
             other => panic!("{}: no test arrangement for step {other:?}", tweak.id),
         }
     }
@@ -115,8 +175,30 @@ fn arrange(system: &FakeSystem, tweak: &Tweak, before: Before) {
 /// What a tweak's steps look like on the machine, step by step.
 #[derive(Debug, PartialEq, Eq)]
 enum Observed {
-    Registry(Option<RegistryValue>),
+    /// A value, and whether each level of its key path exists (so a key a write created and a
+    /// revert left behind shows).
+    Registry(Option<RegistryValue>, Vec<bool>),
+    /// A key: its values (`None` when it does not exist) and the same per-level existence.
+    Key(Option<Vec<(String, RegistryValue)>>, Vec<bool>),
     Service(Option<ServiceStartType>),
+}
+
+/// For every level of `subkey` (`A`, `A\B`, `A\B\C`) whether that key exists.
+fn levels(system: &FakeSystem, hive: RegistryHive, subkey: &str, view: RegistryView) -> Vec<bool> {
+    let mut path = String::new();
+    subkey
+        .split('\\')
+        .map(|part| {
+            if !path.is_empty() {
+                path.push('\\');
+            }
+            path.push_str(part);
+            system
+                .registry
+                .key_exists(hive, &path, view)
+                .expect("the fake answers")
+        })
+        .collect()
 }
 
 fn observe(system: &FakeSystem, tweak: &Tweak) -> Vec<Observed> {
@@ -136,7 +218,30 @@ fn observe(system: &FakeSystem, tweak: &Tweak) -> Vec<Observed> {
                 subkey,
                 name,
                 view,
-            } => Observed::Registry(system.registry.get(&target_of(*hive, subkey, name, *view))),
+                ..
+            } => Observed::Registry(
+                system.registry.get(&target_of(*hive, subkey, name, *view)),
+                levels(system, *hive, subkey, *view),
+            ),
+            TweakStep::RegistryKey {
+                hive, subkey, view, ..
+            } => {
+                let key = RegistryKeyRef::new(*hive, subkey.as_str(), *view);
+                let exists = system
+                    .registry
+                    .key_exists(*hive, subkey, *view)
+                    .expect("the fake answers");
+                let values = exists.then(|| {
+                    system
+                        .registry
+                        .list_values(&key)
+                        .expect("the fake lists")
+                        .into_iter()
+                        .map(|named| (named.name, named.value.expect("readable")))
+                        .collect()
+                });
+                Observed::Key(values, levels(system, *hive, subkey, *view))
+            }
             TweakStep::Service { service, .. } => {
                 Observed::Service(system.services.start_type(service).ok())
             }
@@ -151,17 +256,31 @@ fn observe(system: &FakeSystem, tweak: &Tweak) -> Vec<Observed> {
 fn every_tweak_applies_reads_as_applied_and_reverts_to_the_exact_previous_state() {
     let catalogue = catalogue();
     for tweak in catalogue.tweaks() {
-        for before in [Before::Absent, Before::Different] {
+        let has_key_step = tweak
+            .steps
+            .iter()
+            .any(|step| matches!(step, TweakStep::RegistryKey { exists: true, .. }));
+        for before in [Before::Absent, Before::Different, Before::KeyPresent] {
+            if matches!(before, Before::KeyPresent) && !has_key_step {
+                continue;
+            }
             let id = tweak.id.as_str();
             let context = format!("{id} ({before:?})");
             let system = FakeSystem::new();
             arrange(&system, tweak, before);
             let previous = observe(&system, tweak);
 
+            // A key that already exists (a value in it puts it there) is a step in its target
+            // state, before the apply and again after the revert.
+            let state_before = if has_key_step && !matches!(before, Before::Absent) {
+                TweakState::Partial
+            } else {
+                TweakState::NotApplied
+            };
             let engine = self::engine(&system, &catalogue, true);
             assert_eq!(
                 engine.state(id),
-                Ok(TweakState::NotApplied),
+                Ok(state_before),
                 "{context}: detect before"
             );
             let plan = engine.plan(id).expect("dry run");
@@ -191,6 +310,18 @@ fn every_tweak_applies_reads_as_applied_and_reverts_to_the_exact_previous_state(
                 ApplyOutcome::AlreadyApplied,
                 "{context}"
             );
+            // Volt applied it, so undo is the way back; a reset would only guess.
+            let applied_state = observe(&system, tweak);
+            assert_eq!(
+                engine.reset(id, Source::Manual).unwrap_err(),
+                TweakError::AppliedByVolt(id.to_owned()),
+                "{context}"
+            );
+            assert_eq!(
+                observe(&system, tweak),
+                applied_state,
+                "{context}: the refused reset changed nothing"
+            );
 
             // A restart in between: a new engine over the same journal still reverts it.
             let engine = self::engine(&system, &catalogue, true);
@@ -198,7 +329,7 @@ fn every_tweak_applies_reads_as_applied_and_reverts_to_the_exact_previous_state(
             assert!(reverted.is_complete(), "{context}: revert is complete");
             assert_eq!(
                 engine.state(id),
-                Ok(TweakState::NotApplied),
+                Ok(state_before),
                 "{context}: after revert"
             );
             assert_eq!(
@@ -216,6 +347,125 @@ fn every_tweak_applies_reads_as_applied_and_reverts_to_the_exact_previous_state(
             );
         }
     }
+}
+
+#[test]
+fn every_tweak_set_outside_volt_is_turned_off_to_its_declared_windows_default() {
+    let catalogue = catalogue();
+    let mut reset_count = 0;
+    for tweak in catalogue.tweaks() {
+        let id = tweak.id.as_str();
+        let system = FakeSystem::new();
+        arrange_target(&system, tweak);
+        let target_state = observe(&system, tweak);
+        let engine = engine(&system, &catalogue, true);
+        assert_eq!(engine.state(id), Ok(TweakState::Applied), "{id}: set");
+        assert_eq!(engine.applied_by_volt(id), Ok(false), "{id}");
+        let Some(plan) = engine.reset_plan(id).expect("plan") else {
+            continue;
+        };
+        reset_count += 1;
+        assert!(!plan.is_empty(), "{id}: the reset plan lists the changes");
+
+        let report = engine.reset(id, Source::Manual).expect("reset");
+        assert_eq!(report.outcome, ApplyOutcome::Applied, "{id}");
+        assert_eq!(engine.state(id), Ok(TweakState::NotApplied), "{id}: off");
+        for step in &tweak.steps {
+            match step {
+                TweakStep::RegistrySet {
+                    hive,
+                    subkey,
+                    name,
+                    view,
+                    off,
+                    ..
+                } => assert_eq!(
+                    system.registry.get(&target_of(*hive, subkey, name, *view)),
+                    off.clone(),
+                    "{id}: {name} is the declared default, or removed without one"
+                ),
+                TweakStep::RegistryKey {
+                    hive, subkey, view, ..
+                } => assert_eq!(
+                    system.registry.key_exists(*hive, subkey, *view),
+                    Ok(false),
+                    "{id}: the key is removed"
+                ),
+                TweakStep::Service { service, off, .. } => assert_eq!(
+                    system.services.start_type(service).ok(),
+                    *off,
+                    "{id}: {service}"
+                ),
+                other => panic!("{id}: unexpected step {other:?}"),
+            }
+        }
+        // Volt did not apply it, so there is nothing to revert; the reset is its own batch.
+        assert_eq!(
+            engine.revert(id),
+            Err(TweakError::NothingToRevert(id.to_owned())),
+            "{id}"
+        );
+        // And the journal brings the tweak back exactly as it was set.
+        let batches = system
+            .journal
+            .batches_with_label(&format!("{id}:reset"))
+            .expect("batches");
+        assert_eq!(batches.len(), 1, "{id}");
+        let undone = engine
+            .executor()
+            .revert_batch(batches[0], Source::Manual, None)
+            .expect("undo the reset");
+        assert!(undone.is_complete(), "{id}");
+        assert_eq!(engine.state(id), Ok(TweakState::Applied), "{id}: set again");
+        assert_eq!(observe(&system, tweak), target_state, "{id}");
+    }
+    assert_eq!(
+        reset_count,
+        catalogue.len(),
+        "every shipped tweak can be turned off"
+    );
+}
+
+#[test]
+fn the_classic_context_menu_is_a_key_that_must_exist_with_an_empty_default_value() {
+    let catalogue = catalogue();
+    let tweak = catalogue.get("classic-context-menu").expect("shipped");
+    assert_eq!(tweak.category, Category::Appearance);
+    assert!(!tweak.requires_admin, "it is a per-user change");
+    assert_eq!(tweak.restart, volt_core::RestartRequirement::SignOut);
+    assert!(
+        tweak
+            .description
+            .to_lowercase()
+            .contains("restart file explorer"),
+        "it says that Explorer has to be restarted"
+    );
+    assert!(
+        tweak.evidence_note.contains("not documented by Microsoft"),
+        "the evidence note is honest about where the claim comes from"
+    );
+    let [
+        TweakStep::RegistryKey {
+            hive,
+            subkey,
+            exists: true,
+            ..
+        },
+        TweakStep::RegistrySet {
+            subkey: value_subkey,
+            name,
+            value,
+            ..
+        },
+    ] = tweak.steps.as_slice()
+    else {
+        panic!("a key step and the default value in it: {:?}", tweak.steps);
+    };
+    assert_eq!(*hive, RegistryHive::CurrentUser);
+    assert!(subkey.ends_with(r"{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32"));
+    assert_eq!(subkey, value_subkey);
+    assert_eq!(name, "");
+    assert_eq!(*value, RegistryValue::Sz(String::new()));
 }
 
 #[test]
@@ -370,9 +620,9 @@ fn every_tweak_explains_itself_and_says_what_it_needs() {
 fn a_tweak_needs_administrator_rights_exactly_when_it_changes_the_whole_machine() {
     for tweak in catalogue().tweaks() {
         let machine_wide = tweak.steps.iter().any(|step| match step {
-            TweakStep::RegistrySet { hive, .. } | TweakStep::RegistryDelete { hive, .. } => {
-                *hive != RegistryHive::CurrentUser
-            }
+            TweakStep::RegistrySet { hive, .. }
+            | TweakStep::RegistryDelete { hive, .. }
+            | TweakStep::RegistryKey { hive, .. } => *hive != RegistryHive::CurrentUser,
             _ => true,
         });
         assert_eq!(
@@ -401,7 +651,11 @@ fn no_two_tweaks_change_the_same_thing() {
                     subkey,
                     name,
                     view,
+                    ..
                 } => format!("{hive:?}|{view:?}|{subkey}|{name}"),
+                TweakStep::RegistryKey {
+                    hive, subkey, view, ..
+                } => format!("key|{hive:?}|{view:?}|{subkey}"),
                 TweakStep::Service { service, .. } => format!("service|{service}"),
                 other => panic!("{}: unexpected step {other:?}", tweak.id),
             }
@@ -439,7 +693,8 @@ fn nothing_weakens_security_and_nothing_runs_a_command() {
         for step in &tweak.steps {
             match step {
                 TweakStep::RegistrySet { subkey, .. }
-                | TweakStep::RegistryDelete { subkey, .. } => {
+                | TweakStep::RegistryDelete { subkey, .. }
+                | TweakStep::RegistryKey { subkey, .. } => {
                     let subkey = subkey.to_lowercase();
                     for forbidden in FORBIDDEN_KEYS {
                         assert!(
