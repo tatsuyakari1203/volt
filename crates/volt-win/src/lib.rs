@@ -9,8 +9,8 @@
 //! `volt-core` only; must not pull in `tauri` or `rusqlite`.
 //!
 //! Adapters in this crate: [`WinRegistry`], [`WinServices`], [`WinFileSystem`],
-//! [`WinKnownFolders`], [`WinRecycleBin`], [`WinMetrics`], [`WinMemory`], [`WinCommands`],
-//! [`WinFilePublisher`].
+//! [`WinKnownFolders`], [`WinRecycleBin`], [`WinMetrics`], [`WinMemory`], [`WinProcesses`],
+//! [`WinCommands`], [`WinFilePublisher`].
 //! The crate is empty on non-Windows targets.
 
 // The workspace denies unsafe code; FFI lives here by design.
@@ -24,6 +24,7 @@ mod folders;
 mod gpu;
 mod memory;
 mod metrics;
+mod processes;
 mod recycle_bin;
 mod registry;
 mod services;
@@ -35,6 +36,7 @@ pub use files::WinFileSystem;
 pub use folders::WinKnownFolders;
 pub use memory::WinMemory;
 pub use metrics::WinMetrics;
+pub use processes::WinProcesses;
 pub use recycle_bin::WinRecycleBin;
 pub use registry::WinRegistry;
 pub use services::WinServices;

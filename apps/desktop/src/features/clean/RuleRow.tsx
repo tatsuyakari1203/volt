@@ -42,6 +42,7 @@ export function RuleRow({ rule, view, checked, enabled, onCheckedChange }: RuleR
           {view?.skipped ? (
             <p className="text-caption text-muted">Left out: {view.skipped}</p>
           ) : null}
+          {view?.lockedNote ? <p className="text-caption text-muted">{view.lockedNote}</p> : null}
           {locked ? (
             <p className="text-caption text-muted">
               Volt cannot clean this yet. Nothing here is touched.

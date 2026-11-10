@@ -138,6 +138,9 @@ pub struct RuleScanView {
     /// A few of the files, relative to the rule's location (for example `user_temp/sub/a.tmp`).
     /// Never a full path.
     pub samples: Vec<String>,
+    /// Set when a program that keeps this rule's files open is running (for example "chrome is
+    /// running, so the files it has open will be skipped"), or `null`.
+    pub locked_note: Option<String>,
 }
 
 /// The result of a scan.
@@ -388,6 +391,22 @@ fn samples(rule: &CleaningRule, scan: &RuleScan) -> Vec<String> {
         .collect()
 }
 
+/// Names the running programs that hold a rule's files open, or `None` when none runs.
+fn locked_text(running: &[String]) -> Option<String> {
+    if running.is_empty() {
+        return None;
+    }
+    let names: Vec<&str> = running
+        .iter()
+        .map(|name| name.strip_suffix(".exe").unwrap_or(name))
+        .collect();
+    let verb = if names.len() == 1 { "is" } else { "are" };
+    Some(format!(
+        "{} {verb} running: files it keeps open are skipped. Close it first to clean everything.",
+        names.join(", ")
+    ))
+}
+
 fn scan_view(rule: &CleaningRule, scan: &RuleScan) -> RuleScanView {
     RuleScanView {
         rule: CleaningRuleInfo::from(rule),
@@ -398,6 +417,7 @@ fn scan_view(rule: &CleaningRule, scan: &RuleScan) -> RuleScanView {
         skipped: skipped_text(&scan.counts),
         problem: scan.failure.as_ref().map(problem_text),
         samples: samples(rule, scan),
+        locked_note: locked_text(&scan.running_programs),
     }
 }
 

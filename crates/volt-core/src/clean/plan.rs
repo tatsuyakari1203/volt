@@ -211,6 +211,11 @@ pub struct RuleScan {
     pub skipped: Vec<SkippedEntry>,
     /// Exact counts.
     pub counts: ScanCounts,
+    /// Programs of the rule's [`locked_by`](CleaningRule::locked_by) list that
+    /// were running during the scan (lower-case executable names). Files they
+    /// hold open are skipped by a clean. Empty when none runs, or when the
+    /// engine has no way to list processes.
+    pub running_programs: Vec<String>,
 }
 
 impl RuleScan {

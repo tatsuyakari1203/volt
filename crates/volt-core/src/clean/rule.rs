@@ -134,6 +134,10 @@ pub struct CleaningRule {
     /// whose age the user can configure (temp-like rules). `None`: the age is
     /// fixed by the rule.
     pub min_age_setting: Option<String>,
+    /// Executable names (lower case, such as `chrome.exe`) of programs that keep
+    /// the files of this rule open while they run. A scan says which of them are
+    /// running, because a clean then skips the files they hold. Empty: none.
+    pub locked_by: Vec<String>,
 }
 
 impl CleaningRule {

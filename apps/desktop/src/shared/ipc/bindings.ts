@@ -1276,7 +1276,12 @@ problem: string | null;
  * A few of the files, relative to the rule's location (for example `user_temp/sub/a.tmp`).
  * Never a full path.
  */
-samples: string[] }
+samples: string[]; 
+/**
+ * Set when a program that keeps this rule's files open is running (for example "chrome is
+ * running, so the files it has open will be skipped"), or `null`.
+ */
+lockedNote: string | null }
 /**
  * Skipped items with the same reason.
  */
