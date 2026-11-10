@@ -25,6 +25,7 @@ const fileExtensions: TweakInfo = {
   evidence: 'anecdotal',
   evidenceNote: 'A usability and safety preference, not a performance gain.',
   restart: 'none',
+  needsAdmin: false,
   state: { kind: 'notApplied' },
 };
 
@@ -101,6 +102,18 @@ describe('loading, empty and error states', () => {
     expect(within(row).getByText('Safe')).toBeTruthy();
     expect(row.textContent).toContain('Evidence: Anecdotal. A usability and safety preference');
     expect(screen.queryByText('Sample data')).toBeNull();
+  });
+
+  it('shows a tweak that needs administrator rights disabled, with a label', async () => {
+    ipc.listTweaks.mockResolvedValue([
+      fileExtensions,
+      { ...fileExtensions, id: 'machine-wide', title: 'Machine wide', needsAdmin: true },
+    ]);
+    renderScreen();
+    const machineWide = await theSwitch('Machine wide');
+    expect((machineWide as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/Needs administrator rights/)).toBeTruthy();
+    expect(((await theSwitch()) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('says so when the catalogue is empty', async () => {

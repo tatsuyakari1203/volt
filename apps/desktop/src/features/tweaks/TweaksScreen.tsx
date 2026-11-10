@@ -41,9 +41,11 @@ function evidenceLine(tweak: TweakInfo): string {
   return `Evidence: ${label}. ${tweak.evidenceNote}${restartNote(tweak.restart)}`;
 }
 
-function stateLine(state: TweakStateView, busy: Busy | undefined): string | null {
+function stateLine(tweak: TweakInfo, busy: Busy | undefined): string | null {
   if (busy === 'applying') return 'Turning on...';
   if (busy === 'undoing') return 'Undoing...';
+  if (tweak.needsAdmin) return 'Needs administrator rights. It cannot be changed from here yet.';
+  const state = tweak.state;
   switch (state.kind) {
     case 'partial':
       return 'Only partly on. Turn it on to finish, or use Undo to put things back.';
@@ -230,7 +232,7 @@ export function TweaksScreen() {
               <ListGroup aria-label="Tweaks">
                 {visible.map((tweak) => {
                   const working = busy[tweak.id];
-                  const status = stateLine(tweak.state, working);
+                  const status = stateLine(tweak, working);
                   return (
                     <ListRow
                       key={tweak.id}
@@ -247,7 +249,7 @@ export function TweaksScreen() {
                       badge={<Badge risk={tweak.risk} />}
                       trailing={
                         <div className="flex items-center gap-2">
-                          {tweak.state.kind === 'partial' ? (
+                          {tweak.state.kind === 'partial' && !tweak.needsAdmin ? (
                             <Button
                               size="sm"
                               aria-label={`Undo ${tweak.title}`}
@@ -261,7 +263,11 @@ export function TweaksScreen() {
                             aria-label={tweak.title}
                             aria-busy={working !== undefined}
                             checked={tweak.state.kind === 'applied'}
-                            disabled={working !== undefined || tweak.state.kind === 'unreadable'}
+                            disabled={
+                              working !== undefined ||
+                              tweak.needsAdmin ||
+                              tweak.state.kind === 'unreadable'
+                            }
                             onCheckedChange={(value) => toggle(tweak, value)}
                           />
                         </div>

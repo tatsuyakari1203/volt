@@ -1108,3 +1108,78 @@ fn the_engine_writes_activity_labelled_with_the_tweak_id_for_apply_and_revert() 
     assert_eq!(count(crate::ActivityOutcome::Reverted), 4);
     assert_eq!(engine.activity_write_failures(), 0);
 }
+
+// ---- administrator rights -----------------------------------------------------------------
+
+fn admin_sample() -> String {
+    SAMPLE.replace(
+        "restart = \"reboot\"",
+        "restart = \"reboot\"\nrequires_admin = true",
+    )
+}
+
+#[test]
+fn requires_admin_is_optional_and_defaults_to_false() {
+    assert!(
+        !catalogue(SAMPLE)
+            .get("sample-tweak")
+            .expect("tweak")
+            .requires_admin
+    );
+    assert!(
+        catalogue(&admin_sample())
+            .get("sample-tweak")
+            .expect("tweak")
+            .requires_admin
+    );
+}
+
+#[test]
+fn requires_admin_must_be_a_boolean() {
+    let text = SAMPLE.replace(
+        "restart = \"reboot\"",
+        "restart = \"reboot\"\nrequires_admin = \"yes\"",
+    );
+    let error = Catalogue::from_toml(&text).expect_err("rejected");
+    assert!(
+        error
+            .issues
+            .iter()
+            .any(|issue| issue.field == "requires_admin"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_tweak_that_needs_administrator_rights_is_refused_before_anything_is_touched() {
+    let catalogue = catalogue(&admin_sample());
+    let system = machine();
+    let engine = engine(&system, &catalogue);
+
+    assert_eq!(
+        engine.apply("sample-tweak", Source::Manual).unwrap_err(),
+        TweakError::NeedsAdministrator("sample-tweak".to_owned())
+    );
+    assert_eq!(
+        engine.revert("sample-tweak").unwrap_err(),
+        TweakError::NeedsAdministrator("sample-tweak".to_owned())
+    );
+    assert_before(&system);
+    assert!(system.journal.entries().is_empty(), "nothing was journaled");
+    assert!(system.log.events().is_empty(), "no side effect of any kind");
+    // Reading is still allowed, so the screen can show the state.
+    assert_eq!(engine.state("sample-tweak"), Ok(TweakState::NotApplied));
+    assert!(engine.plan("sample-tweak").is_ok());
+}
+
+#[test]
+fn an_engine_told_it_has_administrator_rights_applies_and_reverts_such_a_tweak() {
+    let catalogue = catalogue(&admin_sample());
+    let system = machine();
+    let engine = engine(&system, &catalogue).with_administrator(true);
+
+    engine.apply("sample-tweak", Source::Manual).expect("apply");
+    assert_after(&system);
+    assert!(engine.revert("sample-tweak").expect("revert").is_complete());
+    assert_before(&system);
+}

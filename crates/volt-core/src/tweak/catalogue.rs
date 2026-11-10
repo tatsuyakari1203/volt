@@ -28,6 +28,7 @@ const TWEAK_KEYS: &[&str] = &[
     "evidence",
     "evidence_note",
     "restart",
+    "requires_admin",
     "steps",
 ];
 
@@ -174,6 +175,8 @@ impl Catalogue {
     /// evidence = "measured"             # measured, anecdotal
     /// evidence_note = "Frees about 75% of installed RAM on disk."
     /// restart = "none"                  # optional: none, sign_out, reboot
+    /// requires_admin = false            # optional: true for machine-wide changes, services
+    ///                                   # and commands that need administrator rights
     ///
     /// [[tweak.steps]]                   # applied in order, reverted newest first
     /// kind = "registry_set"
@@ -345,6 +348,7 @@ impl Reader<'_> {
         let evidence = self.parsed::<Evidence>(table, "", "evidence");
         let evidence_note = self.text(table, "", "evidence_note", false);
         let restart = self.parsed_or(table, "", "restart", RestartRequirement::None);
+        let requires_admin = self.parsed_or(table, "", "requires_admin", false);
         let steps = self.steps(table);
         if self.issues.len() == before {
             self.check_duplicate_targets(&steps);
@@ -362,6 +366,7 @@ impl Reader<'_> {
             evidence: evidence?,
             evidence_note: evidence_note?,
             restart: restart?,
+            requires_admin: requires_admin?,
             steps,
         })
     }
