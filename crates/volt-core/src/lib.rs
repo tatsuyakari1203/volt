@@ -67,6 +67,7 @@ pub mod executor;
 pub mod health;
 pub mod journal;
 pub mod label;
+pub mod large_files;
 pub mod memory;
 pub mod metrics;
 pub mod operation;
@@ -117,6 +118,10 @@ pub use journal::{
     BatchId, EntryId, EntryState, Journal, JournalEntry, NewEntry, Overwrite, Source, overwrites_of,
 };
 pub use label::{Evidence, Risk};
+pub use large_files::{
+    DEFAULT_MAX_FILES, FileGroup, LargeFile, LargeFilesError, LargeFilesFinder, LargeFilesObserver,
+    LargeFilesScan, LargeFilesTrash,
+};
 pub use memory::{AreaReport, MEMORY_LABEL, MemoryCleanReport, MemoryCleaner};
 pub use metrics::{
     CpuTimes, DiskReading, DiskSnapshot, GpuReading, GpuSnapshot, MemorySnapshot, MetricsSnapshot,

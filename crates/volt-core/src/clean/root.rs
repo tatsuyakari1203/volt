@@ -49,13 +49,13 @@ fn folded(path: &Path) -> Vec<String> {
 }
 
 /// Whether `path` is `base` or below it, ignoring case.
-pub(super) fn starts_with_ci(path: &Path, base: &Path) -> bool {
+pub(crate) fn starts_with_ci(path: &Path, base: &Path) -> bool {
     let (path, base) = (folded(path), folded(base));
     path.len() >= base.len() && path[..base.len()] == base[..]
 }
 
 /// Whether two paths are the same, ignoring case.
-pub(super) fn same_path_ci(a: &Path, b: &Path) -> bool {
+pub(crate) fn same_path_ci(a: &Path, b: &Path) -> bool {
     folded(a) == folded(b)
 }
 

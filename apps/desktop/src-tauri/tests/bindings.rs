@@ -131,3 +131,20 @@ fn generated_bindings_describe_the_memory_commands_and_their_report_types() {
     assert!(text.contains("cleanMemory"), "{text}");
     assert!(text.contains("MemoryCleanResult"), "{text}");
 }
+
+#[test]
+fn generated_bindings_describe_the_large_files_commands_event_and_results() {
+    let text = generated_bindings();
+    for name in [
+        "scanLargeFiles",
+        "cancelLargeFilesScan",
+        "trashLargeFiles",
+        "revealLargeFile",
+        "pickScanFolder",
+        "largeFilesProgress",
+        "LargeFilesResult",
+        "LargeFilesTrashResult",
+    ] {
+        assert!(text.contains(name), "{name} is missing from the bindings");
+    }
+}

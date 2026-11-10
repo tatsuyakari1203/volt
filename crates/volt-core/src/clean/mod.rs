@@ -44,6 +44,7 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
+pub(crate) use apply::human_bytes;
 pub use apply::{CleanReport, CleanSkip, CleanSkipReason, RuleClean};
 pub use bin::{EmptyReport, RecycleBin, RecycleBinManager, RecycleBinStatus};
 pub use folders::{KnownFolders, Location};
@@ -54,6 +55,7 @@ pub use plan::{
     RuleScan, ScanCounts, ScanFailure, SkipReason, SkippedEntry,
 };
 pub use root::RootError;
+pub(crate) use root::{same_path_ci, starts_with_ci};
 pub use rule::{
     CleanCategory, CleaningRule, Constraints, MAX_DEPTH_LIMIT, MIN_AGE_SETTING_MAX,
     MIN_AGE_SETTING_MIN, RuleRoot,

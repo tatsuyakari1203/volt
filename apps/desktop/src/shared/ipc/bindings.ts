@@ -335,6 +335,64 @@ async emptyRecycleBin() : Promise<Result<EmptyBinResult, IpcError>> {
 }
 },
 /**
+ * Tauri command: scans a folder (the system drive when no folder is given) for its biggest files.
+ * Read-only and off the main thread; emits `largeFilesProgress`; `cancelLargeFilesScan` stops it.
+ */
+async scanLargeFiles(root: string | null) : Promise<Result<LargeFilesResult, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("scan_large_files", { root }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: asks the running large files scan to stop. Does nothing when none runs.
+ */
+async cancelLargeFilesScan() : Promise<Result<null, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("cancel_large_files_scan") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: moves the chosen files of the scan `scan_id` to the Recycle Bin. Never a
+ * permanent delete.
+ */
+async trashLargeFiles(scanId: string, indices: number[]) : Promise<Result<LargeFilesTrashResult, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("trash_large_files", { scanId, indices }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: opens the folder of a listed file in Explorer with the file selected.
+ */
+async revealLargeFile(scanId: string, index: number) : Promise<Result<null, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("reveal_large_file", { scanId, index }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: shows the native folder dialog and returns the chosen folder, or `null` when it
+ * was closed. The UI is granted no dialog permission; only Rust opens it.
+ */
+async pickScanFolder() : Promise<Result<string | null, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("pick_scan_folder") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Tauri command: memory by list now and which operations can run. Reads the system only.
  */
 async memoryState() : Promise<Result<MemoryState, IpcError>> {
@@ -445,11 +503,13 @@ export const events = __makeEvents__<{
 appReady: AppReady,
 boostFinished: BoostFinished,
 cleanScanProgress: CleanScanProgress,
+largeFilesProgress: LargeFilesProgress,
 metricsUpdated: MetricsUpdated
 }>({
 appReady: "app-ready",
 boostFinished: "boost-finished",
 cleanScanProgress: "clean-scan-progress",
+largeFilesProgress: "large-files-progress",
 metricsUpdated: "metrics-updated"
 })
 
@@ -1083,6 +1143,30 @@ export type ExportResult =
  */
 { kind: "cancelled" }
 /**
+ * The type group of a file. Mirrors [`volt_core::FileGroup`].
+ */
+export type FileGroupView = 
+/**
+ * Videos.
+ */
+"video" | 
+/**
+ * Archives.
+ */
+"archive" | 
+/**
+ * Disk and virtual machine images.
+ */
+"diskImage" | 
+/**
+ * Installers.
+ */
+"installer" | 
+/**
+ * Everything else.
+ */
+"other"
+/**
  * What the user can do about a deduction.
  */
 export type FixActionView = 
@@ -1292,6 +1376,110 @@ choice: LanguageChoice;
  * What `System` resolved to the last time a window ran.
  */
 system: Lang }
+/**
+ * One file of the list.
+ */
+export type LargeFileView = { 
+/**
+ * Row number, sent back to open its folder or move it.
+ */
+index: number; 
+/**
+ * Full path.
+ */
+path: string; 
+/**
+ * Size in bytes.
+ */
+sizeBytes: number; 
+/**
+ * Last modified, in milliseconds since the Unix epoch, or `null` when unknown.
+ */
+modifiedMs: number | null; 
+/**
+ * Its type group.
+ */
+group: FileGroupView }
+/**
+ * How far a scan is.
+ */
+export type LargeFilesProgress = { 
+/**
+ * Files looked at so far.
+ */
+filesSeen: number; 
+/**
+ * Folders read so far.
+ */
+foldersSeen: number }
+/**
+ * The result of a scan.
+ */
+export type LargeFilesResult = { 
+/**
+ * Names this scan when moving files; empty when the scan was cancelled.
+ */
+scanId: string; 
+/**
+ * Whether the scan was cancelled (nothing is listed then).
+ */
+cancelled: boolean; 
+/**
+ * The folder that was scanned.
+ */
+root: string; 
+/**
+ * The biggest files, biggest first.
+ */
+files: LargeFileView[]; 
+/**
+ * Files looked at in all.
+ */
+filesSeen: number; 
+/**
+ * Entries that could not be read and were skipped.
+ */
+unreadable: number; 
+/**
+ * Links and junctions left alone.
+ */
+links: number; 
+/**
+ * System folders and files left out on purpose.
+ */
+excluded: number; 
+/**
+ * When the scan started, in milliseconds since the Unix epoch (the age filter counts from it).
+ */
+scannedAtMs: number }
+/**
+ * What moving files to the Recycle Bin did.
+ */
+export type LargeFilesTrashResult = { 
+/**
+ * Files moved to the Recycle Bin.
+ */
+movedFiles: number; 
+/**
+ * Their size in bytes (still used until the Recycle Bin is emptied).
+ */
+movedBytes: number; 
+/**
+ * Files left in place.
+ */
+skippedTotal: number; 
+/**
+ * Files left in place, by reason.
+ */
+skipped: SkipGroup[]; 
+/**
+ * The list that is left, renumbered.
+ */
+files: LargeFileView[]; 
+/**
+ * Whether the activity record could not be written (the move itself is unaffected).
+ */
+historyIncomplete: boolean }
 /**
  * One memory cleaning operation. Mirrors [`volt_core::MemoryArea`].
  */

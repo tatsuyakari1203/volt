@@ -19,9 +19,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use tauri::{AppHandle, Manager as _};
 use volt_core::{
     ActivityLog, Catalogue, CatalogueError, CleanEngine, CleaningRules, Clock, Executor,
-    FilePublisher, Journal, KnownFolders, MemoryCleaner, PortError, Ports, ProcessMonitor,
-    ReconcileReport, RecycleBinManager, Resolution, RulesError, Settings, StartupManager,
-    StartupSources, SystemClock, TweakEngine,
+    FilePublisher, Journal, KnownFolders, LargeFilesFinder, MemoryCleaner, PortError, Ports,
+    ProcessMonitor, ReconcileReport, RecycleBinManager, Resolution, RulesError, Settings,
+    StartupManager, StartupSources, SystemClock, TweakEngine,
 };
 use volt_store::{CorruptionRecovery, OpenOutcome, Store, StoreError};
 use volt_win::{
@@ -32,6 +32,7 @@ use volt_win::{
 use crate::IpcError;
 use crate::catalogue::{EMBEDDED_CATALOGUE, EMBEDDED_CLEANING_RULES};
 use crate::cleaner::CleanSession;
+use crate::large_files::LargeFilesSession;
 
 /// File name of the database inside the app data directory.
 pub const STORE_FILE_NAME: &str = "volt.db";
@@ -110,6 +111,8 @@ pub struct AppCore {
     history_incomplete: AtomicBool,
     clean: Option<CleanEngine>,
     clean_session: CleanSession,
+    large_files: Option<LargeFilesFinder>,
+    large_files_session: LargeFilesSession,
     recycle_bin: Option<RecycleBinManager>,
     memory_cleaner: Option<MemoryCleaner>,
     process_monitor: Option<ProcessMonitor>,
@@ -147,6 +150,8 @@ impl AppCore {
             history_incomplete: AtomicBool::new(false),
             clean: None,
             clean_session: CleanSession::default(),
+            large_files: None,
+            large_files_session: LargeFilesSession::default(),
             recycle_bin: None,
             memory_cleaner: None,
             process_monitor: None,
@@ -166,6 +171,25 @@ impl AppCore {
     #[must_use]
     pub fn clean_engine(&self) -> Option<&CleanEngine> {
         self.clean.as_ref()
+    }
+
+    /// Attaches the large files finder. [`build_core`] always does.
+    #[must_use]
+    pub fn with_large_files(mut self, finder: LargeFilesFinder) -> Self {
+        self.large_files = Some(finder);
+        self
+    }
+
+    /// The large files finder, or `None` for a core assembled by hand without one.
+    #[must_use]
+    pub fn large_files(&self) -> Option<&LargeFilesFinder> {
+        self.large_files.as_ref()
+    }
+
+    /// What the large files finder keeps between a scan and a move: the latest scan and its flags.
+    #[must_use]
+    pub fn large_files_session(&self) -> &LargeFilesSession {
+        &self.large_files_session
     }
 
     /// Attaches the Recycle Bin manager. The real app does in [`init`]; [`build_core`] never
@@ -403,6 +427,12 @@ fn build_core_inner(
         log::warn!("could not prune the activity log: {error}");
     }
 
+    let large_files = LargeFilesFinder::new(
+        ports.file_system.clone(),
+        cleaning.folders.clone(),
+        clock.clone(),
+    )
+    .with_activity_log(activity.clone());
     let clean = CleanEngine::new(
         rules,
         cleaning.folders,
@@ -455,6 +485,7 @@ fn build_core_inner(
         },
     )
     .with_clean_engine(clean)
+    .with_large_files(large_files)
     .with_memory_cleaner(memory_cleaner)
     .with_process_monitor(process_monitor);
     Ok(match startup_apps {
