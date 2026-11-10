@@ -75,7 +75,7 @@ What `volt-core` contains today:
   `Clock`, a `Source` (manual or automation), an outcome (applied, reverted, failed, rolled back),
   a one-line summary, and optional links to the journal batch and entry and to the tweak id or plan
   label. It is deliberately not a view over the journal: it can hold events that are not journaled
-  Operations (cleaning and memory purges will write to it), and a record outlives the journal entry
+  Operations (cleaning, memory purges and Boost write to it), and a record outlives the journal entry
   it mentions. The journal stays the source of truth for undo. `render_text` renders records as
   stable plain-text lines (UTC ISO 8601 time, source, outcome, summary, links) for export.
   - **Who writes it:** the Executor, when given a log with the builder-style
@@ -155,6 +155,14 @@ What `volt-core` contains today:
   with a shared `EventLog` that records side effects in order, so a test can prove the journal
   entry was written before the registry changed). Compiled for the crate's own tests and for
   other crates that enable the feature.
+- **Memory cleaning:** the `Memory` port reads the memory lists and purges five areas, each
+  separately. `MemoryCleaner` (`volt_core::memory`) runs a selection in a fixed order (working
+  sets, file cache, modified list, low-priority standby, standby), reads the lists before and
+  after and writes one activity record, not a journal entry, whose text says it cannot be undone.
+- **Boost:** `volt_core::boost` (settings key `boost.config`). The default is a working-set trim
+  only, with no cleaning; the opt-in moves only the user-temp rule to the Recycle Bin without a
+  preview. The Safe scan covers rules with risk Safe and `requires_admin` false. Reports say bytes
+  moved, never freed.
 - **Not Operations:** file deletion and memory purges are deliberately not Operations, because
   they cannot be undone. They only have ports (`FileSystem`, `Memory`); cleaning shows a preview
   and goes to the Recycle Bin (see the clean engine below).
@@ -181,6 +189,22 @@ What `volt-core` contains today:
     entries and reverts them newest first, so it works after a restart. A change made outside Volt
     has no recorded prior state and cannot be reverted by Volt; neither can steps that were already
     in their target state when the tweak was applied, because Volt did not change them.
+  - **Administrator rights.** A tweak may set `requires_admin` (optional, default false). The core
+    never elevates and cannot detect elevation: `TweakEngine` starts with administrator = false,
+    and the composition root calls `with_administrator(true)` once the elevation model is decided
+    (the shell does not today). For a `requires_admin` tweak, apply and revert return
+    `TweakError::NeedsAdministrator` before any read or write; `state()` and `plan()` are
+    read-only and still work.
+  - **Describe, provenance and reset.** `describe()` lists every step whatever the state.
+    `applied_by_volt()` reads the journal, so the UI can tell a tweak set outside Volt from one Volt
+    applied. `reset()` and `reset_plan()` turn off an externally set tweak by removing its registry
+    values (only for tweaks made of registry-set steps). The removal is journaled under the label
+    `<id>:reset`, so `revert()` cannot re-apply it and the Undo page can restore the values.
+  - **The starter catalogue** (`catalogue/tweaks.toml`) holds 33 tweaks. Tests run every tweak
+    against the fakes (apply, revert, exact previous state), so a new tweak is covered
+    automatically. Rules for adding one: documented or widely verified only; nothing that weakens
+    security or deletes anything; evidence is Anecdotal unless Volt measured it. Real-machine
+    verification is still open.
 
 - **Cleaning rule and the clean engine:** data as well, and one engine (`volt_core::clean`) for all
   file removal, because deleting files is the riskiest thing Volt does. Cleaning is not an
@@ -214,6 +238,9 @@ What `volt-core` contains today:
     folder outside the root and never plans a path outside it. The caller shows the plan and calls
     `CleanPlan::confirm` (or `confirm_rules`); only the resulting `ConfirmedPlan` can be passed
     to `clean`. Plans cannot be built or deserialised outside the crate.
+    A rule's scan stops at `MAX_ITEMS_PER_RULE` (25,000 items) and says so (`RuleScan::truncated`).
+    `CleanEngine::scan_observed` takes a `ScanObserver` that is told the progress and can cancel,
+    both between rules.
   - **Clean re-checks everything.** It takes the plan, never a rule, and touches only the paths
     in it. Before each item it re-resolves the root and requires it to be the planned folder, then
     checks that the path is inside the root, that the rule still allows it (include, exclude,
@@ -224,8 +251,11 @@ What `volt-core` contains today:
     permanent delete and no retry: a locked or in-use file is reported as such and left alone.
   - **An honest result.** `CleanReport` states what was moved (files, empty folders, bytes) and
     what was skipped with reasons. It deliberately has no "freed" figure: the files sit in the
-    Recycle Bin and keep their space until it is emptied, which Volt never does. `describe()`
-    says so, and UI text must say "moved to the Recycle Bin".
+    Recycle Bin and keep their space until it is emptied. `describe()` says so ("No disk space is
+    freed until the Recycle Bin is emptied"), and UI text must say "moved to the Recycle Bin".
+    Emptying is a separate, user-confirmed action outside the clean engine: the `RecycleBin` port
+    and `RecycleBinManager` (`volt_core::clean::bin`, implemented by `WinRecycleBin`) report the
+    bin's status and empty it, writing one activity record.
   - **Activity.** With a log attached, one record per rule (outcome applied, or failed when
     nothing could be moved) names the rule id and counts only, following the redaction rule: no
     path, no file name, no port message. A failing log is counted in the report and never blocks
@@ -238,6 +268,11 @@ What `volt-core` contains today:
     "this needs administrator rights" instead of showing an empty result as "nothing to clean". A
     missing root is not a refusal. The flag is the rule's own statement; how the rights are
     obtained is the undecided elevation model (see Process and elevation model).
+  - **Programs that lock a rule's files.** A rule may list `locked_by`, the executables that keep
+    its files open. `CleanEngine::with_processes` lets a scan report which of them are running
+    (`RuleScan::running_programs`), and the Clean page notes that their open files are skipped.
+    Locked files were always skipped and reported by clean; this only names the browser before the
+    user cleans.
   - **Minimum age and the setting that overrides it.** Every rule states `min_age_days` (0 for
     caches whose age means nothing). A rule with `min_age_setting` takes the age from that key of
     the `Settings` port when the engine was given one (`CleanEngine::with_settings`): a whole
@@ -254,11 +289,14 @@ What `volt-core` contains today:
     folder, no minimum age; Explorer keeps some open, and those are reported as in use). Machine
     wide, `requires_admin`: `windows-temp` (7 days, configurable, never `CBS`), `machine-wer-archive`
     and `machine-wer-queue`, `windows-update-logs` (`*.etl`) and `delivery-optimization-cache`
-    (risk Caution: the service owns it). Every description says what the files are, why removing
+    (risk Caution: the service owns it). Four browser rules in the `browser_cache` category,
+    `chrome-cache`, `edge-cache`, `brave-cache` and `firefox-cache`, are Safe and run per profile:
+    the profile wildcard is an include pattern one level below the root (`*/Cache/**`), and
+    excludes keep the walk out of user data folders. The UI leaves them unticked by default. Every description says what the files are, why removing
     them is safe and what the user notices. **Deliberately not rules:** the Windows Update
     download cache (clearing it needs the update service stopped and started again, which needs
-    elevation) and emptying the Recycle Bin (a permanent delete, which will be a separate
-    explicit action on the Cleaner page). A location is left out when there is doubt.
+    elevation) and emptying the Recycle Bin (a permanent delete, so it is the separate action
+    above). A location is left out when there is doubt.
   - **Every rule has a fixture.** `apps/desktop/src-tauri/tests/cleaning_rules.rs` builds, for
     each rule of the embedded file, a tree with the core fakes holding entries the rule must take
     and entries it must not (too new, at the age limit, excluded, matching no include, too deep,
@@ -311,9 +349,9 @@ fakes, or with a throwaway registry key and a temp directory.
   change is journaled, recorded in the activity log and counted like a tweak's. `AppCore` carries it
   as `startup_apps()`.
 - **Ports.** `windows_ports()` builds the bundle from `WinRegistry`, `WinFileSystem` and
-  `WinServices`. `WinCommands` runs the commands port. The processes and memory ports have no Windows adapter yet, so
-  `unsupported.rs` supplies `UnsupportedProcesses` and `UnsupportedMemory`, which fail every call
-  with `PortError::Unsupported`.
+  `WinServices`. `WinCommands` runs the commands port. It also uses `WinProcesses` and `WinMemory`. `unsupported.rs`
+  keeps only `UnsupportedProcesses`, a stand-in for tests, which fails every call with
+  `PortError::Unsupported`.
 - **Managed state.** The result is `AppState` in Tauri's managed state, not owned by the window, so
   the engine and the database connection outlive the on-demand window. If the core cannot be built
   (an unusable database, a build bug in the catalogue) the app still starts, the tray and window
@@ -326,15 +364,12 @@ fakes, or with a throwaway registry key and a temp directory.
   `build_core_with_cleaning`, which takes a `CleaningSetup` (the rules text and the
   `KnownFolders` resolver) so a test can pass its own. The rules text is validated before the
   database is opened; a file that does not load is `InitError::CleaningRules` (a typed init
-  error, like an invalid tweak catalogue), never a panic. There are no IPC commands or UI for
-  cleaning yet: the Cleaner page is a later task.
+  error, like an invalid tweak catalogue), never a panic. The shell's cleaning commands
+  and the Clean page are described under Typed IPC and Frontend.
 - **The catalogue** lives in the repository at `catalogue/tweaks.toml` and is embedded into the
   binary with `include_str!` (`catalogue.rs`); `volt-core` only ever receives the text. A test loads
-  the embedded text and fails the build on any problem. Today it holds exactly one tweak, Show file
-  extensions (`HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced`,
-  `HideFileExt` = DWORD 0): Safe, evidence Anecdotal because it is a usability and safety
-  preference and not a performance gain, no restart (open Explorer windows pick it up on refresh).
-  The real catalogue is a later task. The cleaning rules are embedded the same way
+  the embedded text and fails the build on any problem. It holds the 33 starter tweaks (see
+  Tweak engine above). The cleaning rules are embedded the same way
   (`catalogue/cleaning.toml`, `EMBEDDED_CLEANING_RULES`), and a test loads the embedded text.
 - **Where the files are.** The database is `volt.db` in the app data directory
   (`%APPDATA%\io.github.tatsuyakari1203.volt`); the diagnostic log is in the app log directory.
@@ -420,9 +455,15 @@ file-publisher ports with the Windows API: `WinRegistry`, `WinServices`, `WinFil
   - Only the program's file name and the exit code are logged, per the redaction rule.
   - Tests run the test executable itself as the helper process (exit codes, output, arguments,
     sleeping), plus read-only system programs, so nothing changes the machine.
-- There is no adapter for the processes or memory ports yet. The composition root hands the
-  executor small stand-ins that fail every call with `PortError::Unsupported` (see Composition
-  root).
+- **`WinProcesses`** lists processes from a ToolHelp snapshot; ending a process is not implemented
+  (`terminate` is `Unsupported`). `windows_ports()` uses it.
+- **`WinRecycleBin`** implements the `RecycleBin` port (status and empty).
+- **`WinMemory`** reads the memory lists with `NtQuerySystemInformation` class 80 (struct and class
+  from phnt `ntexapi.h`), which needs no rights, and purges five areas separately. Working-set
+  trim needs no rights (`PROCESS_SET_QUOTA`; processes that cannot be opened are counted and
+  skipped). List purges need `SeProfileSingleProcessPrivilege` and the file cache trim needs
+  `SeIncreaseQuotaPrivilege`, both only in an elevated token. A missing privilege is
+  `PortError::AccessDenied`; a status the build rejects is `Unsupported`.
 
 ## Process and elevation model
 
@@ -439,7 +480,8 @@ development machine without elevation (a read-only scan, counts only): Windows t
 Delivery Optimization cache refuse the root itself, the machine-wide error report folders list
 but refuse every report folder inside, and the Windows Update logs are readable. Cleaning them
 for real (and the Windows Update download cache, which also needs the update service stopped and
-started) waits for the elevation decision.
+started) waits for the elevation decision. The memory page shows the three admin-only kinds of
+purge disabled with the reason, and `requires_admin` tweaks are refused (`needsAdmin` in the UI).
 
 ### Window lifecycle and tray
 
@@ -460,14 +502,10 @@ and `autostart.rs`.
   works). The process and the tray icon stay.
 - **Tray.** One icon with the menu Open, Boost and Quit. A left click (on release) opens or
   focuses the window; the menu is on the right click. The menu id to action mapping
-  (`TrayAction`) is a pure function. **Boost has no engine yet:** it opens the window, which
-  starts on Home (a window that is already open is moved to Home by the UI), and emits the typed
-  event `TrayBoostRequested` for a later task to consume. It calls no memory purge. When the
-  window has to be created, the request flag is stored before the window is built, so the page-load
-  handler cannot run first and miss it; the handler then announces it. For a window that already
-  exists the open callback announces it. Whoever takes the flag announces it, so it is sent once, and
-  a failed open discards it. Delivery stays best effort until a pull command exists, because the UI
-  registers its listener asynchronously.
+  (`TrayAction`) is a pure function. **Boost** does not open the window: it runs `boost::boost_of`
+  in Rust on a blocking thread (a second click while it runs does nothing), sets the tray tooltip
+  and emits `BoostFinished` with the report. An open window navigates to Home and shows the report;
+  with no window the run is only in the activity history and the tooltip.
 - **Single instance.** `tauri-plugin-single-instance` is registered before every other plugin. A
   second launch focuses (or recreates) the window of the first instance and exits.
 - **Launch mode.** A launch with `--background` (what the Start with Windows entry passes) does
@@ -475,7 +513,7 @@ and `autostart.rs`.
 - **Capabilities.** Both plugins are driven from Rust only, so no plugin permission is granted.
   The default capability grants the window exactly two core permissions, `core:event:allow-listen`
   and `core:event:allow-unlisten`: without them Tauri refuses `listen` from the page ("event.listen
-  not allowed"), so no typed event (`app-ready`, `tray-boost-requested`, `metrics-updated`) could
+  not allowed"), so no typed event (`app-ready`, `boost-finished`, `metrics-updated`) could
   reach the UI. The window still cannot emit events. The plugins' own JavaScript commands are therefore
   unreachable from the UI.
 
@@ -685,6 +723,18 @@ the WebView2 processes. The diagnostic log was read to confirm the sampler start
   back or needs-attention apply, an incomplete revert, "nothing to undo" and a failed command are
   explained in a persistent notice in plain words, and a partly applied tweak gets an Undo button.
   The screen carries no Sample data marker.
+  In Simple mode it shows only Safe, non-admin tweaks; Advanced mode also shows risk, evidence,
+  restart and the plan steps. The mode is kept in localStorage (`volt.tweaks.mode`). A risk above
+  Safe, or turning off a tweak Volt did not apply, opens a confirmation dialog with the plan. The
+  screen has a category filter and search. Screenshot: `docs/design/tweaks-light-460x700.png`
+  (Simple mode; the dark variant is not refreshed).
+- `features/clean` is the Clean page: scan, a per-rule review, confirm, and the Recycle Bin card.
+  Safe rules are ticked by default, browser caches are not. Rules that need administrator rights
+  are shown but cannot be cleaned, and a note names running browsers whose open files are skipped.
+  Screenshot: `docs/design/clean-light-460x700.png`.
+- `features/memory` is the Memory page (state, and a choice of the five purge areas; the three
+  admin-only ones are disabled with the reason). Screenshot: `docs/design/memory-light-460x700.png`.
+  The formatters in `shared/text/{memory,size}.ts` are shared.
 - `features/home` is the Home dashboard: the health score with its explanation, and four live
   cards. See Home below.
 - `features/startup` is the Startup screen (nav entry "Startup", id `startup`; the older "Apps and
@@ -703,8 +753,8 @@ the WebView2 processes. The diagnostic log was read to confirm the sampler start
 - Outside the Volt window (a plain browser) the generated bindings fail with a `TypeError` because
   the Tauri bridge is missing. The wrapper turns that into `IpcUnavailableError`, and screens say
   "not available outside the Volt app" instead of showing the raw error.
-- The shell listens for the typed `tray-boost-requested` event and shows Home, so the tray's Boost
-  item lands on Home even when the window is already open on another section.
+- The shell listens for the typed `boost-finished` event and shows Home with the report, so a
+  tray Boost lands on Home even when the window is already open on another section.
 - The UI holds no business rules: it renders plans and results produced by the core.
 - **Typed IPC.** The Rust shell registers every command, event and transfer type in one place
   (`apps/desktop/src-tauri/src/ipc.rs`, `bindings_builder`). `tauri-specta` generates the invoke
@@ -747,10 +797,23 @@ the WebView2 processes. The diagnostic log was read to confirm the sampler start
     (`StartupEntryView`, `StartupProblemView`, `StartupChangeStatus`, ...) are owned by the shell,
     and `StartupError` maps into `IpcError` (a machine-wide entry is `accessDenied`, built from the
     core's redacted reasons, not from port messages).
+  - **Cleaning commands** (`src-tauri/src/cleaner.rs`). The plan lives in `CleanSession` inside
+    `AppCore` under an id and never crosses to the UI, which sees counts, sizes and rule-relative
+    samples. A scan can be cancelled (`cancelCleaningScan`). Rules with `requires_admin` are
+    scanned but refused at clean (the elevation model is undecided). The Recycle Bin status and
+    empty commands sit beside them.
+  - **Tweak commands.** `get_tweak_plan` returns the plan of a tweak and `reset_tweak` turns off a
+    tweak set outside Volt. `TweakInfo` carries `needsAdmin` and `appliedByVolt`;
+    `NeedsAdministrator` maps to `IpcError::AccessDenied`.
+  - **Memory and Boost commands.** `src-tauri/src/memory.rs` holds the transfer types and the
+    `memory_state` and `clean_memory` commands, run off the main thread through
+    `commands::blocking`. `boost`, `boost_config` and `set_boost_config` belong to
+    `src-tauri/src/boost.rs`.
   - **Events.** Events are structs deriving `tauri_specta::Event` and registered in
     `bindings_builder`; the sample is `AppReady(AppInfo)`, listened to as `events.appReady`.
-    `TrayBoostRequested` (`events.trayBoostRequested`, payload `null`) is sent when the user
-    picks Boost in the tray menu. `MetricsUpdated` (`events.metricsUpdated`, payload
+    `BoostFinished` (`events.boostFinished`, payload the Boost report) is sent when a Boost
+    ends, whether it started on Home or in the tray menu. `CleanScanProgress`
+    (`events.cleanScanProgress`) is sent before each rule of a cleaning scan. `MetricsUpdated` (`events.metricsUpdated`, payload
     `MetricsView`) is sent about once a second while the window is open.
   - **64-bit integers.** `specta-typescript` refuses to export `u64`/`i64` by default because
     JavaScript numbers lose precision above 2^53. A type that exposes one fails the export (and
@@ -758,7 +821,8 @@ the WebView2 processes. The diagnostic log was read to confirm the sampler start
     Registry QWORD values will need that when commands expose them. The tweak and activity
     types avoid 64-bit numbers altogether: record ids are decimal strings (and so is the cursor) and
     times are ISO 8601 UTC strings. The metrics types are the one exception: byte counts cross as
-    `f64` (exact up to 2^53, and the UI has to divide and format them), never as `u64`.
+    `f64` (exact up to 2^53, and the UI has to divide and format them), never as `u64`. Cleaning,
+    memory and Boost sizes cross the same way.
   - **Transfer types.** Types derive `specta::Type` in the shell, which owns them (`api.rs`: risk,
     evidence, restart, category, state, tweak info, apply and revert results, activity items). The
     domain types are not exposed wholesale, so a change in the core cannot change the UI contract by
@@ -821,8 +885,8 @@ doing and what to do about it.
   `checkedAt`. It does not depend on the tweak engine or on the sampler: it still works when the
   core could not start and in the first second of a window. The system disk is `SystemDrive`
   (`C:` when it is not set).
-- **No Boost button.** Boost has no engine yet, and a button that does nothing is not shipped. The
-  tray's Boost item still brings the window to Home.
+- **Boost.** One button runs the Boost use case and shows its report (bytes moved, never freed).
+  The tray's Boost item runs the same code and shows the report on Home if the window is open.
 - Screenshots with sample data (a mocked IPC) are in `docs/design`: `home-light-460x700.png`,
   `home-dark-460x700.png`, `home-light-1100x720.png` and `home-dark-1100x720.png`, and the list of
   deductions in the narrow window as `home-deductions-light-460x700.png` and

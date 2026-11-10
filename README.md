@@ -100,7 +100,7 @@ Read [docs/architecture.md](docs/architecture.md) for the full picture.
 | Milestone  | Goal                                                                                            | State       |
 | ---------- | ----------------------------------------------------------------------------------------------- | ----------- |
 | Foundation | Domain core, undo journal, Windows adapters, tweak engine, clean engine, desktop shell          | In progress |
-| v0.1 MVP   | Boost, deep memory cleaning, core cleanup, startup, processes, first tweak catalogue, Undo page | Planned     |
+| v0.1 MVP   | Boost, deep memory cleaning, core cleanup, startup, processes, first tweak catalogue, Undo page | In progress |
 | v0.2       | Extended cleaning rules, disk analyzer, uninstaller, localisation                               | Planned     |
 | v0.3       | Automation, profiles, services, disk health, CLI                                                | Planned     |
 | v1.0       | Repair toolkit, installer, auto-update, signed releases                                         | Planned     |
