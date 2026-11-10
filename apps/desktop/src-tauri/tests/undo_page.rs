@@ -18,8 +18,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tempfile::TempDir;
 use volt_core::fakes::FakeSystem;
 use volt_core::{
-    ActivityOutcome, BatchId, EntryState, NewActivity, NewEntry, Operation, PortError, PriorState,
-    Registry, RegistryHive, RegistryValue, RegistryValueRef, Source, Timestamp,
+    ActivityOutcome, BatchId, EntryId, EntryState, NewActivity, NewEntry, Operation, PortError,
+    PriorState, Registry, RegistryHive, RegistryValue, RegistryValueRef, Source, Timestamp,
 };
 use volt_desktop_lib::IpcError;
 use volt_desktop_lib::api::{
@@ -194,7 +194,7 @@ fn undo_one_entry_then_the_rest_of_the_batch_and_it_all_survives_a_restart() {
 
     // Undo one entry: Pre only.
     let pre_entry = pre.entry.clone().expect("an entry");
-    let result = undo_entry(&core, &pre_entry).expect("undo one");
+    let result = undo_entry(&core, &pre_entry, &[]).expect("undo one");
     assert_eq!(
         (result.status, result.restored, result.failed),
         (UndoStatus::Restored, 1, 0)
@@ -207,7 +207,7 @@ fn undo_one_entry_then_the_rest_of_the_batch_and_it_all_survives_a_restart() {
     );
 
     // A second undo of the same entry has nothing to do and changes nothing.
-    let again = undo_entry(&core, &pre_entry).expect("second undo");
+    let again = undo_entry(&core, &pre_entry, &[]).expect("second undo");
     assert_eq!(again.status, UndoStatus::NothingToUndo);
     assert_eq!((again.restored, again.failed), (0, 0));
     assert_eq!(real.read("Pre"), Ok(Some(RegistryValue::Dword(5))));
@@ -246,7 +246,7 @@ fn undo_one_entry_then_the_rest_of_the_batch_and_it_all_survives_a_restart() {
         preview.items[0].restore,
         "removed (it did not exist before)"
     );
-    let result = undo_batch(&core, &batch).expect("undo batch");
+    let result = undo_batch(&core, &batch, &[]).expect("undo batch");
     assert_eq!(
         (result.status, result.restored, result.failed),
         (UndoStatus::Restored, 1, 0)
@@ -264,7 +264,7 @@ fn undo_one_entry_then_the_rest_of_the_batch_and_it_all_survives_a_restart() {
     );
 
     // A second undo of the batch answers "nothing to undo".
-    let nothing = undo_batch(&core, &batch).expect("second batch undo");
+    let nothing = undo_batch(&core, &batch, &[]).expect("second batch undo");
     assert_eq!(nothing.status, UndoStatus::NothingToUndo);
     assert_eq!(real.read("Pre"), Ok(Some(RegistryValue::Dword(5))));
 
@@ -293,7 +293,7 @@ fn a_whole_batch_of_two_is_undone_in_one_go_after_a_restart_and_every_undo_is_re
         "newest first: {preview:?}"
     );
     assert_eq!(preview.items[0].restore, "set back to REG_DWORD 5");
-    let result = undo_batch(&core, &batch).expect("undo batch");
+    let result = undo_batch(&core, &batch, &[]).expect("undo batch");
     assert_eq!(
         (result.status, result.restored, result.failed),
         (UndoStatus::Restored, 2, 0)
@@ -302,7 +302,7 @@ fn a_whole_batch_of_two_is_undone_in_one_go_after_a_restart_and_every_undo_is_re
     assert_eq!(real.read("Pre"), Ok(Some(RegistryValue::Dword(5))));
 
     // A second undo of the batch answers "nothing to undo" and changes nothing.
-    let nothing = undo_batch(&core, &batch).expect("second batch undo");
+    let nothing = undo_batch(&core, &batch, &[]).expect("second batch undo");
     assert_eq!(
         (nothing.status, nothing.restored, nothing.failed),
         (UndoStatus::NothingToUndo, 0, 0)
@@ -340,7 +340,7 @@ fn a_batch_that_cannot_be_fully_undone_says_what_failed_and_can_be_finished_late
         &value_ref(subkey, "Pre"),
         PortError::AccessDenied("hkcu".into()),
     );
-    let first = undo_batch(&core, &batch).expect("a partial undo is a result");
+    let first = undo_batch(&core, &batch, &[]).expect("a partial undo is a result");
     assert_eq!(first.status, UndoStatus::Partial);
     assert_eq!((first.restored, first.failed), (1, 1));
     assert_eq!(first.failures.len(), 1);
@@ -375,13 +375,13 @@ fn a_batch_that_cannot_be_fully_undone_says_what_failed_and_can_be_finished_late
         .entry
         .clone()
         .expect("entry");
-    let single = undo_entry(&core, &pre).expect("a failed undo is a result");
+    let single = undo_entry(&core, &pre, &[]).expect("a failed undo is a result");
     assert_eq!(single.status, UndoStatus::Failed);
     assert_eq!((single.restored, single.failed), (0, 1));
 
     // Once the cause is gone the rest can be undone.
     system.registry.clear_failures();
-    let second = undo_batch(&core, &batch).expect("retry");
+    let second = undo_batch(&core, &batch, &[]).expect("retry");
     assert_eq!(second.status, UndoStatus::Restored);
     assert_eq!((second.restored, second.failed), (1, 0));
     assert_eq!(system.registry.get(&value_ref(subkey, "Pre")), None);
@@ -453,19 +453,19 @@ fn rows_without_a_journal_entry_or_with_a_missing_one_cannot_be_undone_and_say_w
 
     // Asking to undo what has no journal entry is an error the UI can show, not a guess.
     assert!(matches!(
-        undo_entry(&core, "999"),
+        undo_entry(&core, "999", &[]),
         Err(IpcError::NotFound { .. })
     ));
     assert!(matches!(
-        undo_entry(&core, "not a number"),
+        undo_entry(&core, "not a number", &[]),
         Err(IpcError::InvalidInput { .. })
     ));
     assert!(matches!(
-        undo_batch(&core, "-1"),
+        undo_batch(&core, "-1", &[]),
         Err(IpcError::InvalidInput { .. })
     ));
     assert_eq!(
-        undo_batch(&core, "999").expect("unknown batch").status,
+        undo_batch(&core, "999", &[]).expect("unknown batch").status,
         UndoStatus::NothingToUndo
     );
 }
@@ -498,7 +498,7 @@ fn a_failed_apply_and_its_rollback_are_a_failed_row_and_a_restored_row() {
     assert!(rows.iter().all(|item| item.batch == rows[0].batch));
     let batch = rows[0].batch.clone().expect("batch");
     assert_eq!(
-        undo_batch(&core, &batch).expect("nothing").status,
+        undo_batch(&core, &batch, &[]).expect("nothing").status,
         UndoStatus::NothingToUndo
     );
 }
@@ -535,7 +535,7 @@ fn previous_values_and_the_export_follow_the_redaction_rule() {
         "{preview:?}"
     );
 
-    undo_batch(&core, &batch).expect("undo");
+    undo_batch(&core, &batch, &[]).expect("undo");
     let export = export_activity_text(&core).expect("export");
     assert_eq!(export.records, 4);
     assert_eq!(export.text.lines().count(), 4, "one line per record");
@@ -662,6 +662,36 @@ fn undoing_an_older_change_names_the_later_change_it_would_overwrite() {
     assert_eq!(preview.overwrites[0].later_entry, later.0.to_string());
     assert!(preview.overwrites[0].what.ends_with("Flag"), "{preview:?}");
 
+    // Without the acknowledgement the undo is refused and changes nothing.
+    let refused = undo_entry(&core, &older, &[]).expect("a refusal is a result");
+    assert_eq!(refused.status, UndoStatus::NeedsAcknowledgement);
+    assert_eq!((refused.restored, refused.failed), (0, 0));
+    assert_eq!(refused.overwrites, preview.overwrites);
+    let still = core.journal.entry(EntryId(older.parse().expect("id")));
+    assert_eq!(
+        still.expect("entry").expect("exists").state,
+        EntryState::Applied
+    );
+    // Acknowledging a different change does not count.
+    let wrong = undo_entry(&core, &older, &["12345".to_owned()]).expect("refused");
+    assert_eq!(wrong.status, UndoStatus::NeedsAcknowledgement);
+    // A batch is refused the same way.
+    let older_batch = row(&rows, "Flag", ActivityStatus::Applied)
+        .batch
+        .clone()
+        .expect("batch");
+    assert_eq!(
+        undo_batch(&core, &older_batch, &[])
+            .expect("refused")
+            .status,
+        UndoStatus::NeedsAcknowledgement
+    );
+    // Acknowledging the later change lets the undo through.
+    let acknowledged = vec![later.0.to_string()];
+    let done = undo_entry(&core, &older, &acknowledged).expect("undo");
+    assert_eq!(done.status, UndoStatus::Restored);
+    assert!(done.overwrites.is_empty());
+
     // Once the later change is undone, the warning is gone.
     core.journal
         .set_state(later, EntryState::Reverted, None)
@@ -696,15 +726,16 @@ fn clearing_the_history_keeps_what_can_still_be_undone_and_never_touches_the_jou
     let batch = rows[0].batch.clone().expect("batch");
 
     // Everything is still undoable: nothing is removed.
-    assert_eq!(clear_history(&core).expect("clear").removed, 0);
+    let first = clear_history(&core).expect("clear");
+    assert_eq!((first.removed, first.kept as usize), (0, rows.len()));
     assert_eq!(items(&core).len(), rows.len());
 
-    undo_batch(&core, &batch).expect("undo");
+    undo_batch(&core, &batch, &[]).expect("undo");
     let before = items(&core).len();
     assert_eq!(before, 4);
     // The applied records stay as undone history; once nothing can be undone they all go.
-    let removed = clear_history(&core).expect("clear").removed;
-    assert_eq!(removed as usize, before);
+    let cleared = clear_history(&core).expect("clear");
+    assert_eq!((cleared.removed as usize, cleared.kept), (before, 0));
     assert!(items(&core).is_empty());
     // The journal still has its (reverted) entries.
     let entries = core

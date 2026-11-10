@@ -23,8 +23,11 @@ export interface BatchUndoDialogProps {
   target: BatchTarget | null;
   /** Called on Cancel, Escape or a backdrop click. */
   onClose: () => void;
-  /** Called when the user confirms. The dialog does not close itself. */
-  onConfirm: (target: BatchTarget) => void;
+  /**
+   * Called when the user confirms, with the `laterEntry` ids of the later changes the dialog
+   * showed. The dialog does not close itself.
+   */
+  onConfirm: (target: BatchTarget, shown: string[]) => void;
 }
 
 function confirmLabel(count: number): string {
@@ -73,7 +76,13 @@ export function BatchUndoDialog({ target, onClose, onConfirm }: BatchUndoDialogP
           <Button
             variant="primary"
             disabled={items.length === 0}
-            onClick={() => target && onConfirm(target)}
+            onClick={() =>
+              target &&
+              onConfirm(
+                target,
+                overwrites.map((found) => found.laterEntry),
+              )
+            }
           >
             {confirmLabel(items.length)}
           </Button>

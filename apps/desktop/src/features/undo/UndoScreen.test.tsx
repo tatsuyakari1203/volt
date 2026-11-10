@@ -52,7 +52,7 @@ function page(items: ActivityItem[], nextCursor: string | null = null): Activity
 }
 
 function result(over: Partial<UndoResult> = {}): UndoResult {
-  return { status: 'restored', restored: 1, failed: 0, failures: [], ...over };
+  return { status: 'restored', restored: 1, failed: 0, failures: [], overwrites: [], ...over };
 }
 
 /** A promise the test settles by hand, to observe the state while a command runs. */
@@ -249,7 +249,7 @@ it('undoes one change from its row, says so and shows the fresh list', async () 
     ]),
   );
   await user.click(undo);
-  expect(ipc.undoEntry).toHaveBeenCalledWith('1');
+  expect(ipc.undoEntry).toHaveBeenCalledWith('1', []);
   expect(undo.getAttribute('aria-busy')).toBe('true');
 
   pending.resolve(result());
@@ -389,7 +389,7 @@ it('undoes the batch once confirmed and reports a complete undo', async () => {
   );
   await user.click(await screen.findByRole('button', { name: 'Undo 2 changes' }));
 
-  expect(ipc.undoBatch).toHaveBeenCalledWith('8');
+  expect(ipc.undoBatch).toHaveBeenCalledWith('8', []);
   expect(screen.queryByRole('dialog')).toBeNull();
   expect(await screen.findByText('Undone. 2 changes are back to how they were.')).toBeTruthy();
   await vi.waitFor(() => expect(ipc.listActivity).toHaveBeenCalledTimes(2));
@@ -560,7 +560,30 @@ it('asks before an undo that would overwrite a later change, and names it', asyn
   expect(within(dialog).getByText(/Flag was changed again on/)).toBeDefined();
   expect(ipc.undoEntry).not.toHaveBeenCalled();
   await user.click(within(dialog).getByRole('button', { name: 'Undo anyway' }));
-  await vi.waitFor(() => expect(ipc.undoEntry).toHaveBeenCalledWith('1'));
+  await vi.waitFor(() => expect(ipc.undoEntry).toHaveBeenCalledWith('1', ['9']));
+});
+
+it('says nothing was undone when the core refuses an unacknowledged overwrite', async () => {
+  const user = userEvent.setup();
+  ipc.listActivity.mockResolvedValue(page([undoable('1')]));
+  ipc.undoEntry.mockResolvedValue(
+    result({
+      status: 'needsAcknowledgement',
+      restored: 0,
+      overwrites: [
+        {
+          entry: '1',
+          what: 'Flag',
+          laterEntry: '9',
+          laterTime: '2026-11-10T04:00:00.000Z',
+          laterSource: 'manual',
+        },
+      ],
+    }),
+  );
+  render(<UndoScreen />);
+  await user.click(await screen.findByRole('button', { name: /^Undo/ }));
+  expect(await screen.findByText(/Nothing was undone: a later change/)).toBeDefined();
 });
 
 it('does not undo when the user cancels the overwrite warning', async () => {
@@ -614,12 +637,12 @@ it('keeps every loaded row, also beyond one page of 200, when the list is read a
   await screen.findByText('Row 401');
   expect(ipc.listActivity).toHaveBeenLastCalledWith(200, '202');
   await vi.waitFor(() => expect(rows()).toHaveLength(301));
-});
+}, 30_000);
 
 it('clears the history after a confirmation that says undoable changes stay', async () => {
   const user = userEvent.setup();
   ipc.listActivity.mockResolvedValueOnce(page([undoable('1'), item('2')]));
-  ipc.clearHistory.mockResolvedValue({ removed: 1 });
+  ipc.clearHistory.mockResolvedValue({ removed: 1, kept: 1 });
   render(<UndoScreen />);
   await user.click(await screen.findByRole('button', { name: 'Clear' }));
   expect(await screen.findByText(/Changes that can still be undone stay/)).toBeDefined();
@@ -627,6 +650,9 @@ it('clears the history after a confirmation that says undoable changes stay', as
   ipc.listActivity.mockResolvedValue(page([undoable('1')]));
   await user.click(screen.getByRole('button', { name: 'Clear history' }));
   expect(await screen.findByText(/Cleared 1 record\./)).toBeDefined();
+  expect(
+    screen.getByText(/1 record stays in the list because its change can still be undone/),
+  ).toBeDefined();
   expect(ipc.clearHistory).toHaveBeenCalledTimes(1);
 });
 

@@ -274,7 +274,7 @@ fn check_undo_after_restart(core: &AppCore, sandbox: &Sandbox) {
         preview.items[0].restore,
         "set back to enabled (the record Volt wrote is removed)"
     );
-    let undone = undo_entry(core, &entry_id).expect("undoes");
+    let undone = undo_entry(core, &entry_id, &[]).expect("undoes");
     assert_eq!(undone.status, UndoStatus::Restored);
     assert_eq!(
         sandbox.read(r"Explorer\StartupApproved\Run", "Sample Notepad"),
@@ -299,7 +299,7 @@ fn check_undo_after_restart(core: &AppCore, sandbox: &Sandbox) {
     assert_eq!(page.items[1].state, ChangeState::Undone);
     // Nothing is left to undo.
     assert_eq!(
-        undo_entry(core, &entry_id).expect("again").status,
+        undo_entry(core, &entry_id, &[]).expect("again").status,
         UndoStatus::NothingToUndo
     );
 }
@@ -345,7 +345,7 @@ fn a_startup_folder_item_is_approved_under_startup_folder_and_undone_by_batch() 
         page.items.iter().filter_map(|i| i.batch.clone()).collect();
     for batch in batches.iter().rev() {
         assert_eq!(
-            undo_batch(&core, batch).expect("undoes").status,
+            undo_batch(&core, batch, &[]).expect("undoes").status,
             UndoStatus::Restored
         );
     }
