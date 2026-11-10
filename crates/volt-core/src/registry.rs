@@ -162,4 +162,16 @@ pub trait Registry: Send + Sync {
     /// Deletes a value. A missing value is [`PortError::NotFound`]. Keys are
     /// never deleted.
     fn delete_value(&self, target: &RegistryValueRef) -> Result<(), PortError>;
+
+    /// Whether a key exists, read-only. Some Windows markers are keys with no value in them
+    /// (such as the pending-restart keys), so they cannot be tested with
+    /// [`read_value`](Self::read_value). A key the caller may not open still exists: an adapter
+    /// answers `Ok(true)` for it rather than guessing "missing". `subkey` follows the same
+    /// rules as [`RegistryValueRef::subkey`].
+    fn key_exists(
+        &self,
+        hive: RegistryHive,
+        subkey: &str,
+        view: RegistryView,
+    ) -> Result<bool, PortError>;
 }

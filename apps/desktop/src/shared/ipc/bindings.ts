@@ -106,6 +106,21 @@ async latestMetrics() : Promise<Result<MetricsView | null, IpcError>> {
 }
 },
 /**
+ * Tauri command: checks the machine now and returns the health score with every deduction.
+ * 
+ * Read-only. It runs on the blocking pool, never on the main thread. A check that cannot run is
+ * reported in `unchecked`, not as an error: the command fails only when its background task
+ * does.
+ */
+async healthReport() : Promise<Result<HealthView, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("health_report") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Tauri command: undoes one journal entry (the `entry` of an activity line) and reports exactly
  * how it ended (restored, partly restored, failed or nothing to undo).
  */
@@ -389,6 +404,30 @@ export type ChangeState =
  */
 "restored"
 /**
+ * One reason the score is below 100.
+ */
+export type DeductionView = { 
+/**
+ * Stable id, such as `disk.low`.
+ */
+id: string; 
+/**
+ * Points taken off the score.
+ */
+points: number; 
+/**
+ * A short name for the problem.
+ */
+title: string; 
+/**
+ * What was found and why it matters, in plain words.
+ */
+reason: string; 
+/**
+ * What to do about it. `null` only for a fix the UI does not know yet.
+ */
+fix: FixActionView | null }
+/**
  * One fixed volume.
  */
 export type DiskView = { 
@@ -437,6 +476,26 @@ export type ExportResult =
  */
 { kind: "cancelled" }
 /**
+ * What the user can do about a deduction.
+ */
+export type FixActionView = 
+/**
+ * Open the Cleaner.
+ */
+"openCleaner" | 
+/**
+ * Open Memory.
+ */
+"openMemory" | 
+/**
+ * Open Startup.
+ */
+"openStartup" | 
+/**
+ * Restart Windows. A sentence for the user: Volt has no button that restarts the PC.
+ */
+"restartWindows"
+/**
  * The primary GPU. Every number may be missing (`null`): a driver without counters still
  * gives a name.
  */
@@ -461,6 +520,74 @@ vramTotalBytes: number | null;
  * Video memory in use as a share of the installed amount, 0 to 100.
  */
 vramUsedPercent: number | null }
+/**
+ * One input of the score.
+ */
+export type HealthCheckView = 
+/**
+ * Free space on the system disk.
+ */
+"systemDisk" | 
+/**
+ * Memory pressure.
+ */
+"memory" | 
+/**
+ * Whether Windows waits for a restart.
+ */
+"pendingRestart" | 
+/**
+ * Load of the apps that start with Windows.
+ */
+"startup"
+/**
+ * A grade of the score, for the headline.
+ */
+export type HealthLevelView = 
+/**
+ * The PC is in good shape.
+ */
+"good" | 
+/**
+ * A few things deserve attention.
+ */
+"fair" | 
+/**
+ * Several things need attention.
+ */
+"poor" | 
+/**
+ * No check could run, so there is no grade and the score means nothing.
+ */
+"unknown"
+/**
+ * The result of one health check, as the UI sees it.
+ */
+export type HealthView = { 
+/**
+ * 0 to 100: exactly 100 minus the points of `deductions`.
+ */
+score: number; 
+/**
+ * A grade of the score.
+ */
+level: HealthLevelView; 
+/**
+ * Why the score is below 100. Empty when nothing was found.
+ */
+deductions: DeductionView[]; 
+/**
+ * Checks that could not run: their absence from `deductions` is not good news.
+ */
+unchecked: HealthCheckView[]; 
+/**
+ * The system disk the free-space rule looked at, such as `C:\`.
+ */
+systemMount: string; 
+/**
+ * When the system was read, ISO 8601 in UTC.
+ */
+checkedAt: string }
 /**
  * The one error type every command returns.
  * 

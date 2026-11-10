@@ -65,6 +65,14 @@ impl WinMetrics {
         }
     }
 
+    /// Opens a source that never reads the GPU: no performance-counter query is opened, so a
+    /// one-off read of CPU time, memory and disks (the health check) stays cheap and leaves
+    /// nothing behind. Every read reports an empty GPU list.
+    #[must_use]
+    pub fn without_gpu() -> Self {
+        Self::with_gpu_reader(Box::new(NoGpu))
+    }
+
     /// Builds the source over another GPU reader. Tests use it to inject a failing one.
     pub(crate) fn with_gpu_reader(reader: Box<dyn GpuReader>) -> Self {
         Self {
@@ -247,6 +255,14 @@ mod tests {
         let source = WinMetrics::with_gpu_reader(Box::new(NoGpu));
         let sample = source.read().expect("read");
         assert!(sample.gpus.is_empty());
+    }
+
+    #[test]
+    fn a_source_without_gpu_still_reads_memory_and_disks_and_reports_no_gpu() {
+        let sample = WinMetrics::without_gpu().read().expect("read");
+        assert!(sample.gpus.is_empty());
+        assert!(sample.memory.total_physical_bytes > 0);
+        assert!(!sample.disks.is_empty());
     }
 
     #[test]

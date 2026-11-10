@@ -11,6 +11,7 @@ import {
   commands,
   type ExportResult,
   events,
+  type HealthView,
   type IpcError,
   type MetricsView,
   type Result,
@@ -31,10 +32,15 @@ export type {
   ApplyStatus,
   AppReady,
   ChangeState,
+  DeductionView,
   DiskView,
   EvidenceLevel,
   ExportResult,
+  FixActionView,
   GpuView,
+  HealthCheckView,
+  HealthLevelView,
+  HealthView,
   IpcError,
   MemoryView,
   MetricsView,
@@ -193,6 +199,16 @@ export function onMetricsUpdated(handler: (metrics: MetricsView) => void): Promi
  */
 export async function getLatestMetrics(): Promise<MetricsView | null> {
   return call(() => commands.latestMetrics());
+}
+
+/**
+ * Checks the machine now and resolves with the health score and every deduction behind it
+ * (read-only). The score is exactly 100 minus the points of the deductions. A check that could
+ * not run is listed in `unchecked`; it is not an error. Call it when Home opens and when the
+ * user asks to check again, not on a timer: memory pressure is volatile.
+ */
+export async function getHealthReport(): Promise<HealthView> {
+  return call(() => commands.healthReport());
 }
 
 /**

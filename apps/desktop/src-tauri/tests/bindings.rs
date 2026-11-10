@@ -47,6 +47,27 @@ fn generated_bindings_describe_live_metrics_with_optional_gpu_values() {
     assert!(text.contains("vramTotalBytes: number | null"), "{text}");
 }
 
+#[test]
+fn generated_bindings_describe_the_health_report_with_its_closed_fix_set() {
+    let text = generated_bindings();
+    assert!(text.contains("healthReport"), "{text}");
+    assert!(text.contains("export type HealthView"), "{text}");
+    assert!(text.contains("export type DeductionView"), "{text}");
+    // The fix actions and the levels are closed sets the UI must handle one by one.
+    for variant in [
+        "\"openCleaner\"",
+        "\"openMemory\"",
+        "\"openStartup\"",
+        "\"restartWindows\"",
+        "\"good\"",
+        "\"fair\"",
+        "\"poor\"",
+        "\"unknown\"",
+    ] {
+        assert!(text.contains(variant), "{variant} missing in {text}");
+    }
+}
+
 /// The drift gate: the committed bindings must equal what the Rust definitions generate.
 /// `scripts/bindings.ps1` (and so `pnpm check`) runs this test; `pnpm bindings` rewrites the
 /// committed file by setting `VOLT_UPDATE_BINDINGS=1`.

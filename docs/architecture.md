@@ -104,6 +104,46 @@ What `volt-core` contains today:
   of the `Ports` bundle: it is read-only, independent of the executor, and the sampler is built
   with its own source. `FakeMetrics` (in `volt_core::metrics::fake`, behind the `fakes` feature)
   answers a scripted sequence of samples and errors.
+- **Health score:** `volt_core::health`, a pure function from a few read-only inputs to a score that
+  explains itself. `HealthInputs` holds the free space of the system disk, memory in use as a
+  share, whether Windows waits for a restart and an optional startup load; `assess` returns a
+  `HealthReport`: a list of `Deduction`s and the checks that could not run. A deduction has a
+  stable id (`disk.critical`, `disk.low`, `disk.watch`, `memory.critical`, `memory.high`,
+  `restart.pending`, `startup.many`, `startup.some`), a fixed number of points, a title, a reason
+  in plain words with the numbers found, and a fix from the closed set `FixAction` (open the
+  Cleaner, open Memory, open Startup, restart Windows).
+  - **The score is never stored.** `HealthReport::score` is 100 minus the points of the listed
+    deductions and nothing else, so the number cannot change without a visible reason. A test runs
+    it over a grid of about 20 000 inputs that crosses every threshold from both sides (also with
+    missing inputs) and checks the sum, that ids are unique and known, that every deduction has
+    points, a title and a reason, and that more pressure never deducts fewer points. The most the
+    rules can take off is `MAX_TOTAL_DEDUCTION` (80), so the lowest score is 20.
+  - **Thresholds are named constants** next to the rules, each with a one-line justification.
+    Disk: below 5 percent free is critical (30 points), below 10 low (20), below 15 worth
+    watching (10); under 5 GB free is always critical, and a disk with 100 GB or more free is
+    never penalised, so a large disk is not blamed for a small share. Memory: 90 percent in use
+    or more is critical (25), 80 percent or more high (12). A pending restart is 10 points.
+    Startup load (2 or more high-impact apps, 8 points; 4 or more, 15) is implemented and tested,
+    but nothing produces the figure until the startup manager exists: while it is `None` it is
+    not part of the report and is not listed as unchecked.
+  - **Never a guess.** An input that could not be read (the sample failed, the system disk is not
+    in it, a registry marker is unreadable) is listed in `unchecked`, costs no points and is shown
+    to the user. When no check could run the level is `Unknown` and there is no grade.
+  - **Computed on demand.** Memory pressure changes second by second, so the score is worked out
+    when Home opens and when the user asks to check again, never on the metrics tick: a number that
+    moved while the user read it would look like a fault. The live cards show the moving values.
+    `inspect` reads the system once and applies the rules.
+  - **Pending restart** (`pending_restart_markers`) is read through the registry port, read-only:
+    the key `HKLM\...\Component Based Servicing\RebootPending`, the key
+    `HKLM\...\WindowsUpdate\Auto Update\RebootRequired`, and a non-empty
+    `PendingFileRenameOperations` under `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager`.
+    Positive evidence stands when another marker cannot be read; when none is set and one could
+    not be read the answer is an error, never "no restart". The `Registry` port gained
+    `key_exists` for the two marker keys, which hold no value: an adapter answers `true` for a key
+    it may not open, because it does exist. **Known limit:** installers and updaters (the Edge
+    updater, for one) queue deletions of their temporary files in `PendingFileRenameOperations`,
+    so the marker can be set on a machine that needs no restart for an update; Volt reports it
+    as the Windows marker it is.
 - **Risk and evidence labels:** `Safe`, `Caution`, `Advanced`; `Measured` or `Anecdotal`. The UI
   shows both.
 - **`fakes` cargo feature:** in-memory fakes of every port (`FakeSystem` wires them together
@@ -329,6 +369,13 @@ with the Windows API: `WinRegistry`, `WinServices`, `WinFileSystem`, `WinKnownFo
   later task. Opening a `WinMetrics` opens a PDH query, so it is created when sampling starts and
   dropped when it stops. Reading is allowed in tests (it changes nothing); they assert
   plausibility, not exact values.
+- `WinRegistry::key_exists` opens the key with query access only: not found is `false`, access
+  denied is `true` (the key exists), anything else is an error. Its test is part of the registry
+  contract that both the fake and the real adapter pass, on a throwaway `HKCU\Software\VoltTest`
+  key; reading the real `HKLM` markers is read-only and is only done at run time.
+- `WinMetrics::without_gpu()` is a source that never opens the performance-counter query, for a
+  one-off read of CPU time, memory and disks (the health check): three cheap calls that leave
+  nothing open.
 - Changing a real service's start type is deliberately not covered by an automated test, because
   it would change the machine running the tests.
 - `WinCommands` starts a program directly with its argument list through `CreateProcess`: never
@@ -537,7 +584,9 @@ the WebView2 processes. The diagnostic log was read to confirm the sampler start
   state the shell reports back. A success shows a toast with Undo (which calls revert); a rolled
   back or needs-attention apply, an incomplete revert, "nothing to undo" and a failed command are
   explained in a persistent notice in plain words, and a partly applied tweak gets an Undo button.
-  The screen carries no Sample data marker; Home still does.
+  The screen carries no Sample data marker.
+- `features/home` is the Home dashboard: the health score with its explanation, and four live
+  cards. See Home below.
 - `features/undo` is the Undo and activity page, described under Undo page below. A tweak can
   still be undone from the Tweaks screen. Features do not import each other.
 - Outside the Volt window (a plain browser) the generated bindings fail with a `TypeError` because
@@ -579,6 +628,8 @@ the WebView2 processes. The diagnostic log was read to confirm the sampler start
     are newest first; the limit is clamped to 1 to 200 and `nextCursor` is the cursor of the next,
     older page (or null). `latest_metrics` is a synchronous command that only reads a stored
     snapshot (see Live metrics).
+    `health_report` is async and read-only: it checks the machine now and returns the score, its
+    deductions and what could not be checked (see Home).
   - **Events.** Events are structs deriving `tauri_specta::Event` and registered in
     `bindings_builder`; the sample is `AppReady(AppInfo)`, listened to as `events.appReady`.
     `TrayBoostRequested` (`events.trayBoostRequested`, payload `null`) is sent when the user
@@ -621,6 +672,44 @@ the WebView2 processes. The diagnostic log was read to confirm the sampler start
 - **Window**: 460 x 700 by default, minimum 420 x 600, resizable. Below 760 px the navigation is an
   icon rail with tooltips; at 760 px and wider it shows labels.
 - Design review screenshots are kept in `docs/design`.
+
+### Home
+
+`features/home` over the `health_report` command and the live metrics. Home answers how the PC is
+doing and what to do about it.
+
+- **The score card.** The score sits in the progress ring with its grade (Good from 80, Fair from
+  60, otherwise Poor; the grade comes from the core) and a headline. When no check could run there
+  is no ring and no number, only "Not checked". "Check again" reads the machine again and keeps the
+  old report on screen until the new one arrives; a failed check keeps the last report and says so.
+  The report carries the time of the check, which is shown.
+- **The deductions** are listed under "What lowers the score", each with its points, its reason and
+  a button to the section that fixes it: Open Cleaner, Open Memory and Open Startup go to Clean,
+  Memory and Apps and Startup (the screen receives `onNavigate` and does not know the shell's
+  sections). Restart Windows has no button: Volt has no restart action, so it is a sentence. A fix
+  the UI does not know yet is listed without a button, never with one that does nothing. The
+  screen says that the score is 100 minus the listed points. Checks that could not run are named
+  in a notice and are not part of the score.
+- **The four live cards** (CPU, memory, GPU, disk) follow `onMetricsUpdated`; the listener is
+  registered first and `getLatestMetrics` is called after it, and the older reading never
+  overwrites a newer one from an event. Values the shell reports as `null` are honest empty cards:
+  a dash and "No reading yet" for the CPU before its second sample, "No GPU detected" on a machine
+  without one, "Usage is not available" for a GPU whose driver gives no counter, never a made-up
+  number. The disk card shows the system disk named by the report (the first disk, named, when the
+  report is not there yet). Each part has its own loading and error state, so a failing report does
+  not blank the cards and the other way round.
+- **The command** (`src-tauri/src/health.rs`) reads the real registry and one sample of the
+  machine on the blocking pool and returns `HealthView`, the shell's own transfer type: score,
+  level, deductions (`id`, `points`, `title`, `reason`, `fix`), `unchecked`, `systemMount` and
+  `checkedAt`. It does not depend on the tweak engine or on the sampler: it still works when the
+  core could not start and in the first second of a window. The system disk is `SystemDrive`
+  (`C:` when it is not set).
+- **No Boost button.** Boost has no engine yet, and a button that does nothing is not shipped. The
+  tray's Boost item still brings the window to Home.
+- Screenshots with sample data (a mocked IPC) are in `docs/design`: `home-light-460x700.png`,
+  `home-dark-460x700.png`, `home-light-1100x720.png` and `home-dark-1100x720.png`, and the list of
+  deductions in the narrow window as `home-deductions-light-460x700.png` and
+  `home-deductions-dark-460x700.png`.
 
 ### Undo page
 
