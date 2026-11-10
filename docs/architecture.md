@@ -25,13 +25,14 @@ apps/desktop (crate volt-desktop: Tauri shell + React UI)      crates/volt-cli (
                         domain model, use cases, port traits
 ```
 
-| Crate          | Responsibility                                                        | May depend on    | Must not depend on                                      |
-| -------------- | --------------------------------------------------------------------- | ---------------- | ------------------------------------------------------- |
-| `volt-core`    | Domain types, use cases, port traits, in-memory fakes                 | nothing internal | `tauri`, `windows`, `windows-sys`, `winreg`, `rusqlite` |
-| `volt-win`     | Implements ports with the Windows API. The only crate with `unsafe`   | `volt-core`      | `tauri`, `rusqlite`                                     |
-| `volt-store`   | Implements persistence ports                                          | `volt-core`      | `tauri`, `windows`, `windows-sys`, `winreg`             |
-| `volt-desktop` | Tauri commands, tray, window lifecycle; wires adapters into use cases | all three        | -                                                       |
-| `volt-cli`     | Command-line front end (planned)                                      | all three        | `tauri`                                                 |
+| Crate          | Responsibility                                                        | May depend on           | Must not depend on                                      |
+| -------------- | --------------------------------------------------------------------- | ----------------------- | ------------------------------------------------------- |
+| `volt-core`    | Domain types, use cases, port traits, in-memory fakes                 | nothing internal        | `tauri`, `windows`, `windows-sys`, `winreg`, `rusqlite` |
+| `volt-win`     | Implements ports with the Windows API. The only crate with `unsafe`   | `volt-core`             | `tauri`, `rusqlite`                                     |
+| `volt-store`   | Implements persistence ports                                          | `volt-core`             | `tauri`, `windows`, `windows-sys`, `winreg`             |
+| `volt-desktop` | Tauri commands, tray, window lifecycle; wires adapters into use cases | all three               | -                                                       |
+| `volt-helper`  | The elevated helper: one pipe, one bound UI, a closed request set     | `volt-core`, `volt-win` | `tauri`, `rusqlite`                                     |
+| `volt-cli`     | Command-line front end (planned)                                      | all three               | `tauri`                                                 |
 
 `scripts/check-arch.mjs` enforces this table on direct dependencies, in the pre-commit hook, in
 `pnpm check` and in CI. A workspace crate with no rule fails the check: adding a crate is an
@@ -528,11 +529,18 @@ file-publisher ports with the Windows API: `WinRegistry`, `WinServices`, `WinFil
 
 ## Process and elevation model
 
-The elevation model is not decided yet. The proposal, to be confirmed by a prototype before code
-depends on it: one elevated process that is both the tray agent and the Tauri host. The
-alternative, an unelevated UI talking to an elevated helper over a named pipe, has a smaller
-attack surface but costs an IPC protocol and a second binary. Everything below works unelevated
-and does not depend on that decision, except where it says so.
+Volt itself never runs elevated. Administrator work goes to a second, small program, `volt-helper`
+(crate `crates/volt-helper`), that the UI will start through one UAC prompt and that serves ONE
+connection from that UI over a private named pipe. Built so far: the wire protocol and the
+`Elevator` port (`volt-core::elevation`, a closed request set of `hello`, `memory_purge` and `bye`,
+1 KiB messages, strictly ordered ids, unknown fields refused), the pipe, the client check that
+binds the helper to the UI that launched it (process id, creation time, image path), the install
+folder check, the helper's self-hardening and the strict command line (`volt-win::helper`), and the
+serve loop with its idle limit, hard cap and quotas. Nothing starts the helper yet: launching it,
+the installer change and the Memory page are the next part. The helper's build is
+`scripts/build-helper.ps1` (static CRT, `requireAdministrator` manifest, no test modes: those are
+compiled in only outside release builds). Everything below works unelevated and does not depend
+on the helper, except where it says so.
 
 What already depends on it: the machine-wide cleaning rules (`windows-temp`, `machine-wer-*`,
 `windows-update-logs`, `delivery-optimization-cache`) are flagged `requires_admin`. Unelevated they

@@ -122,6 +122,13 @@ impl Helper {
 
         loop {
             let (deadline, expired) = next_deadline(last_valid, limits, hard_deadline);
+            // A pipe call that finds its work already waiting completes at once, whatever its
+            // timeout, so a peer that keeps one step ahead would never let a timeout fire. The
+            // clocks are therefore also checked here, before every call.
+            if Instant::now() >= deadline {
+                report.exit = expired;
+                return report;
+            }
             match self.server.accept(Some(remaining(deadline))) {
                 Ok(()) => {}
                 Err(IoError::Timeout) => {
@@ -168,6 +175,11 @@ impl Helper {
     ) -> ExitReason {
         loop {
             let (deadline, expired) = next_deadline(*last_valid, limits, hard_deadline);
+            // See `serve`: a request that is already waiting is read at once, so the clocks are
+            // checked before every read as well as bounding it.
+            if Instant::now() >= deadline {
+                return expired;
+            }
             let message = match self
                 .server
                 .read_message(MAX_REQUEST_BYTES, Some(remaining(deadline)))

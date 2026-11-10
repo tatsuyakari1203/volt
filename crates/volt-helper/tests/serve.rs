@@ -308,6 +308,37 @@ fn a_client_that_is_not_the_bound_process_is_refused_while_the_bound_one_is_serv
 }
 
 #[test]
+fn work_that_is_already_waiting_does_not_get_past_an_expired_clock() {
+    // A pipe call that finds its work waiting completes at once whatever its timeout, so the
+    // clocks must also be checked before each call. Here a client has connected and sent hello
+    // before the helper starts listening; both clocks are already over when it does.
+    for (idle_ms, hard_ms) in [(0, 60_000), (60_000, 0)] {
+        let name = PipeName::random().expect("name");
+        let helper = Helper::bind(&name, me()).expect("bind");
+        let memory = Arc::new(FakeMemory::new());
+        let client = PipeClient::open(&name).expect("open");
+        let hello = encode_request(&RequestEnvelope {
+            id: 1,
+            request: Request::Hello { protocol: 1 },
+        })
+        .expect("encodes");
+        client.write_message(&hello, WAIT).expect("write");
+
+        let report = helper.serve(session(&memory), &limits(idle_ms, hard_ms));
+        assert_eq!(
+            report.exit,
+            if idle_ms == 0 {
+                ExitReason::Idle
+            } else {
+                ExitReason::HardCap
+            }
+        );
+        assert_eq!(report.served_requests, 0, "idle {idle_ms}, hard {hard_ms}");
+        drop(client);
+    }
+}
+
+#[test]
 fn a_client_with_the_wrong_creation_time_or_image_is_refused() {
     let own = me();
     for bound in [
