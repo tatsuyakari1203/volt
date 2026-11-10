@@ -11,6 +11,7 @@ $steps = [ordered]@{
     'tests'        = { cargo test --workspace --locked }
     'bindings'     = { pwsh -NoProfile -File scripts/bindings.ps1 -Check }
     'architecture' = { node scripts/check-arch.mjs }
+    'privacy'      = { node --test scripts/check-privacy.test.mjs; if ($LASTEXITCODE -eq 0) { node scripts/check-privacy.mjs } }
     'biome'        = { pnpm exec biome check . }
     'typecheck'    = { pnpm --filter '@volt/desktop' typecheck }
     'vitest'       = { pnpm --filter '@volt/desktop' test }

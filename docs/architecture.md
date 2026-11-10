@@ -906,6 +906,57 @@ test uses its own catalogue whose every step targets one unique key below `HKCU\
 and removes that key afterwards. The first run of the real flow on a real machine is a manual check
 by the owner.
 
+## Quality gates
+
+`pnpm check` (`scripts/check.ps1`) runs one step per gate and CI runs the same script: rustfmt,
+clippy, tests, bindings, architecture, privacy, Biome, typecheck, Vitest and the UI boundary rule;
+`cargo-deny` and `typos` join when installed (CI always has them). It does not stop at the first
+failure and lists every failed step at the end. The step count is not written down anywhere: the
+script prints it.
+
+## Privacy and offline guarantee
+
+"Volt works offline and sends nothing" is enforced, and the statement of it is
+[privacy.md](privacy.md). That page ends in a machine-readable allowlist, and
+`scripts/check-privacy.mjs` (the `privacy` step of `pnpm check`, also run by name in CI) compares
+the repository with it in both directions, so a change that gives Volt network reach fails until
+the statement is updated in the same change. It checks:
+
+- **Capabilities and `tauri.conf.json`:** network-capable permissions (http, websocket, updater,
+  upload, opener, shell, creating windows or webviews, names with fetch/connect/download),
+  `remote` capabilities, remote windows or `devUrl`, remote IPC access, plugin configuration for a
+  network plugin and updater artifacts.
+- **Dependency graph:** `cargo metadata` for the Windows target from the workspace members over
+  normal and build edges (dev-only crates are not shipped). A denylist of crates by exact name
+  (HTTP clients and servers, TLS stacks, websocket, DNS resolvers, telemetry, updater and network
+  Tauri plugins), the `windows` features for WinHTTP, WinInet and WebSocket, and the npm
+  dependencies of the UI. Every `tauri-plugin-*` crate must be listed, network or not. Type-only
+  crates (`http`, `url`) and the async runtime (`tokio`, `mio`, `socket2`, brought in by Tauri) are
+  not on the list: they cannot connect by themselves.
+- **Content security policy:** it must exist, have `default-src`, and contain no source other than
+  keywords, `ipc:`, `asset:`, `data:`, `blob:` and loopback or `.localhost` names (so
+  `http://ipc.localhost` passes, `https:`, `*` and any host fail). `devCsp` is checked when set.
+- **Frontend source** (`apps/desktop/index.html` and `src`, tests excluded): `fetch`,
+  `XMLHttpRequest`, `WebSocket`, `EventSource`, `sendBeacon` and similar, any remote or
+  protocol-relative URL (XML namespaces and loopback excepted), imports of network packages.
+- **Volt's own Rust source:** `TcpStream`, `TcpListener`, `UdpSocket`, `tokio::net`, WinHTTP,
+  WinInet and similar. This is what guards the places the dependency list cannot see.
+
+Comments are not scanned for the source checks. The checks are a net, not a proof: a determined
+change can hide a request, but an accidental one cannot slip in unseen.
+
+Facts established for this guarantee (2026-11-10): no network client, TLS or telemetry crate is in
+the shipped graph; the default capability grants only event listen and unlisten; the content
+security policy was tightened to `default-src 'self'` with `connect-src` limited to the local IPC
+channel and `object-src`, `frame-src`, `base-uri` and `form-action` denied; the frontend has no
+request API, remote URL, remote font, script or image. `tokio` is compiled with its `net` feature
+(it is pulled in by Tauri and its plugins), so the capability exists in the binary; no Volt code uses it, which the
+source check enforces. The run-time observation (a release build, window open for 65 s) is
+recorded in [privacy.md](privacy.md): `volt-desktop.exe` held no connection, while the WebView2
+runtime's own processes opened HTTPS connections to Microsoft addresses. Those are the runtime's,
+are not stopped by the page's policy, and are stated as outside Volt's control rather than hidden.
+Extra Chromium switches that might quiet them were tried and did not, so none are set.
+
 ## Error handling
 
 Errors are typed values in the core, never panics. They cross the IPC boundary as data so the UI
