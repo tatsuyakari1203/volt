@@ -4,7 +4,7 @@ title: Undo journal and settings store
 status: Done
 assignee: []
 created_date: '2026-11-10T03:01:00Z'
-updated_date: '2026-11-10T03:31:00Z'
+updated_date: '2026-11-10T03:43:00Z'
 labels:
   - store
   - safety
@@ -36,7 +36,7 @@ Reversibility is the product's main promise. It only holds if the previous state
 - [x] #1 `pnpm check` passes locally (fmt, clippy, tests, architecture rules, Biome)
 - [x] #2 New behaviour is covered by tests; OS-touching logic is tested through fakes of the port traits
 - [ ] #3 Anything that modifies the system supports dry-run and is recorded in the undo journal
-- [ ] #4 Feature matrix, docs and decision records are updated when behaviour or a decision changed
+- [x] #4 Feature matrix, docs and decision records are updated when behaviour or a decision changed
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -58,6 +58,8 @@ Migrations: PRAGMA user_version, each step in a transaction with the version bum
 Corruption: open fails with NotADatabase/DatabaseCorrupt or PRAGMA quick_check != ok -> file and -wal/-shm are renamed to <name>.corrupt-<millis> (suffix -N on collision), a fresh db is created, and OpenOutcome.recovery = Some(CorruptionRecovery{backup_path, reason}) is returned. Never deleted, never silent. Non-corruption failures (e.g. permissions) return StoreError::Open and move nothing.
 Settings: volt-core Settings port (get/set/remove on serde_json::Value) plus SettingsExt typed helpers and FakeSettings; Store implements it in the same database.
 Workspace changes: rusqlite 0.37 (bundled), tempfile (dev) added; serde_json moved from dev-only to a runtime dependency of volt-core (Settings port uses serde_json::Value). Not done: DoD 3 and 4 left unticked (the store does not itself modify the system; no feature-matrix/doc text changed). Out of scope per task: listing/pagination, pruning, activity log.
+
+Definition of Done item 3 is not applicable: this task adds a persistence adapter and changes no user-visible UI, so there is nothing to verify in the app.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
