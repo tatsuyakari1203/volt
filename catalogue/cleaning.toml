@@ -252,6 +252,251 @@ path = "Mozilla/Firefox/Profiles"
 min_age_days = 1
 max_depth = 4
 
+# ---- shader caches -----------------------------------------------------------------------------
+#
+# Compiled shaders that Windows and the graphics drivers keep so games and apps do not compile them
+# again on every start. They are rebuilt on demand, but the first run of a game afterwards stutters
+# while its shaders compile again, so they are unticked by default. Files newer than a day (a game
+# that is running right now) are kept. Left out: the per-driver cache under LocalLow\NVIDIA (a rule
+# root cannot name the LocalLow folder) and the Vulkan cache of AMD (VkCache).
+
+[[rule]]
+id = "directx-shader-cache"
+title = "DirectX shader cache"
+description = """
+Compiled graphics shaders that DirectX saves in D3DSCache (one folder per program) so games and apps start \
+without compiling them again. Windows and the programs rebuild them as they need them. Afterwards the first \
+run of each game or app may stutter or load a little slower while its shaders compile again. Files modified \
+in the last day are kept."""
+category = "shader_cache"
+risk = "safe"
+include = ["**"]
+
+[rule.root]
+location = "local_app_data"
+path = "D3DSCache"
+
+[rule.constraints]
+min_age_days = 1
+max_depth = 3
+
+[[rule]]
+id = "nvidia-shader-cache"
+title = "NVIDIA shader cache"
+description = """
+Compiled shaders that the NVIDIA driver keeps for DirectX (DXCache) and OpenGL (GLCache). The driver builds \
+them again when a game or app asks for them. Afterwards the first run of each game may stutter or load \
+slowly while shaders compile again. Other NVIDIA folders (OptiX, the NVIDIA app) are not touched. Files \
+modified in the last day are kept."""
+category = "shader_cache"
+risk = "safe"
+include = ["DXCache/**", "GLCache/**"]
+
+[rule.root]
+location = "local_app_data"
+path = "NVIDIA"
+
+[rule.constraints]
+min_age_days = 1
+max_depth = 3
+
+[[rule]]
+id = "nvidia-compute-cache"
+title = "NVIDIA compute cache"
+description = """
+The per-user compute cache (ComputeCache) of the NVIDIA driver: GPU code that CUDA and similar programs \
+compiled and saved. The driver compiles it again when a program needs it, so the first run of an AI or \
+rendering program afterwards can start slowly. Files modified in the last day are kept."""
+category = "shader_cache"
+risk = "safe"
+include = ["**"]
+
+[rule.root]
+location = "roaming_app_data"
+path = "NVIDIA/ComputeCache"
+
+[rule.constraints]
+min_age_days = 1
+max_depth = 3
+
+[[rule]]
+id = "amd-shader-cache"
+title = "AMD shader cache"
+description = """
+Compiled shaders that the AMD driver keeps for DirectX 9/11 (DxCache), DirectX 12 (DxcCache) and OpenGL \
+(GLCache). The driver builds them again when a game or app asks for them. Afterwards the first run of each \
+game may stutter or load slowly while shaders compile again. Other AMD folders (settings, Vulkan cache) are \
+not touched. Files modified in the last day are kept."""
+category = "shader_cache"
+risk = "safe"
+include = ["DxCache/**", "DxcCache/**", "GLCache/**"]
+
+[rule.root]
+location = "local_app_data"
+path = "AMD"
+
+[rule.constraints]
+min_age_days = 1
+max_depth = 3
+
+# ---- chat app caches ---------------------------------------------------------------------------
+#
+# A chat app rule takes the cache folders of the app and nothing else: never messages, databases,
+# files received or saved (Zalo's "media", Telegram downloads), login or session state (cookies,
+# local storage, tdata account folders). Each rule names the folders it takes in `include` and
+# keeps the walk out of the user's own data with `exclude` as a second guard. Chromium based apps
+# (Discord, Zalo, Teams) use the same cache folder names as the browsers above. A running app keeps
+# some cache files open: those are skipped, and the scan names the app when it runs (`locked_by`).
+# Unticked by default: afterwards the app downloads pictures, avatars and other media again.
+#
+# Layouts: Discord and Zalo were checked (folder names only) on a machine that has them. Telegram
+# Desktop (tdata/user_data*/cache and media_cache, the folders its own "Clear cache" empties) and
+# Teams (the WebView2 profile EBWebView of new Teams, the Cache folders of classic Teams) come
+# from the apps' documentation; when a folder is not there the rule finds nothing.
+
+[[rule]]
+id = "discord-cache"
+title = "Discord cache"
+description = """
+Pictures, avatars, scripts and graphics caches that Discord saved in its profile folder so chats open quickly. \
+Only those cache folders are taken: messages live on Discord's servers, and your login, settings, local storage \
+and cookies are never touched, so you stay signed in. Afterwards Discord downloads avatars and images again \
+as you scroll, so chats load slower at first. Files modified in the last day are kept, and files Discord has \
+open while it runs are skipped."""
+category = "chat_app_cache"
+risk = "safe"
+include = [
+    "Cache/**",
+    "Code Cache/**",
+    "GPUCache/**",
+    "DawnGraphiteCache/**",
+    "DawnWebGPUCache/**",
+    "ShaderCache/**",
+    "GPUPersistentCache/**",
+]
+exclude = [
+    "IndexedDB",
+    "Local Storage",
+    "Network",
+    "Service Worker",
+    "Session Storage",
+    "Shared Dictionary",
+    "WebStorage",
+]
+locked_by = ["discord.exe"]
+
+[rule.root]
+location = "roaming_app_data"
+path = "discord"
+
+[rule.constraints]
+min_age_days = 1
+max_depth = 4
+
+[[rule]]
+id = "telegram-cache"
+title = "Telegram Desktop cache"
+description = """
+The cache that Telegram Desktop keeps of pictures, stickers, voice messages and videos it downloaded for your \
+chats (the cache and media_cache folders of each account). Your chats stay in your Telegram cloud, and your \
+login (tdata), settings and the files you saved to your Downloads folder are never touched. Afterwards \
+Telegram downloads the media of a chat again when you open it, which uses data and is slower at first. Files \
+modified in the last day are kept, and files Telegram has open while it runs are skipped."""
+category = "chat_app_cache"
+risk = "safe"
+include = ["tdata/user_data*/cache/**", "tdata/user_data*/media_cache/**"]
+exclude = ["tdata/????????????????", "tdata/key_data*"]
+locked_by = ["telegram.exe"]
+
+[rule.root]
+location = "roaming_app_data"
+path = "Telegram Desktop"
+
+[rule.constraints]
+min_age_days = 1
+max_depth = 5
+
+[[rule]]
+id = "teams-cache"
+title = "Microsoft Teams cache (new Teams)"
+description = """
+The web cache that the new Microsoft Teams keeps in its WebView2 profile (Cache, Code Cache and GPUCache) so \
+meetings and chats load quickly. Messages and files live in Microsoft 365, and your login, cookies and local \
+storage are never touched. Afterwards Teams downloads images and its own scripts again, so it opens slower \
+the first time. Files modified in the last day are kept, and files Teams has open while it runs are skipped."""
+category = "chat_app_cache"
+risk = "safe"
+include = ["EBWebView/*/Cache/**", "EBWebView/*/Code Cache/**", "EBWebView/*/GPUCache/**"]
+exclude = [
+    "EBWebView/*/IndexedDB",
+    "EBWebView/*/Local Storage",
+    "EBWebView/*/Network",
+    "EBWebView/*/Service Worker",
+    "EBWebView/*/Session Storage",
+]
+locked_by = ["ms-teams.exe", "msteams.exe"]
+
+[rule.root]
+location = "local_app_data"
+path = "Packages/MSTeams_8wekyb3d8bbwe/LocalCache/Microsoft/MSTeams"
+
+[rule.constraints]
+min_age_days = 1
+max_depth = 5
+
+[[rule]]
+id = "teams-classic-cache"
+title = "Microsoft Teams cache (classic Teams)"
+description = """
+The web cache of classic Microsoft Teams (Cache, Code Cache and GPUCache). Messages and files live in \
+Microsoft 365, and your login, cookies, local storage and databases are never touched. Afterwards Teams \
+downloads images and its own scripts again, so it opens slower the first time. Files modified in the last day \
+are kept, and files Teams has open while it runs are skipped."""
+category = "chat_app_cache"
+risk = "safe"
+include = ["Cache/**", "Code Cache/**", "GPUCache/**"]
+exclude = ["databases", "IndexedDB", "Local Storage", "Network", "Session Storage", "blob_storage"]
+locked_by = ["teams.exe"]
+
+[rule.root]
+location = "roaming_app_data"
+path = "Microsoft/Teams"
+
+[rule.constraints]
+min_age_days = 1
+max_depth = 4
+
+[[rule]]
+id = "zalo-cache"
+title = "Zalo cache"
+description = """
+The web and graphics caches of Zalo for PC (Cache, Code Cache, GPUCache and DawnCache in the ZaloData folder). \
+Your messages (Database), the pictures, videos and files received or sent (media), your login and settings are \
+never touched. Afterwards Zalo loads avatars, stickers and images again, so chats open slower the first time. \
+Files modified in the last day are kept, and files Zalo has open while it runs are skipped."""
+category = "chat_app_cache"
+risk = "safe"
+include = ["Cache/**", "Code Cache/**", "GPUCache/**", "DawnCache/**"]
+exclude = [
+    "Database",
+    "media",
+    "Partitions",
+    "Local Storage",
+    "Network",
+    "Session Storage",
+    "pin-vault-data",
+    "blob_storage",
+]
+locked_by = ["zalo.exe"]
+
+[rule.root]
+location = "roaming_app_data"
+path = "ZaloData"
+
+[rule.constraints]
+min_age_days = 1
+max_depth = 4
+
 # ---- machine-wide: administrator rights needed --------------------------------------------------
 
 [[rule]]

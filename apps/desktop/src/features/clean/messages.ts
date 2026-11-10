@@ -18,12 +18,22 @@ export function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** Groups whose cleaning has a visible cost afterwards, so the user chooses them. */
+const UNTICKED_CATEGORIES: ReadonlySet<string> = new Set([
+  'browserCache',
+  'shaderCache',
+  'chatAppCache',
+]);
+
 /**
  * Whether the rule is ticked when a scan finishes: Safe, no administrator rights needed, and not a
- * browser cache (clearing it makes sites load slower once, so the user chooses it).
+ * browser, shader or chat app cache (clearing it makes sites slower once, stutters games while
+ * shaders compile again, or makes a chat app download media again, so the user chooses it).
  */
 export function tickedByDefault(rule: CleaningRuleInfo): boolean {
-  return rule.risk === 'safe' && !rule.needsAdministrator && rule.category !== 'browserCache';
+  return (
+    rule.risk === 'safe' && !rule.needsAdministrator && !UNTICKED_CATEGORIES.has(rule.category)
+  );
 }
 
 /** What a scan found for one rule, in one line. */

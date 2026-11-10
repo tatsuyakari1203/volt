@@ -428,6 +428,23 @@ describe('helpers', () => {
     expect(tickedByDefault(chrome)).toBe(false);
   });
 
+  it('leaves shader caches and chat app caches unticked', () => {
+    const shaders: CleaningRuleInfo = {
+      ...temp,
+      id: 'directx-shader-cache',
+      category: 'shaderCache',
+      categoryLabel: 'Shader caches',
+    };
+    const chat: CleaningRuleInfo = {
+      ...temp,
+      id: 'zalo-cache',
+      category: 'chatAppCache',
+      categoryLabel: 'Chat app caches',
+    };
+    expect(tickedByDefault(shaders)).toBe(false);
+    expect(tickedByDefault(chat)).toBe(false);
+  });
+
   it('never counts a rule that needs administrator rights, even when it is in the set', () => {
     const total = selectionOf(scanned.rules, new Set(['user-temp', 'windows-temp']));
     expect(total.files).toBe(1200);

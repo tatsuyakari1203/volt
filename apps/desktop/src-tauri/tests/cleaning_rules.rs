@@ -422,6 +422,128 @@ fn fixture(id: &str) -> Option<Tree> {
             ("abcd1234.default-release/cache2/link", Link),
             ("abcd1234.default-release/cache2/a/b/c/d/deep", TooDeep),
         ],
+        _ => return shader_fixture(id),
+    })
+}
+
+/// The shader cache rules.
+fn shader_fixture(id: &str) -> Option<Tree> {
+    Some(match id {
+        "directx-shader-cache" => vec![
+            ("a1b2c3d4/1.idx", Taken),
+            ("a1b2c3d4/1.bin", Taken),
+            ("e5f6a7b8/2.bin", Taken),
+            ("loose.bin", Taken),
+            ("limit.bin", TakenAtAgeLimit),
+            ("fresh.bin", TooNew),
+            ("link", Link),
+            ("x/y/z/w/deep.bin", TooDeep),
+        ],
+        "nvidia-shader-cache" => vec![
+            ("DXCache/0002a9db011577a1.nvph", Taken),
+            ("DXCache/0002a9db12df60d8.toc", Taken),
+            ("GLCache/ab/cd/shader.bin", Taken),
+            ("DXCache/limit.nvph", TakenAtAgeLimit),
+            ("GLCache/fresh.bin", TooNew),
+            ("OptixCache/optix.db", NotMatching),
+            ("warp/kernel.bin", NotMatching),
+            ("DXCache/link", Link),
+            ("DXCache/a/b/c/deep.nvph", TooDeep),
+        ],
+        "nvidia-compute-cache" => vec![
+            ("0/1.bin", Taken),
+            ("5/2/3.bin", Taken),
+            ("limit.bin", TakenAtAgeLimit),
+            ("fresh.bin", TooNew),
+            ("link", Link),
+            ("a/b/c/d/deep.bin", TooDeep),
+        ],
+        "amd-shader-cache" => vec![
+            ("DxCache/0a1b.bin", Taken),
+            ("DxcCache/sub/2c3d.bin", Taken),
+            ("GLCache/4e5f.bin", Taken),
+            ("DxCache/limit.bin", TakenAtAgeLimit),
+            ("GLCache/fresh.bin", TooNew),
+            ("Settings/profile.xml", NotMatching),
+            ("VkCache/vk.bin", NotMatching),
+            ("DxCache/link", Link),
+            ("DxCache/a/b/c/deep.bin", TooDeep),
+        ],
+        _ => return app_fixture(id),
+    })
+}
+
+/// The chat app cache rules.
+fn app_fixture(id: &str) -> Option<Tree> {
+    Some(match id {
+        "discord-cache" => vec![
+            ("Cache/Cache_Data/f_000001", Taken),
+            ("Code Cache/js/abc_0", Taken),
+            ("GPUCache/data_0", Taken),
+            ("ShaderCache/index", Taken),
+            ("DawnGraphiteCache/data_1", Taken),
+            ("GPUPersistentCache/DawnGraphiteCache/x", Taken),
+            ("GPUCache/limit", TakenAtAgeLimit),
+            ("GPUCache/fresh", TooNew),
+            ("Local Storage/leveldb/000003.log", Excluded),
+            ("Network/Cookies", Excluded),
+            ("settings.json", NotMatching),
+            ("discord_asset_cache/voice_filters/f", NotMatching),
+            ("Cache/link", Link),
+            ("Cache/a/b/c/d/deep", TooDeep),
+        ],
+        "telegram-cache" => vec![
+            ("tdata/user_data/cache/0/f1", Taken),
+            ("tdata/user_data/media_cache/1/f2", Taken),
+            ("tdata/user_data#2/cache/0/f3", Taken),
+            ("tdata/user_data/cache/limit", TakenAtAgeLimit),
+            ("tdata/user_data/cache/fresh", TooNew),
+            ("tdata/D877F783D5D3EF8C/map1", Excluded),
+            ("tdata/key_datas", Excluded),
+            ("tdata/user_data/emoji/e1", NotMatching),
+            ("Telegram.exe", NotMatching),
+            ("tdata/user_data/cache/link", Link),
+            ("tdata/user_data/cache/a/b/c/deep", TooDeep),
+        ],
+        "teams-cache" => vec![
+            ("EBWebView/Default/Cache/Cache_Data/f_000001", Taken),
+            ("EBWebView/Default/Code Cache/js/abc_0", Taken),
+            ("EBWebView/Profile 1/GPUCache/data_0", Taken),
+            ("EBWebView/Default/GPUCache/limit", TakenAtAgeLimit),
+            ("EBWebView/Default/GPUCache/fresh", TooNew),
+            ("EBWebView/Default/Network/Cookies", Excluded),
+            ("EBWebView/Default/Local Storage/leveldb/x", Excluded),
+            ("EBWebView/Default/History", NotMatching),
+            ("settings.json", NotMatching),
+            ("EBWebView/Default/Cache/link", Link),
+            ("EBWebView/Default/Cache/a/b/c/deep", TooDeep),
+        ],
+        "teams-classic-cache" => vec![
+            ("Cache/f_000001", Taken),
+            ("Code Cache/js/abc_0", Taken),
+            ("GPUCache/data_0", Taken),
+            ("GPUCache/limit", TakenAtAgeLimit),
+            ("GPUCache/fresh", TooNew),
+            ("databases/db/x", Excluded),
+            ("Local Storage/leveldb/x", Excluded),
+            ("Cookies", NotMatching),
+            ("Cache/link", Link),
+            ("Cache/a/b/c/d/deep", TooDeep),
+        ],
+        "zalo-cache" => vec![
+            ("Cache/Cache_Data/f_000001", Taken),
+            ("Code Cache/js/abc_0", Taken),
+            ("GPUCache/data_0", Taken),
+            ("DawnCache/data_1", Taken),
+            ("GPUCache/limit", TakenAtAgeLimit),
+            ("GPUCache/fresh", TooNew),
+            ("Database/messages.db", Excluded),
+            ("media/1/photo.jpg", Excluded),
+            ("Local Storage/leveldb/x", Excluded),
+            ("resp_cache/404/x", NotMatching),
+            ("Cache/link", Link),
+            ("Cache/a/b/c/d/deep", TooDeep),
+        ],
         _ => return None,
     })
 }
@@ -455,6 +577,15 @@ fn every_rule_has_a_fixture_and_every_fixture_covers_what_the_rule_allows() {
         "edge-cache",
         "brave-cache",
         "firefox-cache",
+        "directx-shader-cache",
+        "nvidia-shader-cache",
+        "nvidia-compute-cache",
+        "amd-shader-cache",
+        "discord-cache",
+        "telegram-cache",
+        "teams-cache",
+        "teams-classic-cache",
+        "zalo-cache",
     ] {
         assert!(ids.contains(known), "fixture for {known} but no such rule");
     }
@@ -828,4 +959,237 @@ fn a_running_browser_is_named_by_the_scan_and_a_stopped_one_is_not() {
     assert_eq!(running("firefox-cache"), ["firefox.exe"]);
     assert!(running("edge-cache").is_empty());
     assert!(running("brave-cache").is_empty());
+}
+
+// ---- shader caches and chat app caches --------------------------------------------------------
+
+const SHADER_RULES: [&str; 4] = [
+    "directx-shader-cache",
+    "nvidia-shader-cache",
+    "nvidia-compute-cache",
+    "amd-shader-cache",
+];
+const CHAT_RULES: [&str; 5] = [
+    "discord-cache",
+    "telegram-cache",
+    "teams-cache",
+    "teams-classic-cache",
+    "zalo-cache",
+];
+
+#[test]
+fn shader_and_chat_rules_are_safe_user_rules_that_say_what_is_rebuilt() {
+    let rules = rules();
+    for id in SHADER_RULES.iter().chain(CHAT_RULES.iter()) {
+        let rule = rules.get(id).expect("rule");
+        let expected = if SHADER_RULES.contains(id) {
+            volt_core::CleanCategory::ShaderCache
+        } else {
+            volt_core::CleanCategory::ChatAppCache
+        };
+        assert_eq!(rule.category, expected, "{id}");
+        assert!(!rule.requires_admin, "{id}");
+        assert!(rule.constraints.min_age_days >= 1, "{id}");
+        assert!(
+            rule.description.to_lowercase().contains("afterwards"),
+            "{id}: the description says what happens afterwards"
+        );
+        if CHAT_RULES.contains(id) {
+            assert!(
+                !rule.locked_by.is_empty(),
+                "{id}: a running app holds files"
+            );
+            assert!(!rule.exclude.is_empty(), "{id}: user data is excluded too");
+        }
+    }
+}
+
+/// One chat app: the cache files a clean may list, and what the app keeps next to them that a
+/// clean must never list (messages, databases, received or saved files, login and session state).
+struct ChatProfile {
+    id: &'static str,
+    caches: &'static [&'static str],
+    protected: &'static [&'static str],
+}
+
+const CHAT_PROFILES: [ChatProfile; 5] = [
+    ChatProfile {
+        id: "zalo-cache",
+        caches: &[
+            "Cache/Cache_Data/f_000001",
+            "Code Cache/js/abc_0",
+            "GPUCache/data_0",
+            "DawnCache/data_1",
+        ],
+        protected: &[
+            "Database/messages.db",
+            "Database/index/1.ldb",
+            "media/1234/photo.jpg",
+            "media/1234/received.pdf",
+            "Partitions/zalo/Cookies",
+            "Partitions/zalo/Local Storage/leveldb/000003.log",
+            "Local Storage/leveldb/000003.log",
+            "Session Storage/000003.log",
+            "Network/Cookies",
+            "pin-vault-data/vault.bin",
+            "cal/calendar.db",
+            "trust_path/trust.bin",
+            "resp_cache/404/entry",
+            "blob_storage/blob",
+            "Preferences",
+        ],
+    },
+    ChatProfile {
+        id: "discord-cache",
+        caches: &[
+            "Cache/Cache_Data/f_000001",
+            "Code Cache/js/abc_0",
+            "GPUCache/data_0",
+            "ShaderCache/index",
+            "DawnGraphiteCache/data_1",
+            "GPUPersistentCache/DawnGraphiteCache/x",
+        ],
+        protected: &[
+            "Local Storage/leveldb/000003.log",
+            "Session Storage/000003.log",
+            "IndexedDB/https_discord.com_0.indexeddb.leveldb/000003.log",
+            "Network/Cookies",
+            "Network/Trust Tokens",
+            "Service Worker/Database/000003.log",
+            "Shared Dictionary/db",
+            "WebStorage/QuotaManager",
+            "settings.json",
+            "sentry/session.json",
+            "discord_asset_cache/voice_filters/f",
+            "component_crx_cache/metadata.json",
+            "logs/discord.log",
+        ],
+    },
+    ChatProfile {
+        id: "telegram-cache",
+        caches: &[
+            "tdata/user_data/cache/0/f1",
+            "tdata/user_data/cache/12/a/f2",
+            "tdata/user_data/media_cache/1/f3",
+            "tdata/user_data#2/cache/0/f4",
+        ],
+        protected: &[
+            "tdata/D877F783D5D3EF8C/map1",
+            "tdata/D877F783D5D3EF8Cs",
+            "tdata/key_datas",
+            "tdata/settingss",
+            "tdata/usertag",
+            "tdata/user_data/emoji/e1",
+            "tdata/user_data/stickers/s1",
+            "tdata/emoji/e2",
+            "tdata/countries",
+            "tdata/shortcuts-default.json",
+            "Telegram.exe",
+            "Updater.exe",
+            "log.txt",
+        ],
+    },
+    ChatProfile {
+        id: "teams-cache",
+        caches: &[
+            "EBWebView/Default/Cache/Cache_Data/f_000001",
+            "EBWebView/Default/Code Cache/js/abc_0",
+            "EBWebView/Default/GPUCache/data_0",
+            "EBWebView/Profile 1/Cache/Cache_Data/f_000002",
+        ],
+        protected: &[
+            "EBWebView/Default/Network/Cookies",
+            "EBWebView/Default/Local Storage/leveldb/000003.log",
+            "EBWebView/Default/Session Storage/000003.log",
+            "EBWebView/Default/IndexedDB/https_teams.microsoft.com_0.indexeddb.leveldb/000003.log",
+            "EBWebView/Default/Service Worker/Database/000003.log",
+            "EBWebView/Default/History",
+            "EBWebView/Default/Login Data",
+            "EBWebView/Local State",
+            "tenants/tenant.json",
+            "settings.json",
+        ],
+    },
+    ChatProfile {
+        id: "teams-classic-cache",
+        caches: &["Cache/f_000001", "Code Cache/js/abc_0", "GPUCache/data_0"],
+        protected: &[
+            "Cookies",
+            "databases/db/x",
+            "IndexedDB/https_teams.microsoft.com_0.indexeddb.leveldb/000003.log",
+            "Local Storage/leveldb/000003.log",
+            "Session Storage/000003.log",
+            "Network/Cookies",
+            "blob_storage/b",
+            "storage.json",
+            "desktop-config.json",
+            "settings.json",
+        ],
+    },
+];
+
+#[test]
+fn chat_rules_list_only_cache_folders_and_never_messages_files_or_login_state() {
+    for profile in &CHAT_PROFILES {
+        let id = profile.id;
+        let world = World::new();
+        let rule = world.engine.rules().get(id).expect("rule").clone();
+        let root = world.root_of(&rule);
+        for cache in profile.caches {
+            world
+                .fs
+                .add_file_at(below(&root, cache), 100, ago(30 * DAY));
+        }
+        for kept in profile.protected {
+            world.fs.add_file_at(below(&root, kept), 100, ago(30 * DAY));
+        }
+
+        let plan = world.engine.scan(&[id]).expect("scan");
+        let scan = &plan.rules[0];
+        let listed: BTreeSet<PathBuf> = scan.items.iter().map(|item| item.path.clone()).collect();
+        let expected: BTreeSet<PathBuf> = profile
+            .caches
+            .iter()
+            .map(|cache| below(&root, cache))
+            .collect();
+        assert_eq!(listed, expected, "{id}: exactly the cache files are listed");
+
+        let report = world.engine.clean(&plan.confirm(), Source::Manual);
+        assert_eq!(report.skipped_count(), 0, "{id}");
+        let trashed: BTreeSet<PathBuf> = world.fs.trashed().into_iter().collect();
+        assert_eq!(trashed, expected, "{id}: a clean moves only cache files");
+        for kept in profile.protected {
+            assert!(
+                world.fs.exists(&below(&root, kept)),
+                "{id}: {kept} was touched"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_running_chat_app_is_named_by_the_scan() {
+    let world = World::new();
+    let processes = Arc::new(volt_core::fakes::FakeProcesses::new());
+    let engine = CleanEngine::new(
+        rules(),
+        world.folders.clone(),
+        world.fs.clone(),
+        Arc::new(ManualClock::new(NOW)),
+    )
+    .with_processes(processes.clone());
+    processes.add(10, "Zalo.EXE", 0);
+    processes.add(11, "Discord.exe", 0);
+    let plan = engine.scan(&CHAT_RULES).expect("scan");
+    let running = |id: &str| {
+        plan.rules
+            .iter()
+            .find(|scan| scan.rule_id == id)
+            .expect("scan")
+            .running_programs
+            .clone()
+    };
+    assert_eq!(running("zalo-cache"), ["zalo.exe"]);
+    assert_eq!(running("discord-cache"), ["discord.exe"]);
+    assert!(running("telegram-cache").is_empty());
 }

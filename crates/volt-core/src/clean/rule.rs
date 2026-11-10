@@ -30,6 +30,10 @@ pub enum CleanCategory {
     ApplicationCache,
     /// Caches of web browsers.
     BrowserCache,
+    /// Shader caches of Windows and graphics drivers, rebuilt as programs need them.
+    ShaderCache,
+    /// Caches of chat applications (never messages, files or sign-in state).
+    ChatAppCache,
     /// Log files.
     Logs,
     /// Crash dumps and error reports.
@@ -44,6 +48,8 @@ impl fmt::Display for CleanCategory {
             Self::TemporaryFiles => "Temporary files",
             Self::ApplicationCache => "Application caches",
             Self::BrowserCache => "Browser caches",
+            Self::ShaderCache => "Shader caches",
+            Self::ChatAppCache => "Chat app caches",
             Self::Logs => "Logs",
             Self::CrashReports => "Crash reports",
             Self::WindowsUpdate => "Windows Update leftovers",
