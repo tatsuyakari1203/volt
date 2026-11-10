@@ -17,6 +17,8 @@ volt-store = { path = "crates/volt-store" }
 volt-win = { path = "crates/volt-win" }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
+# Windows API bindings. Only volt-win may use it (scripts/check-arch.mjs); features are listed there.
+windows = "0.62"
 serde_json = "1"
 # SQLite is compiled in (`bundled`): no system library is needed.
 rusqlite = { version = "0.41", features = ["bundled"] }

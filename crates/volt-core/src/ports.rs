@@ -38,9 +38,15 @@ pub trait FileSystem: Send + Sync {
     /// Metadata for a path. A missing path is `Ok(None)`.
     fn stat(&self, path: &Path) -> Result<Option<FileStat>, PortError>;
 
-    /// Moves a file or directory to the Recycle Bin. Missing path is
-    /// [`PortError::NotFound`].
-    fn move_to_trash(&self, path: &Path) -> Result<(), PortError>;
+    /// Moves `path` (a file or directory) to the Recycle Bin, provided it lies
+    /// inside `root`.
+    ///
+    /// Implementations must refuse with [`PortError::InvalidInput`] a `path`
+    /// whose resolved location is outside `root`, and one that reaches its
+    /// target through a junction or symlink, so a cleaner can never be tricked
+    /// into deleting outside the folder it was asked to clean. A missing path
+    /// is [`PortError::NotFound`].
+    fn move_to_trash(&self, root: &Path, path: &Path) -> Result<(), PortError>;
 }
 
 /// A running process.
