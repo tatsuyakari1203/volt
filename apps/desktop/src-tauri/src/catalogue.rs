@@ -5,7 +5,7 @@
 //! ever sees the text: [`volt_core::Catalogue::from_toml`] validates it, and the test below
 //! proves that the embedded text loads, so an invalid catalogue cannot be released.
 
-/// The embedded catalogue text. Today it holds one tweak; the real catalogue is a later task.
+/// The embedded catalogue text: the starter tweaks across Performance, Privacy and Appearance.
 pub const EMBEDDED_CATALOGUE: &str = include_str!("../../../../catalogue/tweaks.toml");
 
 #[cfg(test)]
@@ -21,11 +21,14 @@ mod tests {
     fn the_embedded_catalogue_loads_and_validates() {
         let catalogue =
             Catalogue::from_toml(EMBEDDED_CATALOGUE).expect("the embedded catalogue is valid");
-        assert_eq!(catalogue.len(), 1, "the foundation ships exactly one tweak");
+        assert!(
+            catalogue.len() >= 30,
+            "the starter catalogue has about 30 tweaks"
+        );
     }
 
     #[test]
-    fn the_one_tweak_is_show_file_extensions_with_honest_labels() {
+    fn show_file_extensions_keeps_its_honest_labels() {
         let catalogue = Catalogue::from_toml(EMBEDDED_CATALOGUE).expect("valid");
         let tweak = catalogue
             .get("show-file-extensions")

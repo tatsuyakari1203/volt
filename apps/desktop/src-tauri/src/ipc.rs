@@ -108,6 +108,7 @@ impl From<TweakError> for IpcError {
             TweakError::UnknownTweak(_) | TweakError::NothingToRevert(_) => {
                 Self::NotFound { message }
             }
+            TweakError::NeedsAdministrator(_) => Self::AccessDenied { message },
             TweakError::Detect { error: port, .. }
             | TweakError::Journal { error: port, .. }
             | TweakError::Plan {
@@ -334,6 +335,14 @@ mod tests {
         assert!(matches!(
             IpcError::from(TweakError::NothingToRevert("x".into())),
             IpcError::NotFound { .. }
+        ));
+    }
+
+    #[test]
+    fn a_tweak_that_needs_administrator_rights_is_access_denied() {
+        assert!(matches!(
+            IpcError::from(TweakError::NeedsAdministrator("x".into())),
+            IpcError::AccessDenied { .. }
         ));
     }
 

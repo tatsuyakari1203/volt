@@ -38,6 +38,10 @@ pub enum TweakError {
     /// The catalogue has no tweak with this id.
     #[error("unknown tweak `{0}`")]
     UnknownTweak(String),
+    /// The tweak changes machine-wide settings and the engine was not told it
+    /// has administrator rights. Nothing was changed.
+    #[error("tweak `{0}` needs administrator rights")]
+    NeedsAdministrator(String),
     /// The current state of a step could not be read. Nothing was changed.
     #[error("tweak `{tweak}`: cannot read the state of steps[{step}]: {error}")]
     Detect {
@@ -155,6 +159,7 @@ pub struct TweakEngine {
     ports: Ports,
     journal: Arc<dyn Journal>,
     executor: Executor,
+    administrator: bool,
 }
 
 impl fmt::Debug for TweakEngine {
@@ -180,7 +185,18 @@ impl TweakEngine {
             ports,
             journal,
             executor,
+            administrator: false,
         }
+    }
+
+    /// Tells the engine whether the process has administrator rights. It starts
+    /// as `false`: a tweak that [`requires_admin`](Tweak::requires_admin) is then refused with
+    /// [`TweakError::NeedsAdministrator`] before anything is read or changed. How a build gets
+    /// those rights is up to the composition root; nothing in the core elevates.
+    #[must_use]
+    pub fn with_administrator(mut self, administrator: bool) -> Self {
+        self.administrator = administrator;
+        self
     }
 
     /// Attaches an activity log, see [`Executor::with_activity_log`]. Applies
@@ -247,6 +263,7 @@ impl TweakEngine {
     /// executor's per-step results.
     pub fn apply(&self, id: &str, source: Source) -> Result<TweakApplyReport, TweakError> {
         let tweak = self.tweak(id)?;
+        self.check_rights(tweak)?;
         let before = self.steps_at_target(tweak)?;
         if before.iter().all(|at_target| *at_target) {
             return Ok(TweakApplyReport {
@@ -295,6 +312,7 @@ impl TweakEngine {
     /// was applied were not changed by Volt and are left alone.
     pub fn revert(&self, id: &str) -> Result<TweakRevertReport, TweakError> {
         let tweak = self.tweak(id)?;
+        self.check_rights(tweak)?;
         let journal_error = |error| TweakError::Journal {
             tweak: tweak.id.clone(),
             error,
@@ -342,6 +360,15 @@ impl TweakEngine {
         self.catalogue
             .get(id)
             .ok_or_else(|| TweakError::UnknownTweak(id.to_owned()))
+    }
+
+    /// Refuses a tweak that needs administrator rights the engine does not have.
+    fn check_rights(&self, tweak: &Tweak) -> Result<(), TweakError> {
+        if tweak.requires_admin && !self.administrator {
+            Err(TweakError::NeedsAdministrator(tweak.id.clone()))
+        } else {
+            Ok(())
+        }
     }
 
     /// For every step: whether the system is already in its target state.

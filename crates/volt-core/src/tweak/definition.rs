@@ -166,6 +166,11 @@ pub struct Tweak {
     pub evidence_note: String,
     /// Whether the user has to restart or sign out afterwards.
     pub restart: RestartRequirement,
+    /// Whether changing it needs administrator rights (it touches machine-wide registry keys,
+    /// a service or a command that does). The engine refuses such a tweak with
+    /// [`TweakError::NeedsAdministrator`](crate::tweak::TweakError::NeedsAdministrator) before it
+    /// touches anything, unless it was told it runs with those rights.
+    pub requires_admin: bool,
     /// The changes, in order.
     pub steps: Vec<TweakStep>,
 }

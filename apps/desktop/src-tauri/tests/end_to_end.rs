@@ -479,14 +479,21 @@ revert = { program = "tool", args = ["--disable"] }
 // ---- wiring --------------------------------------------------------------------------------
 
 #[test]
-fn the_embedded_catalogue_builds_a_core_with_its_one_tweak_listed_with_its_labels() {
+fn the_embedded_catalogue_builds_a_core_with_its_tweaks_listed_with_their_labels() {
     let dir = TempDir::new().expect("temp dir");
     // Fakes only: the real Explorer key is never touched by a test.
     let (_system, core) = fake_core(&dir, EMBEDDED_CATALOGUE);
     let tweaks = list_tweaks(&core).expect("list");
-    assert_eq!(tweaks.len(), 1);
-    let tweak = &tweaks[0];
-    assert_eq!(tweak.id, "show-file-extensions");
+    assert!(tweaks.len() >= 30, "{} tweaks", tweaks.len());
+    let tweak = tweaks
+        .iter()
+        .find(|tweak| tweak.id == "show-file-extensions")
+        .expect("listed");
+    assert!(!tweak.needs_admin);
+    assert!(
+        tweaks.iter().any(|tweak| tweak.needs_admin),
+        "machine-wide tweaks are marked"
+    );
     assert_eq!(
         tweak.state,
         TweakStateView::NotApplied,

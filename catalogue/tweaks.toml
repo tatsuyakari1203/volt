@@ -1,9 +1,24 @@
 # The tweak catalogue embedded in the desktop app (apps/desktop/src-tauri/src/catalogue.rs).
 #
-# This file currently holds ONE tweak, to prove the whole path (detect, apply, undo, restart)
-# end to end. The real catalogue is a later task. The format is documented on
-# `volt_core::Catalogue::from_toml`; the app refuses to start the tweak engine when this file
-# does not validate, and a test checks it on every build.
+# The format is documented on `volt_core::Catalogue::from_toml`; the app refuses to start the
+# tweak engine when this file does not validate, and tests check it on every build. A test also
+# runs every tweak here against the in-memory fakes (detect, apply, revert, exact previous state
+# back), so a tweak whose revert does not restore what it changed cannot be released.
+#
+# Rules for adding a tweak:
+#   - Its effect must be explainable and documented by Microsoft or widely verified. No folklore.
+#   - It never weakens security (Defender, UAC, SmartScreen, Windows Update, the firewall) and it
+#     never deletes anything.
+#   - `evidence` is "measured" only when Volt itself measured the effect. Nothing here is, so every
+#     tweak says "anecdotal" and the note says where the claim comes from.
+#   - A per-user setting (HKCU) works for any user. A machine-wide setting, a service or a command
+#     needs `requires_admin = true`: the engine then refuses it before touching anything.
+#   - `restart` says what is needed before the change is complete: "sign_out", "reboot" or, by
+#     default, nothing.
+#
+# The sections are Appearance, Performance and Privacy, in that order.
+
+# ==== Appearance ===========================================================================
 
 [[tweak]]
 id = "show-file-extensions"
@@ -21,3 +36,632 @@ hive = "HKCU"
 subkey = 'Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
 name = "HideFileExt"
 value = { dword = 0 }
+
+[[tweak]]
+id = "show-hidden-files"
+title = "Show hidden files and folders"
+description = "Shows files and folders that Windows hides by default, such as AppData. Nothing is changed on the files themselves; you just see more in File Explorer, and you can open folders that were out of sight."
+category = "appearance"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "The Hidden files setting in File Explorer's View options, stored as one documented value. A preference, not a speed-up."
+restart = "none"
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "Hidden"
+value = { dword = 1 }
+
+[[tweak]]
+id = "open-explorer-to-this-pc"
+title = "Open File Explorer on This PC"
+description = "File Explorer opens on This PC, with your drives and folders, instead of Home with recent and pinned files. You notice it the next time you open an Explorer window."
+category = "appearance"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "The Open File Explorer to option in Folder Options, stored as one value. A preference, not a speed-up."
+restart = "none"
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "LaunchTo"
+value = { dword = 1 }
+
+[[tweak]]
+id = "show-seconds-in-clock"
+title = "Show seconds in the taskbar clock"
+description = "The clock in the taskbar shows seconds as well as hours and minutes. Needs Windows 11 version 22H2 or later; on older builds the setting has no effect."
+category = "appearance"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "The Show seconds in system tray clock option in Settings, Personalization, Taskbar. A preference, not a speed-up."
+restart = "none"
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "ShowSecondsInSystemClock"
+value = { dword = 1 }
+
+[[tweak]]
+id = "align-taskbar-left"
+title = "Align the taskbar to the left"
+description = "Moves the Start button and the taskbar icons to the left edge, as in Windows 10, instead of the center. The taskbar changes at once."
+category = "appearance"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "The Taskbar alignment option in Settings, Personalization, Taskbar. A preference, not a speed-up."
+restart = "none"
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "TaskbarAl"
+value = { dword = 0 }
+
+[[tweak]]
+id = "hide-task-view-button"
+title = "Hide the Task view button"
+description = "Removes the Task view button from the taskbar. The Win+Tab shortcut still opens Task view. The taskbar changes at once."
+category = "appearance"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "The Task view option in Settings, Personalization, Taskbar. Frees a little taskbar space; nothing gets faster."
+restart = "none"
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "ShowTaskViewButton"
+value = { dword = 0 }
+
+[[tweak]]
+id = "hide-taskbar-search-box"
+title = "Hide the taskbar search box"
+description = "Removes the search box from the taskbar. Search stays one key press away: press the Windows key and start typing. The taskbar changes at once."
+category = "appearance"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "The Search option in Settings, Personalization, Taskbar. Frees taskbar space; nothing gets faster."
+restart = "none"
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\Microsoft\Windows\CurrentVersion\Search'
+name = "SearchboxTaskbarMode"
+value = { dword = 0 }
+
+[[tweak]]
+id = "use-dark-mode"
+title = "Use the dark theme for Windows and apps"
+description = "Switches both the Windows shell and apps that follow the system setting to the dark color mode. Most windows change at once; some apps pick it up when you reopen them."
+category = "appearance"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "The Choose your mode option in Settings, Personalization, Colors. A preference; it does not save power on most laptop screens."
+restart = "none"
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\Microsoft\Windows\CurrentVersion\Themes\Personalize'
+name = "AppsUseLightTheme"
+value = { dword = 0 }
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\Microsoft\Windows\CurrentVersion\Themes\Personalize'
+name = "SystemUsesLightTheme"
+value = { dword = 0 }
+
+[[tweak]]
+id = "compact-explorer-view"
+title = "Use compact spacing in File Explorer"
+description = "Reduces the space between items in File Explorer lists so more files fit on screen, as in Windows 10. New Explorer windows use it; open ones pick it up when reopened."
+category = "appearance"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "The Compact view option in File Explorer's View menu on Windows 11. A preference, not a speed-up."
+restart = "none"
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "UseCompactMode"
+value = { dword = 1 }
+
+[[tweak]]
+id = "turn-off-transparency"
+title = "Turn off transparency effects"
+description = "Makes the taskbar, Start menu and some windows solid instead of see-through. Text can be easier to read, and the graphics card does a little less work. The change is immediate."
+category = "appearance"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "The Transparency effects option in Settings, Personalization, Colors. The saving is small and mostly visible on weak graphics hardware."
+restart = "none"
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\Microsoft\Windows\CurrentVersion\Themes\Personalize'
+name = "EnableTransparency"
+value = { dword = 0 }
+
+[[tweak]]
+id = "turn-off-window-animations"
+title = "Turn off window minimize and maximize animations"
+description = "Windows no longer glide when you minimize or restore them; they change at once. Everything feels a little snappier and nothing else changes. Sign out and back in for it to apply."
+category = "appearance"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "The Animate windows when minimizing and maximizing option in Performance Options, stored as one documented value. Perceived speed only."
+restart = "sign_out"
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Control Panel\Desktop\WindowMetrics'
+name = "MinAnimate"
+value = { sz = "0" }
+
+# ==== Performance ==========================================================================
+
+[[tweak]]
+id = "faster-menu-display"
+title = "Show menus without a delay"
+description = "Sub-menus open as soon as you point at them instead of after a short wait (400 ms by default). Menus feel quicker; if they open too eagerly while you move the mouse, undo it. Sign out and back in for it to apply."
+category = "performance"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "MenuShowDelay is the documented delay in milliseconds before a menu opens. Perceived speed only; nothing runs faster."
+restart = "sign_out"
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Control Panel\Desktop'
+name = "MenuShowDelay"
+value = { sz = "0" }
+
+[[tweak]]
+id = "end-hung-apps-faster"
+title = "Close unresponsive apps sooner at sign-out"
+description = "When you sign out or shut down, Windows waits 5 seconds for each app that does not respond before ending it. This shortens both waits to 3 seconds. Shutdown is quicker with a stuck app, but an app that is slow to save its work may be ended before it finishes. Sign out and back in for it to apply."
+category = "performance"
+risk = "caution"
+evidence = "anecdotal"
+evidence_note = "HungAppTimeout and WaitToKillAppTimeout are documented timeouts in milliseconds. The gain only shows when an app hangs while you sign out."
+restart = "sign_out"
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Control Panel\Desktop'
+name = "HungAppTimeout"
+value = { sz = "3000" }
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Control Panel\Desktop'
+name = "WaitToKillAppTimeout"
+value = { sz = "3000" }
+
+[[tweak]]
+id = "turn-off-game-recording"
+title = "Turn off background game recording"
+description = "Stops Windows from continuously recording gameplay in the background so you can save the last few minutes afterwards. This frees a little graphics and disk activity while you play. You can no longer save a clip of something that already happened; recording a clip on purpose still works."
+category = "performance"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "The Record what happened option in Settings, Gaming, Captures. The cost of background capture is small and varies by game and hardware."
+restart = "none"
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\Microsoft\Windows\CurrentVersion\GameDVR'
+name = "HistoricalCaptureEnabled"
+value = { dword = 0 }
+
+[[tweak]]
+id = "stop-edge-background-start"
+title = "Stop Microsoft Edge from running in the background"
+description = "Edge no longer preloads itself at sign-in (Startup boost) and no longer keeps running after you close its last window. This frees some memory and start-up work; Edge may open a little slower. Edge shows a Managed by your organization notice because this is set as a browser policy. Restart Edge to apply it."
+category = "performance"
+risk = "caution"
+evidence = "anecdotal"
+evidence_note = "StartupBoostEnabled and BackgroundModeEnabled are documented Microsoft Edge policies. The memory saved depends on how you use Edge."
+restart = "none"
+requires_admin = true
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKLM"
+subkey = 'SOFTWARE\Policies\Microsoft\Edge'
+name = "StartupBoostEnabled"
+value = { dword = 0 }
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKLM"
+subkey = 'SOFTWARE\Policies\Microsoft\Edge'
+name = "BackgroundModeEnabled"
+value = { dword = 0 }
+
+[[tweak]]
+id = "turn-off-search-indexing"
+title = "Turn off Windows Search indexing"
+description = "Stops the indexer that scans your files in the background, which means less disk and processor activity. Searching from Start and File Explorer becomes slower, and results can miss files, because there is no index to look in. Restart your PC for it to apply."
+category = "performance"
+risk = "caution"
+evidence = "anecdotal"
+evidence_note = "Disabling the Windows Search service (WSearch) is documented. The saving is largest on slow disks, and you pay for it with slower searches."
+restart = "reboot"
+requires_admin = true
+
+[[tweak.steps]]
+kind = "service"
+service = "WSearch"
+start_type = "disabled"
+
+[[tweak]]
+id = "turn-off-fast-startup"
+title = "Turn off Fast startup"
+description = "Shutdown becomes a full shutdown instead of a hybrid of shutdown and hibernation. Start-up can be a little slower on some PCs, but drivers and services start fresh every time, which helps when a PC misbehaves after shutting down or when you dual-boot. Applies at the next shutdown."
+category = "performance"
+risk = "caution"
+evidence = "anecdotal"
+evidence_note = "HiberbootEnabled is the documented switch behind the Turn on fast startup option in Power Options. Whether start-up gets faster or slower depends on the PC."
+restart = "reboot"
+requires_admin = true
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKLM"
+subkey = 'SYSTEM\CurrentControlSet\Control\Session Manager\Power'
+name = "HiberbootEnabled"
+value = { dword = 0 }
+
+[[tweak]]
+id = "stop-sharing-updates-with-other-pcs"
+title = "Stop sharing downloaded updates with other PCs"
+description = "Windows keeps downloading its updates from Microsoft, but stops sending the pieces it already has to other PCs on the internet or your network. This saves upload bandwidth and a little background activity. Updates are not delayed or disabled."
+category = "performance"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "DODownloadMode 0 is a documented Delivery Optimization policy (HTTP only, no peering). The saving depends on how often your PC shares updates."
+restart = "none"
+requires_admin = true
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKLM"
+subkey = 'SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization'
+name = "DODownloadMode"
+value = { dword = 0 }
+
+# ==== Privacy ==============================================================================
+
+[[tweak]]
+id = "turn-off-advertising-id"
+title = "Turn off the advertising ID"
+description = "Stops apps from using a per-user advertising ID to show you ads based on your activity. You still see ads, just less targeted ones. No app stops working."
+category = "privacy"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "The Let apps show me personalized ads option in Settings, Privacy and security, General. A privacy preference, not a speed-up."
+restart = "none"
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\Microsoft\Windows\CurrentVersion\AdvertisingInfo'
+name = "Enabled"
+value = { dword = 0 }
+
+[[tweak]]
+id = "turn-off-tailored-experiences"
+title = "Turn off tailored experiences"
+description = "Stops Windows from using your diagnostic data to suggest tips, ads and recommendations that fit how you use your PC. The suggestions you still see are generic."
+category = "privacy"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "The Tailored experiences option in Settings, Privacy and security, Diagnostics and feedback. A privacy preference, not a speed-up."
+restart = "none"
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\Microsoft\Windows\CurrentVersion\Privacy'
+name = "TailoredExperiencesWithDiagnosticDataEnabled"
+value = { dword = 0 }
+
+[[tweak]]
+id = "hide-start-recommendations"
+title = "Hide recommendations in the Start menu"
+description = "Removes the Recommended section's suggestions of tips, shortcuts and new apps from the Start menu. Recently opened files still appear if that is turned on. Takes effect the next time you open Start."
+category = "privacy"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "The Show recommendations for tips, shortcuts, new apps, and more option in Settings, Personalization, Start. A preference, not a speed-up."
+restart = "none"
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "Start_IrisRecommendations"
+value = { dword = 0 }
+
+[[tweak]]
+id = "turn-off-settings-suggestions"
+title = "Turn off suggested content in Settings"
+description = "Stops the Settings app from showing suggestions and promotions for Microsoft features and services. Settings itself works exactly as before."
+category = "privacy"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "The Show me suggested content in the Settings app option in Settings, Privacy and security, General. A preference, not a speed-up."
+restart = "none"
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'
+name = "SubscribedContent-338393Enabled"
+value = { dword = 0 }
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'
+name = "SubscribedContent-353694Enabled"
+value = { dword = 0 }
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'
+name = "SubscribedContent-353696Enabled"
+value = { dword = 0 }
+
+[[tweak]]
+id = "turn-off-windows-tips"
+title = "Turn off Windows tips and welcome pages"
+description = "Stops notifications that suggest how to use Windows, the welcome experience after updates and the offers to finish setting up your PC. Important notifications from apps and Windows are not affected."
+category = "privacy"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "The Get tips and suggestions when using Windows and Offer suggestions options in Settings, System, Notifications. A preference, not a speed-up."
+restart = "none"
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'
+name = "SubscribedContent-338389Enabled"
+value = { dword = 0 }
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'
+name = "SubscribedContent-310093Enabled"
+value = { dword = 0 }
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\Microsoft\Windows\CurrentVersion\UserProfileEngagement'
+name = "ScoobeSystemSettingEnabled"
+value = { dword = 0 }
+
+[[tweak]]
+id = "turn-off-lock-screen-tips"
+title = "Turn off tips and ads on the lock screen"
+description = "Removes fun facts, tips and promotions from the lock screen and stops it from rotating suggested pictures. Your own lock screen picture or slideshow is not touched."
+category = "privacy"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "The Get fun facts, tips, tricks, and more on your lock screen option in Settings, Personalization, Lock screen. A preference, not a speed-up."
+restart = "none"
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'
+name = "RotatingLockScreenOverlayEnabled"
+value = { dword = 0 }
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'
+name = "SubscribedContent-338387Enabled"
+value = { dword = 0 }
+
+[[tweak]]
+id = "stop-tracking-app-launches"
+title = "Stop tracking which apps you launch"
+description = "Windows no longer records which apps you open to rank them in Start and search. Your list of most used apps stops updating and may empty over time."
+category = "privacy"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "The Let Windows improve Start and search results by tracking app launches option in Settings, Privacy and security, General. A preference, not a speed-up."
+restart = "none"
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "Start_TrackProgs"
+value = { dword = 0 }
+
+[[tweak]]
+id = "hide-language-list-from-websites"
+title = "Hide your language list from websites"
+description = "Websites can no longer read the list of languages you have installed to tailor their content. Sites fall back to your browser's language settings."
+category = "privacy"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "The Let websites show me locally relevant content by accessing my language list option in Settings, Privacy and security, General. A privacy preference."
+restart = "none"
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Control Panel\International\User Profile'
+name = "HttpAcceptLanguageOptOut"
+value = { dword = 1 }
+
+[[tweak]]
+id = "turn-off-search-highlights"
+title = "Turn off search highlights"
+description = "Removes the daily illustrations and trending topics from the search box and the search pane. Search itself works exactly as before."
+category = "privacy"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "The Show search highlights option in Settings, Privacy and security, Search permissions. A preference, not a speed-up."
+restart = "none"
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\Microsoft\Windows\CurrentVersion\SearchSettings'
+name = "IsDynamicSearchBoxEnabled"
+value = { dword = 0 }
+
+[[tweak]]
+id = "turn-off-web-results-in-search"
+title = "Turn off web results in Start search"
+description = "Start search looks only at your PC and no longer sends what you type to Bing to show web suggestions. Local files, apps and settings are still found. Sign out and back in for it to apply."
+category = "privacy"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "DisableSearchBoxSuggestions is a documented per-user Windows policy. It keeps your searches on your PC; nothing gets faster."
+restart = "sign_out"
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\Policies\Microsoft\Windows\Explorer'
+name = "DisableSearchBoxSuggestions"
+value = { dword = 1 }
+
+[[tweak]]
+id = "never-ask-for-feedback"
+title = "Never ask for feedback"
+description = "Windows stops showing pop-ups that ask you to rate features or answer a survey. Nothing else about diagnostics or feedback changes."
+category = "privacy"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "The Feedback frequency option set to Never in Settings, Privacy and security, Diagnostics and feedback. A preference, not a speed-up."
+restart = "none"
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\Microsoft\Siuf\Rules'
+name = "NumberOfSIUFInPeriod"
+value = { dword = 0 }
+
+[[tweak]]
+id = "hide-recent-files-in-explorer"
+title = "Hide recent files and frequent folders in File Explorer"
+description = "File Explorer no longer lists recently opened files and frequently used folders on its Home page. Pinned folders stay. Files you opened before are not deleted: the list simply stops being shown."
+category = "privacy"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "The Show recently used files and Show frequently used folders options in File Explorer's Folder Options. A privacy preference, not a speed-up."
+restart = "none"
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\Microsoft\Windows\CurrentVersion\Explorer'
+name = "ShowRecent"
+value = { dword = 0 }
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\Microsoft\Windows\CurrentVersion\Explorer'
+name = "ShowFrequent"
+value = { dword = 0 }
+
+[[tweak]]
+id = "stop-inking-typing-data"
+title = "Stop sending inking and typing data to Microsoft"
+description = "Windows no longer collects samples of what you type and write to improve its recognition and suggestions. Typing and handwriting still work; suggestions may learn your words more slowly."
+category = "privacy"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "The Improve inking and typing option in Settings, Privacy and security, Diagnostics and feedback. A privacy preference, not a speed-up."
+restart = "none"
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\Microsoft\Input\TIPC'
+name = "Enabled"
+value = { dword = 0 }
+
+[[tweak]]
+id = "turn-off-activity-history"
+title = "Turn off activity history"
+description = "Windows stops recording the apps, files and websites you open as an activity history and stops uploading it to Microsoft. Nothing visible stops working. This applies to every account on the PC."
+category = "privacy"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "EnableActivityFeed, PublishUserActivities and UploadUserActivities are documented Windows policies. A privacy preference, not a speed-up."
+restart = "none"
+requires_admin = true
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKLM"
+subkey = 'SOFTWARE\Policies\Microsoft\Windows\System'
+name = "EnableActivityFeed"
+value = { dword = 0 }
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKLM"
+subkey = 'SOFTWARE\Policies\Microsoft\Windows\System'
+name = "PublishUserActivities"
+value = { dword = 0 }
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKLM"
+subkey = 'SOFTWARE\Policies\Microsoft\Windows\System'
+name = "UploadUserActivities"
+value = { dword = 0 }
+
+[[tweak]]
+id = "turn-off-error-reporting"
+title = "Turn off Windows Error Reporting"
+description = "When a program crashes, Windows no longer offers to send a report about it to Microsoft. Crashes are handled exactly as before and nothing is lost on your PC. This applies to every account on the PC."
+category = "privacy"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "The Disabled value of Windows Error Reporting is documented by Microsoft. A privacy preference, not a speed-up."
+restart = "none"
+requires_admin = true
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKLM"
+subkey = 'SOFTWARE\Microsoft\Windows\Windows Error Reporting'
+name = "Disabled"
+value = { dword = 1 }

@@ -974,6 +974,11 @@ evidenceNote: string;
  */
 restart: RestartKind; 
 /**
+ * Whether changing it needs administrator rights. The screen shows such a tweak switched
+ * off and labelled; applying it answers `accessDenied` before anything is touched.
+ */
+needsAdmin: boolean; 
+/**
  * The state read just now.
  */
 state: TweakStateView }

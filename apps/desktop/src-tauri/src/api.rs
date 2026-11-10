@@ -124,6 +124,9 @@ pub struct TweakInfo {
     pub evidence_note: String,
     /// What the user has to do afterwards.
     pub restart: RestartKind,
+    /// Whether changing it needs administrator rights. The screen shows such a tweak switched
+    /// off and labelled; applying it answers `accessDenied` before anything is touched.
+    pub needs_admin: bool,
     /// The state read just now.
     pub state: TweakStateView,
 }
@@ -471,6 +474,7 @@ pub fn list_tweaks(core: &AppCore) -> Result<Vec<TweakInfo>, IpcError> {
             evidence: evidence_view(tweak.evidence),
             evidence_note: tweak.evidence_note.clone(),
             restart: restart_view(tweak.restart),
+            needs_admin: tweak.requires_admin,
             state: state_view(core.engine.state(&tweak.id)),
         })
         .collect();
