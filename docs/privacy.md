@@ -99,7 +99,7 @@ How the app is locked down today:
     it runs with the defaults of the Tauri runtime (`wry`). At the version used here those are
     `--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection` (among other things this turns
     off the SmartScreen URL reputation lookup) and `--autoplay-policy=no-user-gesture-required`.
-  - The runtime keeps its user data in `%LOCALAPPDATA%io.github.tatsuyakari1203.voltEBWebView`,
+  - The runtime keeps its user data in `%LOCALAPPDATA%io.github.tatsuyakari1203.voltBWebView`,
     a folder of Volt's own that is not shared with Edge.
   - The page Volt loads cannot reach any server (content security policy), so these connections do
     not come from Volt's page or code.
