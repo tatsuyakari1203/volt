@@ -19,6 +19,9 @@ vi.mock('../shared/ipc', async (importOriginal) => ({
     return Promise.reject(new Error('no tauri bridge'));
   },
   listActivity: () => Promise.reject(new Error('no tauri bridge')),
+  getHealthReport: () => Promise.reject(new Error('no tauri bridge')),
+  getLatestMetrics: () => Promise.reject(new Error('no tauri bridge')),
+  onMetricsUpdated: () => Promise.reject(new Error('no tauri bridge')),
   getAutostartEnabled: () => Promise.reject(new Error('no tauri bridge')),
   setAutostartEnabled: () => Promise.reject(new Error('no tauri bridge')),
   onTrayBoostRequested: (handler: () => void) => {
@@ -104,13 +107,13 @@ it('changing the theme in Settings applies and persists it', async () => {
   expect(document.documentElement.dataset.theme).toBe('light');
 });
 
-it('the Home mock shows its sample data notice, a Boost button and four metrics', () => {
+it('shows the real Home, without the sample marker or a Boost button, and explains it cannot load here', async () => {
   renderShell();
-  expect(screen.getByText(/sample data/i)).toBeTruthy();
-  expect(screen.getByRole('button', { name: 'Boost' })).toBeTruthy();
-  expect(screen.getByRole('progressbar', { name: 'Health score' })).toBeTruthy();
-  const metrics = screen.getByRole('region', { name: 'Metrics' });
-  expect(within(metrics).getAllByText(/./, { selector: 'span' })).toHaveLength(4);
+  expect(screen.getByRole('heading', { level: 1, name: 'Home' })).toBeTruthy();
+  expect(await screen.findByText('Your PC could not be checked')).toBeTruthy();
+  expect(await screen.findByText('Live numbers are not available')).toBeTruthy();
+  expect(screen.queryByText(/sample data/i)).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Boost' })).toBeNull();
 });
 
 it('the tray Boost event brings an open window back to Home', async () => {

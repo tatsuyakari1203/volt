@@ -26,6 +26,9 @@
 //! the [`TweakEngine`] reads its state, previews, applies and reverts it
 //! through the executor.
 //!
+//! The health score (the [`health`] module) is a pure function of a few read-only inputs and
+//! lists every deduction with its reason, so the number never changes without a visible cause.
+//!
 //! Cleaning is its own engine (the [`clean`] module): rules are data, a scan
 //! is read-only and returns a plan, and only a confirmed plan can be cleaned,
 //! always into the Recycle Bin.
@@ -42,6 +45,7 @@ pub mod clean;
 pub mod command;
 pub mod error;
 pub mod executor;
+pub mod health;
 pub mod journal;
 pub mod label;
 pub mod metrics;
@@ -70,6 +74,10 @@ pub use error::{ExecError, PlanError, PortError, RevertError};
 pub use executor::{
     ApplyReport, Executor, ItemOutcome, ItemStatus, ReconcileOutcome, ReconcileReport, Resolution,
     RevertOutcome, RevertReport,
+};
+pub use health::{
+    Deduction, DiskSpace, FixAction, HealthCheck, HealthInputs, HealthLevel, HealthReport,
+    RestartMarker, StartupLoad,
 };
 pub use journal::{BatchId, EntryId, EntryState, Journal, JournalEntry, NewEntry, Source};
 pub use label::{Evidence, Risk};

@@ -2,7 +2,8 @@
 
 use volt_core::{PortError, Registry, RegistryHive, RegistryValue, RegistryValueRef, RegistryView};
 use windows::Win32::Foundation::{
-    ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_PATH_NOT_FOUND, ERROR_SUCCESS, WIN32_ERROR,
+    ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_PATH_NOT_FOUND,
+    ERROR_SUCCESS, WIN32_ERROR,
 };
 use windows::Win32::System::Registry::{
     HKEY, HKEY_CLASSES_ROOT, HKEY_CURRENT_CONFIG, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE,
@@ -203,6 +204,25 @@ impl Registry for WinRegistry {
             Err(from_win32(status.0, &target.to_string()))
         }
     }
+
+    fn key_exists(
+        &self,
+        hive: RegistryHive,
+        subkey: &str,
+        view: RegistryView,
+    ) -> Result<bool, PortError> {
+        // Reuse the value validation with a dummy name, so a key path is held to the same rules.
+        let target = RegistryValueRef::new(hive, subkey, "").with_view(view);
+        let (wide, _) = validate(&target)?;
+        match open(&target, &wide, KEY_QUERY_VALUE) {
+            // The handle is closed by its drop.
+            Ok(_key) => Ok(true),
+            Err(e) if e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND => Ok(false),
+            // The key is there, this process may just not open it: that is still "exists".
+            Err(e) if e == ERROR_ACCESS_DENIED => Ok(true),
+            Err(e) => Err(from_win32(e.0, &format!("open {hive:?}\\{subkey}"))),
+        }
+    }
 }
 
 fn utf16_bytes(units: &[u16]) -> Vec<u8> {
@@ -359,6 +379,12 @@ mod tests {
 
     /// Behavioural contract every `Registry` implementation must satisfy.
     fn registry_contract(reg: &dyn Registry, key: &TestKey) {
+        // A key that was never created does not exist.
+        let exists =
+            |subkey: &str| reg.key_exists(RegistryHive::CurrentUser, subkey, RegistryView::Native);
+        assert_eq!(exists(&key.subkey), Ok(false));
+        assert_eq!(exists(&format!("{}\\deep\\er", key.subkey)), Ok(false));
+
         // Missing key and missing value read as None.
         assert_eq!(reg.read_value(&key.value("nope")), Ok(None));
         assert_eq!(reg.read_value(&key.child("no\\such\\key", "v")), Ok(None));
@@ -397,6 +423,19 @@ mod tests {
             reg.write_value(&target, value).expect("write");
             assert_eq!(reg.read_value(&target), Ok(Some(value.clone())), "{name}");
         }
+
+        // Writing created the key and its parents; a sibling that was not written still does
+        // not exist, and neither does a longer path below the written one.
+        assert_eq!(exists(&key.subkey), Ok(true));
+        assert_eq!(exists(&format!("{}\\deep", key.subkey)), Ok(true));
+        assert_eq!(exists(&format!("{}\\deep\\er", key.subkey)), Ok(true));
+        assert_eq!(
+            exists(&format!("{}\\deep\\er\\more", key.subkey)),
+            Ok(false)
+        );
+        assert_eq!(exists(&format!("{}\\other", key.subkey)), Ok(false));
+        // Case does not matter, like the registry itself.
+        assert_eq!(exists(&key.subkey.to_uppercase()), Ok(true));
 
         // Overwrite may change the type.
         let target = key.value("morph");
@@ -461,6 +500,26 @@ mod tests {
                 "{subkey:?}"
             );
         }
+    }
+
+    #[test]
+    fn key_existence_rejects_malformed_subkeys_and_counts_a_denied_key_as_existing() {
+        let reg = WinRegistry::new();
+        for subkey in ["\\Software", "Software\\", "a\0b"] {
+            assert!(
+                matches!(
+                    reg.key_exists(RegistryHive::CurrentUser, subkey, RegistryView::Native),
+                    Err(PortError::InvalidInput(_))
+                ),
+                "{subkey:?}"
+            );
+        }
+        // HKLM\SAM\SAM is readable by SYSTEM only, so opening it is denied, yet it exists.
+        // Read-only: nothing is modified.
+        assert_eq!(
+            reg.key_exists(RegistryHive::LocalMachine, "SAM\\SAM", RegistryView::Native),
+            Ok(true)
+        );
     }
 
     #[test]

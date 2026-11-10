@@ -10,10 +10,10 @@ import { footerSections, initialSection, mainSections, type SectionId } from './
 
 const allSections = [...mainSections, ...footerSections];
 
-function Screen({ id }: { id: SectionId }) {
+function Screen({ id, onNavigate }: { id: SectionId; onNavigate: (id: SectionId) => void }) {
   switch (id) {
     case 'home':
-      return <HomeScreen />;
+      return <HomeScreen onNavigate={onNavigate} />;
     case 'tweaks':
       return <TweaksScreen />;
     case 'settings':
@@ -68,7 +68,7 @@ export function Shell() {
         className="min-w-0 flex-1 overflow-y-auto outline-none"
       >
         <div className="mx-auto w-full max-w-3xl px-gutter pt-4 pb-8 wide:px-6 wide:pt-6">
-          <Screen id={current} />
+          <Screen id={current} onNavigate={setCurrent} />
         </div>
       </main>
     </div>

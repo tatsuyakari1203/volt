@@ -171,6 +171,7 @@ pub fn bindings_builder() -> Builder<tauri::Wry> {
             crate::commands::revert_tweak,
             crate::commands::list_activity,
             crate::metrics::latest_metrics,
+            crate::health::health_report,
             crate::commands::undo_entry,
             crate::commands::undo_batch,
             crate::commands::preview_undo_batch,

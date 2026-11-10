@@ -5,7 +5,7 @@
 //! [`EventLog`], so a test can prove the order of effects (for example that the
 //! journal entry was written before the registry was mutated).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -85,11 +85,17 @@ impl Key {
     }
 }
 
+/// A key as the fake tracks it: hive, view and lower-cased subkey path.
+type KeyPath = (RegistryHive, RegistryView, String);
+
 /// In-memory [`Registry`].
 #[derive(Debug, Default)]
 pub struct FakeRegistry {
     values: Mutex<HashMap<Key, RegistryValue>>,
     failures: Mutex<HashMap<Key, PortError>>,
+    /// Keys that exist without any value in them (see [`FakeRegistry::add_key`]).
+    keys: Mutex<HashSet<KeyPath>>,
+    key_failures: Mutex<HashMap<KeyPath, PortError>>,
     log: EventLog,
 }
 
@@ -130,6 +136,23 @@ impl FakeRegistry {
         lock(&self.failures).clear();
     }
 
+    /// Makes `subkey` exist without any value in it, like a marker key. Without logging. For
+    /// arranging a test.
+    pub fn add_key(&self, hive: RegistryHive, subkey: &str, view: RegistryView) {
+        lock(&self.keys).insert((hive, view, subkey.to_lowercase()));
+    }
+
+    /// Makes every [`Registry::key_exists`] of `subkey` fail with `error`.
+    pub fn fail_key_exists(
+        &self,
+        hive: RegistryHive,
+        subkey: &str,
+        view: RegistryView,
+        error: PortError,
+    ) {
+        lock(&self.key_failures).insert((hive, view, subkey.to_lowercase()), error);
+    }
+
     fn check_failure(&self, key: &Key) -> Result<(), PortError> {
         match lock(&self.failures).get(key) {
             Some(error) => Err(error.clone()),
@@ -163,6 +186,26 @@ impl Registry for FakeRegistry {
         }
         self.log.push(Event::RegistryDelete(target.clone()));
         Ok(())
+    }
+
+    fn key_exists(
+        &self,
+        hive: RegistryHive,
+        subkey: &str,
+        view: RegistryView,
+    ) -> Result<bool, PortError> {
+        let path = (hive, view, subkey.to_lowercase());
+        if let Some(error) = lock(&self.key_failures).get(&path) {
+            return Err(error.clone());
+        }
+        if lock(&self.keys).contains(&path) {
+            return Ok(true);
+        }
+        // A key also exists when a value lives in it or in one of its descendants.
+        let child_prefix = format!("{}\\", path.2);
+        Ok(lock(&self.values).keys().any(|key| {
+            key.0 == hive && key.1 == view && (key.2 == path.2 || key.2.starts_with(&child_prefix))
+        }))
     }
 }
 

@@ -5,6 +5,7 @@ pub mod api;
 mod autostart;
 pub mod catalogue;
 mod commands;
+pub mod health;
 mod ipc;
 mod logging;
 pub mod metrics;
