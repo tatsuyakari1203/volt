@@ -89,9 +89,23 @@ What `volt-core` contains today:
     that the history is incomplete.
   - **What the Undo page shows:** the records read through `list_activity`, newest first, each
     joined to its journal entry. See Undo page below.
-  - **Source of a revert:** a rollback keeps the source of its plan; a revert requested through
-    `revert_entry` or `revert_batch` is recorded as manual, because those calls do not take a
-    source.
+  - **Source of a revert:** `revert_entry` and `revert_batch` take a `Source` and an optional
+    label, and the record carries the revert's own source (manual or automation). A rollback keeps
+    the source of the original entry. A failed apply keeps only the port error class in the
+    journal entry's error; `redacted_entry_error` also redacts older text.
+  - **History incomplete:** `AppCore` keeps a `history_incomplete` flag, set whenever an engine
+    reports a failed activity write and kept until the app restarts. `history_status` exposes it.
+  - **Retention:** `Retention::DEFAULT` is 90 days and 5000 records. The `ActivityLog` port has
+    `prune` and `clear`; both touch only the activity table and keep records linked to a journal
+    entry that is applied or pending (the store reads the journal table in the same database),
+    because the Undo page lists undoable changes from the log. Pruning runs at startup, after
+    `reconcile_pending`, and on every 100th insert.
+  - **Processes:** `volt_core::process` has a `ProcessMonitor` that groups processes by exe name
+    and computes CPU % from two samples (it needs a clock and the logical CPU count).
+    `end_group` enforces protection in the core: a list of Windows-critical names, Volt and its
+    descendants (through `parent_pid`) and pid 4 or below are refused. Each process gets a result
+    (`Ended`, `NeedsAdministrator`, `AlreadyGone`, `Failed`), and one activity record says it
+    cannot be undone; there is no journal entry.
 - **Live metrics:** the `MetricsSource` port (`volt_core::metrics`) reads one _raw sample_: the
   cumulative CPU time counters, the physical memory totals, the space of every fixed volume and one
   reading per GPU adapter. A raw sample means little alone (a CPU counter only grows), so
@@ -123,9 +137,10 @@ What `volt-core` contains today:
     watching (10); under 5 GB free is always critical, and a disk with 100 GB or more free is
     never penalised, so a large disk is not blamed for a small share. Memory: 90 percent in use
     or more is critical (25), 80 percent or more high (12). A pending restart is 10 points.
-    Startup load (2 or more high-impact apps, 8 points; 4 or more, 15) is implemented and tested,
-    but nothing produces the figure until the startup manager exists: while it is `None` it is
-    not part of the report and is not listed as unchecked.
+    Startup load is the number of enabled startup entries from the startup manager (8 or more, 8
+    points; 15 or more, 15). When a source cannot be read the figure is unknown and the check is
+    listed as unchecked instead of being left out. `health_report` reads the startup manager
+    through `AppState`, so it depends on the core.
   - **Never a guess.** An input that could not be read (the sample failed, the system disk is not
     in it, a registry marker is unreadable) is listed in `unchecked`, costs no points and is shown
     to the user. When no check could run the level is `Unknown` and there is no grade.
@@ -136,7 +151,8 @@ What `volt-core` contains today:
   - **Pending restart** (`pending_restart_markers`) is read through the registry port, read-only:
     the key `HKLM\...\Component Based Servicing\RebootPending`, the key
     `HKLM\...\WindowsUpdate\Auto Update\RebootRequired`, and a non-empty
-    `PendingFileRenameOperations` under `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager`.
+    `PendingFileRenameOperations` (only a pair with a destination, a real rename, counts;
+    delete-only pairs are ignored) under `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager`.
     Positive evidence stands when another marker cannot be read; when none is set and one could
     not be read the answer is an error, never "no restart". The `Registry` port gained
     `key_exists` for the two marker keys, which hold no value: an adapter answers `true` for a key
@@ -350,8 +366,8 @@ fakes, or with a throwaway registry key and a temp directory.
   as `startup_apps()`.
 - **Ports.** `windows_ports()` builds the bundle from `WinRegistry`, `WinFileSystem` and
   `WinServices`. `WinCommands` runs the commands port. It also uses `WinProcesses` and `WinMemory`. `unsupported.rs`
-  keeps only `UnsupportedProcesses`, a stand-in for tests, which fails every call with
-  `PortError::Unsupported`.
+  keeps only `UnsupportedProcesses`, which is wired nowhere and serves only as a test stand-in;
+  it fails every call with `PortError::Unsupported`.
 - **Managed state.** The result is `AppState` in Tauri's managed state, not owned by the window, so
   the engine and the database connection outlive the on-demand window. If the core cannot be built
   (an unusable database, a build bug in the catalogue) the app still starts, the tray and window
@@ -455,8 +471,11 @@ file-publisher ports with the Windows API: `WinRegistry`, `WinServices`, `WinFil
   - Only the program's file name and the exit code are logged, per the redaction rule.
   - Tests run the test executable itself as the helper process (exit codes, output, arguments,
     sleeping), plus read-only system programs, so nothing changes the machine.
-- **`WinProcesses`** lists processes from a ToolHelp snapshot; ending a process is not implemented
-  (`terminate` is `Unsupported`). `windows_ports()` uses it.
+- **`WinProcesses`** reads `NtQuerySystemInformation(SystemProcessInformation)`: pid, parent,
+  private working set and user plus kernel CPU time, read by offset (tested with a hand-built
+  buffer and with the test process). It ends a process with `OpenProcess(PROCESS_TERMINATE)` and
+  `TerminateProcess`, and the adapter refuses pid 4 or below and its own process.
+  `windows_ports()` uses it.
 - **`WinRecycleBin`** implements the `RecycleBin` port (status and empty).
 - **`WinMemory`** reads the memory lists with `NtQuerySystemInformation` class 80 (struct and class
   from phnt `ntexapi.h`), which needs no rights, and purges five areas separately. Working-set
@@ -708,7 +727,7 @@ the WebView2 processes. The diagnostic log was read to confirm the sampler start
   and `shared/ipc` (bindings to the Rust commands). Features do not import each other; a boundary
   rule (dependency-cruiser, `apps/desktop/.dependency-cruiser.cjs`, run by `pnpm check`) enforces
   it and also forbids `shared` importing features, mirroring the crate check.
-- The app shell lives in `src/app` (navigation rail, section switching, Settings, placeholders) and
+- The app shell lives in `src/app` (navigation rail, section switching, Settings) and
   is composed by `src/App.tsx`. It sits on top of both `features` and `shared`; nothing else may
   import from it, and the same boundary rule enforces that. Navigation is plain local state, with
   no router.
@@ -737,8 +756,7 @@ the WebView2 processes. The diagnostic log was read to confirm the sampler start
   The formatters in `shared/text/{memory,size}.ts` are shared.
 - `features/home` is the Home dashboard: the health score with its explanation, and four live
   cards. See Home below.
-- `features/startup` is the Startup screen (nav entry "Startup", id `startup`; the older "Apps and
-  Startup" placeholder is for app management and stays a placeholder). It lists the entries read
+- `features/startup` is the Startup screen (nav entry "Startup", id `startup`). It lists the entries read
   live (name, source badge, publisher or "Publisher unknown", the command shortened in the middle
   with the full text one click away, and a Switch). Loading, empty and error states, a notice for
   sources that could not be read, and a search field. The switch locks while a command runs and
@@ -748,6 +766,11 @@ the WebView2 processes. The diagnostic log was read to confirm the sampler start
   switch; a refusal that still arrives (`accessDenied`) is explained in words and the list is
   read again. Screenshots with sample data are `docs/design/startup-light-460x700.png` and
   `startup-dark-460x700.png`.
+- `features/processes` is the Processes page (id `processes`). Processes are grouped by exe name
+  with CPU, memory and a count, and End task asks first in a dialog; ending `explorer.exe` gets
+  its own warning. The hook polls every second at first, then every 2 seconds, and stops on
+  unmount or while the window is hidden. Rows are memoised and keyed by id. There is no GPU
+  figure per process. Screenshot with sample data: `docs/design/processes-light-460x700.png`.
 - `features/undo` is the Undo and activity page, described under Undo page below. A tweak can
   still be undone from the Tweaks screen. Features do not import each other.
 - Outside the Volt window (a plain browser) the generated bindings fail with a `TypeError` because
@@ -778,7 +801,8 @@ the WebView2 processes. The diagnostic log was read to confirm the sampler start
     read is listed as `unreadable` and does not fail the list), `apply_tweak(id)`,
     `revert_tweak(id)`, `list_activity(limit, cursor)` and the five Undo page commands
     (`undo_entry`, `undo_batch`, `preview_undo_batch`, `export_activity` and
-    `export_activity_text`, see Undo page). They are async and run their work on the
+    `export_activity_text`, see Undo page; `preview_undo_entry`, `history_status` and
+    `clear_history` came later). They are async and run their work on the
     blocking thread pool, never on the main thread, because they touch the registry and `SQLite`.
     The commands are thin: the logic is in `src-tauri/src/api.rs`, which the integration tests call.
     Apply reports precisely how it ended: `applied`, `alreadyApplied`, `rolledBack` (a step failed
@@ -866,7 +890,7 @@ doing and what to do about it.
   The report carries the time of the check, which is shown.
 - **The deductions** are listed under "What lowers the score", each with its points, its reason and
   a button to the section that fixes it: Open Cleaner, Open Memory and Open Startup go to Clean,
-  Memory and Apps and Startup (the screen receives `onNavigate` and does not know the shell's
+  Memory and Startup (the screen receives `onNavigate` and does not know the shell's
   sections). Restart Windows has no button: Volt has no restart action, so it is a sentence. A fix
   the UI does not know yet is listed without a button, never with one that does nothing. The
   screen says that the score is 100 minus the listed points. Checks that could not run are named
@@ -926,9 +950,14 @@ is visible, so every record Volt writes is listed and says whether it can be tak
   as many records as were shown). The Tweaks screen reads the live state of every tweak whenever it
   is mounted and the shell mounts only the current section, so opening Tweaks after an undo always
   shows the state after it.
-- **Known limit: two changes to one value.** An undo restores the value the journal recorded
-  before that change. If a later change to the same target is still applied, undoing the earlier
-  one first overwrites the later one's effect; Volt does not warn about this yet.
+- **Two changes to one value.** An undo restores the value the journal recorded before that
+  change. Before a single or batch undo, `journal::overwrites_of` looks for a later applied entry
+  on the same registry value or service. `preview_undo_entry` and `preview_undo_batch` report it
+  and the UI asks for a confirmation that names the later change.
+- **Incomplete history and clearing.** When `history_status` says the history is incomplete the
+  page shows a notice. A Clear button (`clear_history`, with a confirmation) removes the history
+  within the retention rules above. After an undo the refresh pages through the log up to the
+  oldest loaded row.
 - **Export.** The activity log can be saved as a text file (Export) or put on the clipboard
   (Copy). `export_activity_text` renders every record with `volt_core::render_text` (UTC time,
   source, outcome, summary, links: only what the records hold, so the redaction rule holds) and the
@@ -1019,7 +1048,19 @@ source check enforces. The run-time observation (a release build, window open fo
 recorded in [privacy.md](privacy.md): `volt-desktop.exe` held no connection, while the WebView2
 runtime's own processes opened HTTPS connections to Microsoft addresses. Those are the runtime's,
 are not stopped by the page's policy, and are stated as outside Volt's control rather than hidden.
-Extra Chromium switches that might quiet them were tried and did not, so none are set.
+For its own window only, Volt passes the runtime `--disable-component-update`,
+`--disable-domain-reliability` and `--no-pings` through `additionalBrowserArgs`; the result and the
+method are in privacy.md, and `scripts/observe-webview2.ps1` repeats the observation.
+
+## Release
+
+`.github/workflows/release.yml` builds an NSIS installer (per user, no administrator rights) on a
+`v*` tag or a manual dispatch; pull requests that touch the workflow or the bundle configuration
+build the artifact only. A tag creates a draft GitHub release with the installer and a SHA-256
+file; nothing is published automatically. There is no signing and no updater. The version comes
+from the workspace `Cargo.toml`, which Tauri falls back to. `webviewInstallMode` is `skip`, so
+setup makes no network call; Windows 10 without the WebView2 runtime must install it first
+(see privacy.md and the README).
 
 ## Error handling
 
