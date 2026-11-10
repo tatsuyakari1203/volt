@@ -23,12 +23,13 @@ const UNTICKED_CATEGORIES: ReadonlySet<string> = new Set([
   'browserCache',
   'shaderCache',
   'chatAppCache',
+  'developerCache',
 ]);
 
 /**
  * Whether the rule is ticked when a scan finishes: Safe, no administrator rights needed, and not a
  * browser, shader or chat app cache (clearing it makes sites slower once, stutters games while
- * shaders compile again, or makes a chat app download media again, so the user chooses it).
+ * shaders compile again, makes a chat app download media again, or makes a package manager download packages again, so the user chooses it).
  */
 export function tickedByDefault(rule: CleaningRuleInfo): boolean {
   return (

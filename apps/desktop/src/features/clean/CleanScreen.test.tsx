@@ -443,6 +443,14 @@ describe('helpers', () => {
     };
     expect(tickedByDefault(shaders)).toBe(false);
     expect(tickedByDefault(chat)).toBe(false);
+    expect(
+      tickedByDefault({
+        ...temp,
+        id: 'npm-cache',
+        category: 'developerCache',
+        categoryLabel: 'Developer caches',
+      }),
+    ).toBe(false);
   });
 
   it('never counts a rule that needs administrator rights, even when it is in the set', () => {

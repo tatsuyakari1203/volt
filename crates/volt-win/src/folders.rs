@@ -73,6 +73,7 @@ impl KnownFolders for WinKnownFolders {
             Location::RoamingAppData => shell_folder(&FOLDERID_RoamingAppData, "RoamingAppData"),
             Location::ProgramData => shell_folder(&FOLDERID_ProgramData, "ProgramData"),
             Location::Windows => shell_folder(&FOLDERID_Windows, "Windows"),
+            Location::UserProfile => shell_folder(&FOLDERID_Profile, "Profile"),
             // `Location` is non-exhaustive: a location this adapter does not
             // know is refused, never guessed.
             other => Err(PortError::Unsupported(format!("location {other}"))),
@@ -130,6 +131,7 @@ mod tests {
             Location::RoamingAppData,
             Location::ProgramData,
             Location::Windows,
+            Location::UserProfile,
         ] {
             let path = folders.location(location).expect("resolves");
             assert!(path.is_absolute(), "{location}: {path:?}");

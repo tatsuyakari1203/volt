@@ -36,6 +36,7 @@ fn fake_folders() -> Arc<FakeKnownFolders> {
     let folders = Arc::new(FakeKnownFolders::new());
     folders.set(Location::UserTemp, temp_folder());
     folders.set(Location::LocalAppData, abs("Users/tester/AppData/Local"));
+    folders.set(Location::UserProfile, abs("Users/tester"));
     folders.set(
         Location::RoamingAppData,
         abs("Users/tester/AppData/Roaming"),
@@ -108,7 +109,7 @@ fn ids(list: &[&str]) -> Vec<String> {
 fn the_rules_are_listed_with_category_risk_and_the_administrator_flag() {
     let fx = fixture();
     let rules = cleaner::list_cleaning_rules(&fx.core).expect("rules");
-    assert_eq!(rules.len(), 24);
+    assert_eq!(rules.len(), 33);
     let temp = rules.iter().find(|r| r.id == "user-temp").expect("rule");
     assert_eq!(temp.category, CleanCategoryView::TemporaryFiles);
     assert_eq!(temp.category_label, "Temporary files");
@@ -124,7 +125,7 @@ fn a_scan_reports_counts_and_sizes_per_rule_and_never_a_full_path() {
     let result = scan(&fx.core);
     assert!(!result.cancelled);
     assert!(!result.plan_id.is_empty());
-    assert_eq!(result.rules.len(), 24);
+    assert_eq!(result.rules.len(), 33);
 
     let temp = result
         .rules
@@ -164,13 +165,13 @@ fn a_scan_emits_progress_before_each_rule() {
     let seen = RefCell::new(Vec::new());
     cleaner::scan_cleaning(&fx.core, &|p| seen.borrow_mut().push(p)).expect("scan");
     let seen = seen.into_inner();
-    assert_eq!(seen.len(), 24);
-    assert_eq!(seen[0], CleanScanProgress { done: 0, total: 24 });
+    assert_eq!(seen.len(), 33);
+    assert_eq!(seen[0], CleanScanProgress { done: 0, total: 33 });
     assert_eq!(
         seen[10],
         CleanScanProgress {
             done: 10,
-            total: 24
+            total: 33
         }
     );
 }

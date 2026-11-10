@@ -50,6 +50,7 @@ impl KnownFolders for TempFolders {
             Location::RoamingAppData => self.folder("Roaming"),
             Location::ProgramData => self.folder("ProgramData"),
             Location::Windows => self.folder("Windows"),
+            Location::UserProfile => self.folder("Profile"),
             other => return Err(PortError::Unsupported(format!("location {other}"))),
         })
     }
