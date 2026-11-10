@@ -11,4 +11,13 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# In-memory fakes of every port, for tests in this and other crates. Always compiled for this crate's own tests.
+fakes = []
+
 [dependencies]
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

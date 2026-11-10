@@ -9,5 +9,49 @@
 //! Dependency rule (enforced by `scripts/check-arch.mjs`): this crate depends
 //! on no other workspace crate and must not pull in `tauri`, `windows`,
 //! `windows-sys`, `winreg` or `rusqlite`.
+//!
+//! # The model in one paragraph
+//!
+//! An [`Operation`] is declarative data describing one undoable change. A
+//! [`Plan`] is a list of operations, each with a [`Preview`], a [`Risk`] and an
+//! [`Evidence`] label; building a plan only reads the system, so it is the dry
+//! run. The [`Executor`] applies a plan and enforces the safety property that
+//! callers cannot bypass: *write-ahead journaling*. For every operation it
+//! detects the prior state, has the [`Journal`] record a pending entry that
+//! contains that prior state, only then mutates the system, and finally marks
+//! the entry applied. Reverting restores the recorded prior state exactly,
+//! including "the value did not exist".
+//!
+//! # Fakes
+//!
+//! In-memory fakes of every port live in the `fakes` module, compiled for this
+//! crate's own tests and for other crates that enable the `fakes` feature.
 
 #![forbid(unsafe_code)]
+
+pub mod error;
+pub mod executor;
+pub mod journal;
+pub mod label;
+pub mod operation;
+pub mod plan;
+pub mod ports;
+pub mod registry;
+pub mod service;
+pub mod time;
+
+#[cfg(any(test, feature = "fakes"))]
+pub mod fakes;
+
+pub use error::{ExecError, PlanError, PortError, RevertError};
+pub use executor::{ApplyReport, Executor, ItemOutcome, ItemStatus, RevertOutcome, RevertReport};
+pub use journal::{BatchId, EntryId, EntryState, Journal, JournalEntry, NewEntry, Source};
+pub use label::{Evidence, Risk};
+pub use operation::{Operation, PriorState};
+pub use plan::{OperationRequest, Plan, PlanItem, Preview};
+pub use ports::{
+    FileStat, FileSystem, Memory, MemoryArea, MemoryStatus, Ports, ProcessInfo, Processes, Services,
+};
+pub use registry::{Registry, RegistryHive, RegistryValue, RegistryValueRef, RegistryView};
+pub use service::ServiceStartType;
+pub use time::{Clock, SystemClock, Timestamp};
