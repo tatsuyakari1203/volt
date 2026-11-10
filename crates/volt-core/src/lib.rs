@@ -38,13 +38,17 @@ pub mod plan;
 pub mod ports;
 pub mod registry;
 pub mod service;
+pub mod settings;
 pub mod time;
 
 #[cfg(any(test, feature = "fakes"))]
 pub mod fakes;
 
 pub use error::{ExecError, PlanError, PortError, RevertError};
-pub use executor::{ApplyReport, Executor, ItemOutcome, ItemStatus, RevertOutcome, RevertReport};
+pub use executor::{
+    ApplyReport, Executor, ItemOutcome, ItemStatus, ReconcileOutcome, ReconcileReport, Resolution,
+    RevertOutcome, RevertReport,
+};
 pub use journal::{BatchId, EntryId, EntryState, Journal, JournalEntry, NewEntry, Source};
 pub use label::{Evidence, Risk};
 pub use operation::{Operation, PriorState};
@@ -54,4 +58,5 @@ pub use ports::{
 };
 pub use registry::{Registry, RegistryHive, RegistryValue, RegistryValueRef, RegistryView};
 pub use service::ServiceStartType;
+pub use settings::{Settings, SettingsExt};
 pub use time::{Clock, SystemClock, Timestamp};

@@ -18,6 +18,7 @@ use crate::ports::{
 };
 use crate::registry::{Registry, RegistryHive, RegistryValue, RegistryValueRef, RegistryView};
 use crate::service::ServiceStartType;
+use crate::settings::Settings;
 use crate::time::{Clock, Timestamp};
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -490,6 +491,44 @@ impl Journal for FakeJournal {
             .cloned()
             .collect())
     }
+
+    fn entries_in_state(&self, state: EntryState) -> Result<Vec<JournalEntry>, PortError> {
+        Ok(lock(&self.state)
+            .entries
+            .iter()
+            .filter(|e| e.state == state)
+            .cloned()
+            .collect())
+    }
+}
+
+/// In-memory [`Settings`].
+#[derive(Debug, Default)]
+pub struct FakeSettings {
+    values: Mutex<HashMap<String, serde_json::Value>>,
+}
+
+impl FakeSettings {
+    /// No settings.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl Settings for FakeSettings {
+    fn get(&self, key: &str) -> Result<Option<serde_json::Value>, PortError> {
+        Ok(lock(&self.values).get(key).cloned())
+    }
+
+    fn set(&self, key: &str, value: &serde_json::Value) -> Result<(), PortError> {
+        lock(&self.values).insert(key.to_owned(), value.clone());
+        Ok(())
+    }
+
+    fn remove(&self, key: &str) -> Result<bool, PortError> {
+        Ok(lock(&self.values).remove(key).is_some())
+    }
 }
 
 /// Deterministic [`Clock`]: returns a start time, then 1 ms more on every call.
@@ -662,6 +701,18 @@ mod tests {
         assert!(status.available_physical_bytes < status.total_physical_bytes);
         memory.purge(MemoryArea::StandbyList).expect("purge");
         assert_eq!(memory.purged(), [MemoryArea::StandbyList]);
+    }
+
+    #[test]
+    fn settings_set_get_remove() {
+        let settings = FakeSettings::new();
+        assert_eq!(settings.get("a"), Ok(None));
+        settings
+            .set("a", &serde_json::json!({"x": 1}))
+            .expect("set");
+        assert_eq!(settings.get("a"), Ok(Some(serde_json::json!({"x": 1}))));
+        assert_eq!(settings.remove("a"), Ok(true));
+        assert_eq!(settings.remove("a"), Ok(false));
     }
 
     #[test]

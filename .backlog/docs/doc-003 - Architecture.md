@@ -3,7 +3,7 @@ id: doc-003
 title: Architecture
 type: specification
 created_date: '2026-11-10T03:01:00Z'
-updated_date: '2026-11-10T03:19:00Z'
+updated_date: '2026-11-10T03:43:00Z'
 ---
 Volt follows a ports-and-adapters layout so that the rules about *what* to change on a system are
 separate from the code that *does* it. That separation is what makes a system-modifying tool
@@ -82,6 +82,21 @@ Still to be built:
   code in most cases.
 - **Cleaning rule:** data as well: a root, include and exclude patterns, safety constraints (never
   follow junctions or symlinks outside the root) and a category.
+
+## Persistence
+
+`volt-store` implements the journal and settings ports with SQLite through `rusqlite` (bundled).
+
+- The database runs in WAL mode with `synchronous = FULL`, so a pending journal entry is on disk
+  before the system is changed.
+- Schema migrations run through `PRAGMA user_version`. A database with a newer schema than the
+  binary knows is refused, never downgraded.
+- A corrupt database is moved aside as `<file>.corrupt-<millis>` and reported to the caller. It is
+  never deleted.
+- On startup the composition root opens the store, builds the Executor and calls
+  `reconcile_pending`. For each entry left pending by a crash: if the system state equals the prior
+  state, the change was never applied and the entry is marked Failed; if it equals the target, the
+  entry is marked Applied and stays undoable; otherwise it is marked Failed as unknown.
 
 ## Process and elevation model
 

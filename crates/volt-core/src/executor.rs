@@ -15,8 +15,9 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{ExecError, RevertError};
+use crate::error::{ExecError, PortError, RevertError};
 use crate::journal::{BatchId, EntryId, EntryState, Journal, NewEntry, Source};
+use crate::operation::{Operation, PriorState};
 use crate::plan::{Plan, PlanItem};
 use crate::ports::Ports;
 use crate::time::Clock;
@@ -71,6 +72,60 @@ impl RevertReport {
     #[must_use]
     pub fn is_complete(&self) -> bool {
         self.outcomes.iter().all(|o| o.result.is_ok())
+    }
+}
+
+/// How crash reconciliation resolved one entry left pending.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum Resolution {
+    /// The system is in the operation's target state: the change happened.
+    /// The entry is now applied and can be reverted.
+    ConfirmedApplied,
+    /// The system still holds the recorded prior state: the change never
+    /// happened. The entry is now failed.
+    NeverApplied,
+    /// The system matches neither the prior nor the target state. The entry is
+    /// now failed with a reason saying the state is unknown.
+    StateUnknown,
+    /// The current state could not be read; the entry stays pending and is
+    /// looked at again on the next start.
+    Undetermined {
+        /// Why detection failed.
+        error: PortError,
+    },
+}
+
+/// Reconciliation result for one entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReconcileOutcome {
+    /// The entry that was pending.
+    pub entry: EntryId,
+    /// What was decided.
+    pub resolution: Resolution,
+}
+
+/// Result of [`Executor::reconcile_pending`]: one outcome per pending entry,
+/// in ascending entry id order.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReconcileReport {
+    /// One outcome per entry that was pending.
+    pub outcomes: Vec<ReconcileOutcome>,
+}
+
+const NEVER_APPLIED_REASON: &str =
+    "interrupted before the change was made: the system still holds the recorded prior state";
+const STATE_UNKNOWN_REASON: &str = "interrupted: the current state matches neither the recorded prior state nor the intended \
+     state, so it is unknown";
+
+/// The state the system is in after `operation` has been applied.
+fn target_state(operation: &Operation) -> PriorState {
+    match operation {
+        Operation::SetRegistryValue { value, .. } => PriorState::RegistryValue(Some(value.clone())),
+        Operation::DeleteRegistryValue { .. } => PriorState::RegistryValue(None),
+        Operation::SetServiceStartType { start_type, .. } => {
+            PriorState::ServiceStartType(*start_type)
+        }
     }
 }
 
@@ -232,6 +287,53 @@ impl Executor {
             })
             .collect();
         Ok(RevertReport { outcomes })
+    }
+
+    /// Resolves entries a crash left pending. Run once on start, before the
+    /// user can apply or undo anything.
+    ///
+    /// For each pending entry the current state is detected (read-only):
+    /// equal to the recorded prior state means the change never happened (the
+    /// entry becomes failed); equal to the operation's target means it did
+    /// happen (the entry becomes applied, so it can be undone); anything else
+    /// becomes failed with a reason saying the state is unknown. When the
+    /// state cannot be read the entry stays pending for the next start.
+    ///
+    /// `Err` only when the journal itself cannot be read or updated.
+    pub fn reconcile_pending(&self) -> Result<ReconcileReport, PortError> {
+        let pending = self.journal.entries_in_state(EntryState::Pending)?;
+        let mut outcomes = Vec::with_capacity(pending.len());
+        for entry in pending {
+            let resolution = match entry.operation.detect(&self.ports) {
+                Err(error) => Resolution::Undetermined { error },
+                Ok(current) if current == entry.prior => {
+                    self.journal.set_state(
+                        entry.id,
+                        EntryState::Failed,
+                        Some(NEVER_APPLIED_REASON.to_owned()),
+                    )?;
+                    Resolution::NeverApplied
+                }
+                Ok(current) if current == target_state(&entry.operation) => {
+                    self.journal
+                        .set_state(entry.id, EntryState::Applied, None)?;
+                    Resolution::ConfirmedApplied
+                }
+                Ok(_) => {
+                    self.journal.set_state(
+                        entry.id,
+                        EntryState::Failed,
+                        Some(STATE_UNKNOWN_REASON.to_owned()),
+                    )?;
+                    Resolution::StateUnknown
+                }
+            };
+            outcomes.push(ReconcileOutcome {
+                entry: entry.id,
+                resolution,
+            });
+        }
+        Ok(ReconcileReport { outcomes })
     }
 
     fn apply_item(&self, item: &PlanItem, batch: BatchId, source: Source) -> ItemStatus {

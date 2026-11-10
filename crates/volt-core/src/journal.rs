@@ -115,4 +115,8 @@ pub trait Journal: Send + Sync {
 
     /// All entries of a batch, ordered by ascending id.
     fn batch_entries(&self, batch: BatchId) -> Result<Vec<JournalEntry>, PortError>;
+
+    /// All entries currently in `state`, ordered by ascending id. Used to find
+    /// entries a crash left [`EntryState::Pending`].
+    fn entries_in_state(&self, state: EntryState) -> Result<Vec<JournalEntry>, PortError>;
 }

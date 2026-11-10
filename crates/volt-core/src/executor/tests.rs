@@ -58,6 +58,126 @@ fn applied_entry(report: &ApplyReport, index: usize) -> EntryId {
     }
 }
 
+// ---- crash reconciliation ---------------------------------------------------------------
+
+/// Writes a pending entry the way the executor would, then "crashes" (does nothing else).
+fn crash_after_journal(system: &FakeSystem, operation: Operation) -> EntryId {
+    let prior = operation.detect(&system.ports()).expect("detect");
+    let batch = system.journal.new_batch().expect("batch");
+    system
+        .journal
+        .record_pending(NewEntry {
+            batch,
+            timestamp: Timestamp::from_unix_millis(1),
+            source: Source::Manual,
+            operation,
+            prior,
+        })
+        .expect("record")
+}
+
+#[test]
+fn reconcile_marks_never_applied_entries_failed() {
+    let system = FakeSystem::new();
+    system
+        .registry
+        .set(&value_ref("A"), RegistryValue::Dword(1));
+    let id = crash_after_journal(&system, set_dword("A", 0));
+
+    let report = system.executor().reconcile_pending().expect("reconcile");
+    assert_eq!(
+        report.outcomes,
+        [ReconcileOutcome {
+            entry: id,
+            resolution: Resolution::NeverApplied
+        }]
+    );
+    let entry = system.journal.entry(id).expect("read").expect("exists");
+    assert_eq!(entry.state, EntryState::Failed);
+    assert!(entry.error.is_some());
+    assert_eq!(
+        system.registry.get(&value_ref("A")),
+        Some(RegistryValue::Dword(1))
+    );
+}
+
+#[test]
+fn reconcile_marks_applied_entries_applied_so_they_can_be_undone() {
+    let system = FakeSystem::new();
+    system
+        .registry
+        .set(&value_ref("A"), RegistryValue::Dword(1));
+    let id = crash_after_journal(&system, set_dword("A", 0));
+    // The apply happened, then the process died before the state update.
+    system
+        .registry
+        .set(&value_ref("A"), RegistryValue::Dword(0));
+
+    let executor = system.executor();
+    let report = executor.reconcile_pending().expect("reconcile");
+    assert_eq!(report.outcomes[0].resolution, Resolution::ConfirmedApplied);
+    assert_eq!(entry_state(&system, id), EntryState::Applied);
+
+    executor.revert_entry(id).expect("revert");
+    assert_eq!(
+        system.registry.get(&value_ref("A")),
+        Some(RegistryValue::Dword(1))
+    );
+}
+
+#[test]
+fn reconcile_marks_unexpected_state_failed_and_unknown() {
+    let system = FakeSystem::new();
+    system
+        .registry
+        .set(&value_ref("A"), RegistryValue::Dword(1));
+    let id = crash_after_journal(&system, set_dword("A", 0));
+    system
+        .registry
+        .set(&value_ref("A"), RegistryValue::Dword(7));
+
+    let report = system.executor().reconcile_pending().expect("reconcile");
+    assert_eq!(report.outcomes[0].resolution, Resolution::StateUnknown);
+    let entry = system.journal.entry(id).expect("read").expect("exists");
+    assert_eq!(entry.state, EntryState::Failed);
+    assert!(entry.error.expect("reason").contains("unknown"));
+}
+
+#[test]
+fn reconcile_leaves_entries_pending_when_state_cannot_be_read() {
+    let system = FakeSystem::new();
+    system
+        .services
+        .add("DiagTrack", ServiceStartType::Automatic);
+    let id = crash_after_journal(
+        &system,
+        set_service("DiagTrack", ServiceStartType::Disabled),
+    );
+    // The service vanished, so its state cannot be detected.
+    let without_service = FakeSystem::new();
+    let executor = Executor::new(
+        without_service.ports(),
+        system.journal.clone(),
+        system.clock.clone(),
+    );
+    let report = executor.reconcile_pending().expect("reconcile");
+    assert!(matches!(
+        report.outcomes[0].resolution,
+        Resolution::Undetermined { .. }
+    ));
+    assert_eq!(entry_state(&system, id), EntryState::Pending);
+}
+
+#[test]
+fn reconcile_ignores_entries_that_are_not_pending() {
+    let system = FakeSystem::new();
+    let plan = plan_of(&system, vec![request(set_dword("A", 1), Risk::Safe)]);
+    let executor = system.executor();
+    executor.apply(&plan, Source::Manual).expect("apply");
+    let report = executor.reconcile_pending().expect("reconcile");
+    assert!(report.outcomes.is_empty());
+}
+
 // ---- plan and preview -------------------------------------------------------------------
 
 #[test]
