@@ -226,12 +226,13 @@ pub(crate) fn collect_report(
     HealthView::new(&report, system_mount, clock.now().to_iso8601())
 }
 
-/// The startup load from the startup manager (a read-only listing), `None` when the core or the
+/// The startup load from the startup manager (a read-only listing of entries, without the
+/// scheduled tasks the count does not use), `None` when the core or the
 /// manager is missing or a source could not be read.
 fn startup_load_of(state: &AppState) -> Option<StartupLoad> {
     let core = state.core().ok()?;
     let manager = core.startup_apps().ok()?;
-    StartupLoad::from_listing(&manager.list())
+    StartupLoad::from_listing(&manager.list_entries())
 }
 
 /// Reads the real machine: the real registry, one read of CPU time, memory and disks, and the

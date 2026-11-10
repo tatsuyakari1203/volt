@@ -1019,3 +1019,25 @@ fn unreadable_tasks_are_a_problem_class_and_leave_the_entries_alone() {
     assert_eq!(listing.tasks_problem, Some("access denied"));
     assert!(listing.problems.is_empty());
 }
+
+#[test]
+fn listing_entries_only_never_asks_the_task_source() {
+    let f = fixture();
+    add_run(&f, "Alpha", r"C:.exe");
+    let tasks = Arc::new(FakeLogonTasks::new(vec![logon_task(
+        r"\Sync Updater",
+        r"C:\Tools\sync.exe",
+        "",
+        true,
+    )]));
+    let manager = f.manager.with_logon_tasks(tasks.clone());
+
+    let entries = manager.list_entries();
+    assert_eq!(entries.entries.len(), 1);
+    assert!(entries.tasks.is_empty());
+    assert_eq!(tasks.calls(), 0);
+
+    let full = manager.list();
+    assert_eq!(full.tasks.len(), 1);
+    assert_eq!(tasks.calls(), 1);
+}
