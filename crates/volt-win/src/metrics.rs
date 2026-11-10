@@ -6,7 +6,7 @@
 //! - Memory: `GlobalMemoryStatusEx`.
 //! - Disks: `GetLogicalDrives`, `GetDriveTypeW` and `GetDiskFreeSpaceExW` for fixed volumes only,
 //!   so a removable drive, an optical drive or a network share is never touched.
-//! - GPU: performance counters and DXGI, see [`crate::gpu`]. A machine without a readable GPU
+//! - GPU: `D3DKMTQueryStatistics` and DXGI, see [`crate::gpu`]. A machine without a readable GPU
 //!   reports an empty list, never an error.
 //!
 //! Reading changes nothing on the machine.
@@ -23,7 +23,7 @@ use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTAT
 use windows::Win32::System::Threading::GetSystemTimes;
 use windows::core::PCWSTR;
 
-use crate::gpu::{GpuReader, NoGpu, PdhGpuReader};
+use crate::gpu::{GpuReader, KmtGpuReader, NoGpu};
 use crate::wide::to_wide_nul;
 
 /// `GetDriveTypeW` result for a fixed (non-removable, non-network) drive.
@@ -31,8 +31,8 @@ const DRIVE_FIXED: u32 = 3;
 
 /// The metrics source backed by the Windows API.
 ///
-/// It owns an open performance-counter query for the GPU, so create it when sampling starts and
-/// drop it when sampling stops: an idle app then holds no query.
+/// It keeps the previous GPU node times to compute utilisation, so create it when sampling starts and
+/// drop it when sampling stops.
 pub struct WinMetrics {
     gpu: Mutex<Box<dyn GpuReader>>,
     gpu_failed: AtomicBool,
@@ -52,11 +52,11 @@ impl Default for WinMetrics {
 
 impl WinMetrics {
     /// Opens the source. A machine with no readable GPU (a virtual machine, an old Windows, a
-    /// driver without counters) is a normal case: it is logged at debug level and every read
+    /// driver without statistics) is a normal case: it is logged at debug level and every read
     /// then reports an empty GPU list.
     #[must_use]
     pub fn new() -> Self {
-        match PdhGpuReader::open() {
+        match KmtGpuReader::open() {
             Ok(reader) => Self::with_gpu_reader(Box::new(reader)),
             Err(error) => {
                 log::debug!("no GPU metrics on this machine: {error}");
@@ -65,7 +65,7 @@ impl WinMetrics {
         }
     }
 
-    /// Opens a source that never reads the GPU: no performance-counter query is opened, so a
+    /// Opens a source that never reads the GPU: no GPU statistics are queried, so a
     /// one-off read of CPU time, memory and disks (the health check) stays cheap and leaves
     /// nothing behind. Every read reports an empty GPU list.
     #[must_use]
