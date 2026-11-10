@@ -4488,6 +4488,7 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.21",
  "toml 1.2.1+spec-1.1.0",
 ]
@@ -4511,6 +4512,14 @@ dependencies = [
  "tempfile",
  "volt-core",
  "volt-store",
+ "volt-win",
+]
+
+[[package]]
+name = "volt-helper"
+version = "0.1.0"
+dependencies = [
+ "volt-core",
  "volt-win",
 ]
 
