@@ -7,7 +7,15 @@
   },
   "files": {
     "ignoreUnknown": true,
-    "includes": ["**", "!.backlog", "!**/target", "!**/dist", "!**/gen", "!pnpm-lock.yaml"]
+    "includes": [
+      "**",
+      "!.backlog",
+      "!**/target",
+      "!**/dist",
+      "!**/gen",
+      "!pnpm-lock.yaml",
+      "!apps/desktop/src/shared/ipc/bindings.ts"
+    ]
   },
   "formatter": {
     "enabled": true,
