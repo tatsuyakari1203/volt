@@ -277,7 +277,11 @@ pub fn clean_memory_of(
     let selected: Vec<MemoryArea> = areas.iter().map(|area| area.to_core()).collect();
     // One run at a time, and not while a tweak is being applied.
     let _guard = core.exclusive();
-    Ok(clean_result(&cleaner.run(&selected, Source::Manual)))
+    let result = clean_result(&cleaner.run(&selected, Source::Manual));
+    if !result.recorded {
+        core.note_history_incomplete();
+    }
+    Ok(result)
 }
 
 /// Tauri command: memory by list now and which operations can run. Reads the system only.

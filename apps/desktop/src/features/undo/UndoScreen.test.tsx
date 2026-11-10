@@ -10,6 +10,8 @@ const ipc = vi.hoisted(() => ({
   undoEntry: vi.fn(),
   undoBatch: vi.fn(),
   previewUndoBatch: vi.fn(),
+  previewUndoEntry: vi.fn(),
+  historyStatus: vi.fn(),
   exportActivity: vi.fn(),
   exportActivityText: vi.fn(),
 }));
@@ -70,6 +72,8 @@ function rows() {
 
 beforeEach(() => {
   for (const mock of Object.values(ipc)) mock.mockReset();
+  ipc.historyStatus.mockResolvedValue({ incomplete: false });
+  ipc.previewUndoEntry.mockResolvedValue({ items: [], overwrites: [] });
 });
 
 // ---- reading ---------------------------------------------------------------------------------
@@ -341,6 +345,7 @@ it('asks before undoing a batch, listing what will be restored, and does nothing
         restore: 'removed (it did not exist before)',
       },
     ],
+    overwrites: [],
   });
   render(<UndoScreen />);
   await user.click(
@@ -371,6 +376,7 @@ it('undoes the batch once confirmed and reports a complete undo', async () => {
       { entry: '4', what: 'Registry value HKCU\\X\\Pre', restore: 'set back to REG_DWORD 5' },
       { entry: '3', what: 'Registry value HKCU\\X\\Flag', restore: 'set back to REG_DWORD 1' },
     ],
+    overwrites: [],
   });
   render(<UndoScreen />);
   await user.click(
@@ -398,6 +404,7 @@ it('reports a partly undone batch with what failed and why', async () => {
     items: [
       { entry: '4', what: 'Registry value HKCU\\X\\Pre', restore: 'set back to REG_DWORD 5' },
     ],
+    overwrites: [],
   });
   render(<UndoScreen />);
   await user.click(
@@ -429,7 +436,7 @@ it('reports a partly undone batch with what failed and why', async () => {
 it('answers "nothing to undo" for a batch that was undone elsewhere, and cannot be confirmed empty', async () => {
   const user = userEvent.setup();
   ipc.listActivity.mockResolvedValue(page(BATCH));
-  ipc.previewUndoBatch.mockResolvedValue({ items: [] });
+  ipc.previewUndoBatch.mockResolvedValue({ items: [], overwrites: [] });
   render(<UndoScreen />);
   await user.click(
     await screen.findByRole('button', { name: 'Undo all changes of Show file extensions' }),
@@ -525,4 +532,85 @@ it('explains a copy that failed', async () => {
   await user.click(await screen.findByRole('button', { name: 'Copy' }));
   const alert = await screen.findByRole('alert');
   expect(alert.textContent).toContain('Could not copy the text. the log is unreadable.');
+});
+
+// ---- later changes, incomplete history, refresh ------------------------------------------------
+
+it('asks before an undo that would overwrite a later change, and names it', async () => {
+  const user = userEvent.setup();
+  ipc.listActivity.mockResolvedValue(page([undoable('1', { summary: 'Applied it' })]));
+  ipc.previewUndoEntry.mockResolvedValue({
+    items: [{ entry: '1', what: 'Registry value HKCUXFlag', restore: 'set back to REG_DWORD 1' }],
+    overwrites: [
+      {
+        entry: '1',
+        what: 'Registry value HKCUXFlag',
+        laterEntry: '9',
+        laterTime: '2026-11-10T04:00:00.000Z',
+        laterSource: 'automation',
+      },
+    ],
+  });
+  ipc.undoEntry.mockResolvedValue(result());
+  render(<UndoScreen />);
+  await user.click(await screen.findByRole('button', { name: /^Undo/ }));
+  const dialog = await screen.findByRole('dialog');
+  expect(within(dialog).getByText('A later change will be overwritten')).toBeDefined();
+  expect(within(dialog).getByText(/Flag was changed again on/)).toBeDefined();
+  expect(ipc.undoEntry).not.toHaveBeenCalled();
+  await user.click(within(dialog).getByRole('button', { name: 'Undo anyway' }));
+  await vi.waitFor(() => expect(ipc.undoEntry).toHaveBeenCalledWith('1'));
+});
+
+it('does not undo when the user cancels the overwrite warning', async () => {
+  const user = userEvent.setup();
+  ipc.listActivity.mockResolvedValue(page([undoable('1', { summary: 'Applied it' })]));
+  ipc.previewUndoEntry.mockResolvedValue({
+    items: [{ entry: '1', what: 'Registry value X', restore: 'removed' }],
+    overwrites: [
+      {
+        entry: '1',
+        what: 'Registry value X',
+        laterEntry: '9',
+        laterTime: '2026-11-10T04:00:00.000Z',
+        laterSource: 'manual',
+      },
+    ],
+  });
+  render(<UndoScreen />);
+  await user.click(await screen.findByRole('button', { name: /^Undo/ }));
+  await user.click(await screen.findByRole('button', { name: 'Cancel' }));
+  expect(ipc.undoEntry).not.toHaveBeenCalled();
+});
+
+it('shows a notice while the history is known to be incomplete', async () => {
+  ipc.listActivity.mockResolvedValue(page([undoable('1')]));
+  ipc.historyStatus.mockResolvedValue({ incomplete: true });
+  render(<UndoScreen />);
+  expect(await screen.findByText(/This history is incomplete/)).toBeDefined();
+});
+
+it('keeps every loaded row, also beyond one page of 200, when the list is read again after an undo', async () => {
+  const user = userEvent.setup();
+  const many = (from: number, to: number) =>
+    Array.from({ length: to - from + 1 }, (_, i) =>
+      item(String(to - i), { summary: `Row ${to - i}` }),
+    );
+  const first = many(201, 400);
+  first[0] = undoable('400', { summary: 'Row 400' });
+  ipc.listActivity.mockResolvedValueOnce(page(first, '201'));
+  ipc.listActivity.mockResolvedValueOnce(page(many(101, 200), '101'));
+  render(<UndoScreen />);
+  await screen.findByText('Row 400');
+  await user.click(await screen.findByRole('button', { name: 'Show older' }));
+  await vi.waitFor(() => expect(rows()).toHaveLength(300));
+  ipc.undoEntry.mockResolvedValue(result());
+  // After the undo there is one more record at the top; the shell caps a page at 200.
+  const after = [item('401', { summary: 'Row 401', status: 'reverted' }), ...many(101, 400)];
+  ipc.listActivity.mockResolvedValueOnce(page(after.slice(0, 200), '202'));
+  ipc.listActivity.mockResolvedValueOnce(page(after.slice(200), null));
+  await user.click(screen.getAllByRole('button', { name: /^Undo/ })[0] as HTMLElement);
+  await screen.findByText('Row 401');
+  expect(ipc.listActivity).toHaveBeenLastCalledWith(200, '202');
+  await vi.waitFor(() => expect(rows()).toHaveLength(301));
 });

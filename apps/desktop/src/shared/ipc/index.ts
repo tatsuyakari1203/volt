@@ -19,6 +19,7 @@ import {
   type ExportResult,
   events,
   type HealthView,
+  type HistoryStatus,
   type IpcError,
   type MemoryAreaView,
   type MemoryCleanResult,
@@ -97,6 +98,7 @@ export type {
   TweakStateView,
   TweakStepView,
   UndoFailure,
+  UndoOverwrite,
   UndoPreview,
   UndoPreviewItem,
   UndoResult,
@@ -326,6 +328,19 @@ export async function undoBatch(batch: string): Promise<UndoResult> {
 /** What undoing a batch would restore right now, newest first. Reads only. */
 export async function previewUndoBatch(batch: string): Promise<UndoPreview> {
   return call(() => commands.previewUndoBatch(batch));
+}
+
+/**
+ * What undoing one change would do right now: the change, and the later change of the same
+ * target it would overwrite, if any. Reads only.
+ */
+export async function previewUndoEntry(entry: string): Promise<UndoPreview> {
+  return call(() => commands.previewUndoEntry(entry));
+}
+
+/** Whether the activity history is complete since the app started. */
+export async function historyStatus(): Promise<HistoryStatus> {
+  return call(() => commands.historyStatus());
 }
 
 /**

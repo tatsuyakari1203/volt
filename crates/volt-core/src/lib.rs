@@ -95,7 +95,9 @@ pub use health::{
     Deduction, DiskSpace, FixAction, HealthCheck, HealthInputs, HealthLevel, HealthReport,
     RestartMarker, StartupLoad,
 };
-pub use journal::{BatchId, EntryId, EntryState, Journal, JournalEntry, NewEntry, Source};
+pub use journal::{
+    BatchId, EntryId, EntryState, Journal, JournalEntry, NewEntry, Overwrite, Source, overwrites_of,
+};
 pub use label::{Evidence, Risk};
 pub use memory::{AreaReport, MEMORY_LABEL, MemoryCleanReport, MemoryCleaner};
 pub use metrics::{

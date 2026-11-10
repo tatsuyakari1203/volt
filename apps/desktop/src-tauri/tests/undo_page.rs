@@ -18,14 +18,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tempfile::TempDir;
 use volt_core::fakes::FakeSystem;
 use volt_core::{
-    ActivityOutcome, NewActivity, PortError, Registry, RegistryHive, RegistryValue,
-    RegistryValueRef, Source, Timestamp,
+    ActivityOutcome, BatchId, EntryState, NewActivity, NewEntry, Operation, PortError, PriorState,
+    Registry, RegistryHive, RegistryValue, RegistryValueRef, Source, Timestamp,
 };
 use volt_desktop_lib::IpcError;
 use volt_desktop_lib::api::{
     ActivityItem, ActivityStatus, ApplyStatus, ChangeState, ExportResult, UndoStatus, apply_tweak,
-    export_activity_text, export_file_name, list_activity, preview_undo_batch, undo_batch,
-    undo_entry, write_export,
+    export_activity_text, export_file_name, history_status, list_activity, preview_undo_batch,
+    preview_undo_entry, undo_batch, undo_entry, write_export,
 };
 use volt_desktop_lib::wiring::{AppCore, build_core, windows_ports};
 use volt_win::WinRegistry;
@@ -613,4 +613,73 @@ fn an_empty_log_exports_an_empty_text_and_cancelling_is_a_value_not_an_error() {
         saved,
         serde_json::json!({ "kind": "saved", "path": "C:/x.txt", "records": 2 })
     );
+}
+
+// ---- later changes and incomplete history ------------------------------------------------------
+
+#[test]
+fn undoing_an_older_change_names_the_later_change_it_would_overwrite() {
+    let dir = TempDir::new().expect("temp dir");
+    let (_system, core) = fake_core(&dir, r"Software\VoltTest\Overwrite");
+    apply_tweak(&core, "e2e-flag").expect("apply");
+    let rows = items(&core);
+    let older = row(&rows, "Flag", ActivityStatus::Applied)
+        .entry
+        .clone()
+        .expect("entry");
+    assert!(
+        preview_undo_entry(&core, &older)
+            .expect("preview")
+            .overwrites
+            .is_empty(),
+        "nothing changed Flag since"
+    );
+
+    // Something else changes the same value later: a journal entry only, the fake system is
+    // not touched.
+    let batch = core.journal.new_batch(None).unwrap_or(BatchId(99));
+    let later = core
+        .journal
+        .record_pending(NewEntry {
+            batch,
+            timestamp: Timestamp::from_unix_millis(5),
+            source: Source::Automation,
+            operation: Operation::SetRegistryValue {
+                target: value_ref(r"Software\VoltTest\Overwrite", "Flag"),
+                value: RegistryValue::Dword(7),
+            },
+            prior: PriorState::RegistryValue(Some(RegistryValue::Dword(0))),
+        })
+        .expect("record");
+    core.journal
+        .set_state(later, EntryState::Applied, None)
+        .expect("applied");
+
+    let preview = preview_undo_entry(&core, &older).expect("preview");
+    assert_eq!(preview.items.len(), 1);
+    assert_eq!(preview.overwrites.len(), 1, "{preview:?}");
+    assert_eq!(preview.overwrites[0].entry, older);
+    assert_eq!(preview.overwrites[0].later_entry, later.0.to_string());
+    assert!(preview.overwrites[0].what.ends_with("Flag"), "{preview:?}");
+
+    // Once the later change is undone, the warning is gone.
+    core.journal
+        .set_state(later, EntryState::Reverted, None)
+        .expect("reverted");
+    assert!(
+        preview_undo_entry(&core, &older)
+            .expect("preview")
+            .overwrites
+            .is_empty()
+    );
+}
+
+#[test]
+fn the_history_notice_stays_once_an_activity_write_failed() {
+    let dir = TempDir::new().expect("temp dir");
+    let (_system, core) = fake_core(&dir, r"Software\VoltTest\Incomplete");
+    assert!(!history_status(&core).expect("status").incomplete);
+    core.note_history_incomplete();
+    assert!(history_status(&core).expect("status").incomplete);
+    assert!(history_status(&core).expect("status").incomplete);
 }

@@ -19,7 +19,8 @@ use volt_core::{
     Clock, EntryId, EntryState, Evidence, ItemStatus, JournalEntry, RESET_LABEL_SUFFIX,
     RestartRequirement, RevertError, RevertOutcome, RevertReport, Risk, Source, StartupEntry,
     StartupOrigin, StartupScope, StartupState, StepPreview, SystemClock, Timestamp,
-    TweakApplyReport, TweakError, TweakRevertReport, TweakState, activity, render_text,
+    TweakApplyReport, TweakError, TweakRevertReport, TweakState, activity, overwrites_of,
+    render_text,
 };
 
 use crate::IpcError;
@@ -365,6 +366,34 @@ pub struct UndoPreviewItem {
 pub struct UndoPreview {
     /// The changes that are still applied, newest first: the order they are undone in.
     pub items: Vec<UndoPreviewItem>,
+    /// Changes in `items` whose target was changed again later; undoing would replace that later
+    /// change.
+    pub overwrites: Vec<UndoOverwrite>,
+}
+
+/// A later change an undo would silently overwrite.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct UndoOverwrite {
+    /// The journal entry being undone, as a decimal string.
+    pub entry: String,
+    /// What the later change touches, in words, without any data.
+    pub what: String,
+    /// The later journal entry, as a decimal string.
+    pub later_entry: String,
+    /// When the later change was made (ISO 8601, UTC).
+    pub later_time: String,
+    /// Who made the later change.
+    pub later_source: ActivitySource,
+}
+
+/// Whether the history on the Undo page is complete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryStatus {
+    /// An activity record could not be written since the app started. The changes and their undo
+    /// entries are safe; the list is missing rows.
+    pub incomplete: bool,
 }
 
 /// The activity log rendered as text, ready to save or copy.
@@ -716,17 +745,58 @@ pub fn undo_batch(core: &AppCore, batch: &str) -> Result<UndoResult, IpcError> {
 pub fn preview_undo_batch(core: &AppCore, batch: &str) -> Result<UndoPreview, IpcError> {
     let batch = BatchId(parse_id(batch, "batch")?);
     let entries = core.journal.batch_entries(batch).map_err(IpcError::from)?;
-    let items = entries
-        .iter()
-        .rev()
+    let mut applied: Vec<JournalEntry> = entries
+        .into_iter()
         .filter(|entry| entry.state == EntryState::Applied)
+        .collect();
+    applied.reverse();
+    undo_preview(core, &applied)
+}
+
+/// What [`undo_entry`] would do right now: the one change, and the later change it would
+/// overwrite, if any. An entry that is not applied previews as nothing. Reads the journal only.
+pub fn preview_undo_entry(core: &AppCore, entry: &str) -> Result<UndoPreview, IpcError> {
+    let id = EntryId(parse_id(entry, "journal entry")?);
+    let found = core.journal.entry(id).map_err(IpcError::from)?;
+    let applied: Vec<JournalEntry> = found
+        .filter(|entry| entry.state == EntryState::Applied)
+        .into_iter()
+        .collect();
+    undo_preview(core, &applied)
+}
+
+fn undo_preview(core: &AppCore, applied: &[JournalEntry]) -> Result<UndoPreview, IpcError> {
+    let overwrites = overwrites_of(core.journal.as_ref(), applied)
+        .map_err(IpcError::from)?
+        .into_iter()
+        .map(|found| UndoOverwrite {
+            entry: found.entry.0.to_string(),
+            what: capitalised(&subject(&found.later.operation)),
+            later_entry: found.later.id.0.to_string(),
+            later_time: found.later.timestamp.to_iso8601(),
+            later_source: match found.later.source {
+                Source::Manual => ActivitySource::Manual,
+                Source::Automation => ActivitySource::Automation,
+                _ => ActivitySource::Other,
+            },
+        })
+        .collect();
+    let items = applied
+        .iter()
         .map(|entry| UndoPreviewItem {
             entry: entry.id.0.to_string(),
             what: capitalised(&subject(&entry.operation)),
             restore: restore_words_for(&entry.operation, &entry.prior),
         })
         .collect();
-    Ok(UndoPreview { items })
+    Ok(UndoPreview { items, overwrites })
+}
+
+/// Whether the activity history is complete, for the notice on the Undo page.
+pub fn history_status(core: &AppCore) -> Result<HistoryStatus, IpcError> {
+    Ok(HistoryStatus {
+        incomplete: core.history_incomplete(),
+    })
 }
 
 /// Renders the whole activity log as text, newest first, for saving or copying. The text holds
@@ -1129,6 +1199,7 @@ fn warn_if_history_incomplete(core: &AppCore, failures_before: u64, action: &str
         .activity_write_failures()
         .saturating_sub(failures_before);
     if failures > 0 {
+        core.note_history_incomplete();
         log::warn!(
             "{failures} activity record(s) could not be written while {action}; the change and \
              its undo journal entry are safe, but the history on the Undo page is incomplete"

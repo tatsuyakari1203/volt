@@ -194,12 +194,16 @@ pub fn boost_of(core: &AppCore) -> Result<BoostResult, IpcError> {
     let memory = core.memory_cleaner()?;
     let config = BoostConfig::load(core.settings.as_ref());
     let _guard = core.exclusive();
-    Ok(result_of(&run_boost(
+    let result = result_of(&run_boost(
         memory,
         core.clean_engine(),
         &config,
         Source::Manual,
-    )))
+    ));
+    if !result.recorded {
+        core.note_history_incomplete();
+    }
+    Ok(result)
 }
 
 /// A short line for the tray tooltip, in plain words. The text never says space was freed.

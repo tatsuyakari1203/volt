@@ -180,6 +180,29 @@ async previewUndoBatch(batch: string) : Promise<Result<UndoPreview, IpcError>> {
 }
 },
 /**
+ * Tauri command: what undoing one change would do right now, including a later change it would
+ * overwrite. Reads only.
+ */
+async previewUndoEntry(entry: string) : Promise<Result<UndoPreview, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("preview_undo_entry", { entry }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: whether the activity history is complete.
+ */
+async historyStatus() : Promise<Result<HistoryStatus, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("history_status") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Tauri command: asks the user where to save the activity log (a native save dialog) and writes
  * it as a text file. The file system is reached from Rust only: the UI is granted no file
  * system or dialog permission. Closing the dialog is `cancelled`, not an error.
@@ -1024,6 +1047,15 @@ systemMount: string;
  */
 checkedAt: string }
 /**
+ * Whether the history on the Undo page is complete.
+ */
+export type HistoryStatus = { 
+/**
+ * An activity record could not be written since the app started. The changes and their undo
+ * entries are safe; the list is missing rows.
+ */
+incomplete: boolean }
+/**
  * The one error type every command returns.
  * 
  * It reaches the UI as a discriminated value, `{ kind: "notFound", message: "..." }`, so the
@@ -1718,13 +1750,42 @@ what: string;
  */
 reason: string }
 /**
+ * A later change an undo would silently overwrite.
+ */
+export type UndoOverwrite = { 
+/**
+ * The journal entry being undone, as a decimal string.
+ */
+entry: string; 
+/**
+ * What the later change touches, in words, without any data.
+ */
+what: string; 
+/**
+ * The later journal entry, as a decimal string.
+ */
+laterEntry: string; 
+/**
+ * When the later change was made (ISO 8601, UTC).
+ */
+laterTime: string; 
+/**
+ * Who made the later change.
+ */
+laterSource: ActivitySource }
+/**
  * What [`undo_batch`] would restore right now. Reads only.
  */
 export type UndoPreview = { 
 /**
  * The changes that are still applied, newest first: the order they are undone in.
  */
-items: UndoPreviewItem[] }
+items: UndoPreviewItem[]; 
+/**
+ * Changes in `items` whose target was changed again later; undoing would replace that later
+ * change.
+ */
+overwrites: UndoOverwrite[] }
 /**
  * One change an undo of a batch would restore.
  */
