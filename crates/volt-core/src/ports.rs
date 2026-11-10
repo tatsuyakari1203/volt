@@ -119,6 +119,16 @@ pub struct ProcessInfo {
     /// CPU time the process has used since it started (kernel plus user), in 100 ns ticks. It only
     /// grows, so CPU load is the difference of two readings over the time between them.
     pub cpu_time_100ns: u64,
+    /// When the process started, in 100 ns ticks (a Windows file time). A process id can be reused
+    /// once its process has exited, so the pair (pid, creation time) is what identifies one
+    /// process for good.
+    pub created_at_100ns: u64,
+    /// Full path of the executable, when it can be read without administrator rights. `None` for
+    /// the protected processes a normal user cannot look into.
+    pub path: Option<String>,
+    /// The Windows session it runs in. Session 0 holds services and system processes, never a
+    /// user's apps.
+    pub session_id: u32,
 }
 
 /// Port: processes.
@@ -126,9 +136,13 @@ pub trait Processes: Send + Sync {
     /// Lists running processes, without the idle pseudo-process (pid 0).
     fn list(&self) -> Result<Vec<ProcessInfo>, PortError>;
 
-    /// Ends a process at once, without letting it save anything. An unknown pid is
-    /// [`PortError::NotFound`] and a process the user may not end is [`PortError::AccessDenied`].
-    fn terminate(&self, pid: u32) -> Result<(), PortError>;
+    /// Ends a process at once, without letting it save anything. `created_at_100ns` is the
+    /// creation time the listing gave for `pid`; if the process now behind that id started at
+    /// another time, the id was reused and nothing is ended.
+    ///
+    /// An unknown pid, or one whose creation time differs, is [`PortError::NotFound`] and a process
+    /// the user may not end is [`PortError::AccessDenied`].
+    fn terminate(&self, pid: u32, created_at_100ns: u64) -> Result<(), PortError>;
 }
 
 /// Physical memory totals.

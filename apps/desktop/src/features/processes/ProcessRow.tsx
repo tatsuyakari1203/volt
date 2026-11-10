@@ -40,7 +40,7 @@ export const ProcessRow = memo(function ProcessRow({ group, onEnd }: ProcessRowP
   return (
     <li className="flex items-center gap-3 px-4 py-2">
       <div className="min-w-0 flex-1">
-        <p className="truncate font-semibold" title={group.name}>
+        <p className="truncate font-semibold" title={group.path ?? group.name}>
           {group.name}
         </p>
         <p className="text-caption text-muted">{processesText(group.processCount)}</p>

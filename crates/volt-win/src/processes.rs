@@ -3,18 +3,24 @@
 //!
 //! One system call returns every process with its parent, private working set and kernel plus
 //! user CPU time, including the protected ones a handle cannot be opened to. That is the same
-//! source Task Manager reads, it is cheap (one call, no handle per process), and reading changes
-//! nothing. Ending a process opens only that process with `PROCESS_TERMINATE`.
+//! source Task Manager reads, it is cheap (one call), and reading changes nothing. The executable
+//! path needs one limited-rights handle per process (it is left out for the processes a normal user
+//! cannot open). Ending a process opens only that process with `PROCESS_TERMINATE`, and checks on
+//! that handle that it started when the listing said, so a reused process id is never ended.
 
 use std::ffi::c_void;
 
 use volt_core::{PortError, ProcessInfo, Processes};
 use windows::Wdk::System::SystemInformation::{NtQuerySystemInformation, SYSTEM_INFORMATION_CLASS};
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, HANDLE, STATUS_BUFFER_TOO_SMALL,
-    STATUS_INFO_LENGTH_MISMATCH,
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, FILETIME, HANDLE,
+    STATUS_BUFFER_TOO_SMALL, STATUS_INFO_LENGTH_MISMATCH,
 };
-use windows::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
+use windows::Win32::System::Threading::{
+    GetProcessTimes, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    PROCESS_TERMINATE, QueryFullProcessImageNameW, TerminateProcess,
+};
+use windows::core::PWSTR;
 
 use crate::error::from_win32;
 
@@ -29,14 +35,16 @@ const _: () = assert!(size_of::<usize>() == 8);
 // `Reserved`).
 const OFFSET_NEXT_ENTRY: usize = 0;
 const OFFSET_PRIVATE_WORKING_SET: usize = 8;
+const OFFSET_CREATE_TIME: usize = 32;
 const OFFSET_USER_TIME: usize = 40;
 const OFFSET_KERNEL_TIME: usize = 48;
 const OFFSET_IMAGE_NAME_LENGTH: usize = 56;
 const OFFSET_IMAGE_NAME_BUFFER: usize = 64;
 const OFFSET_PID: usize = 80;
 const OFFSET_PARENT_PID: usize = 88;
-/// Bytes of a record up to and including the parent id.
-const RECORD_MIN: usize = 96;
+const OFFSET_SESSION_ID: usize = 100;
+/// Bytes of a record up to and including the session id.
+const RECORD_MIN: usize = 104;
 
 /// The id Windows gives the idle pseudo-process; it is not a program and is left out.
 const IDLE_PID: u32 = 0;
@@ -99,6 +107,7 @@ fn image_name(buf: &[u8], start: usize, base: usize) -> Option<String> {
 
 /// Reads the records of a `SystemProcessInformation` buffer. Pure: it only reads `buf`, which
 /// starts at address `base`. A record that does not fit the buffer ends the walk.
+/// The executable path is filled in by the caller; here it is `None`.
 fn parse_records(buf: &[u8], base: usize) -> Vec<ProcessInfo> {
     let mut processes = Vec::new();
     let mut start = 0usize;
@@ -120,6 +129,9 @@ fn parse_records(buf: &[u8], base: usize) -> Vec<ProcessInfo> {
                 name: image_name(buf, start, base).unwrap_or_default(),
                 working_set_bytes: ticks(OFFSET_PRIVATE_WORKING_SET),
                 cpu_time_100ns: ticks(OFFSET_USER_TIME).saturating_add(ticks(OFFSET_KERNEL_TIME)),
+                created_at_100ns: ticks(OFFSET_CREATE_TIME),
+                path: None,
+                session_id: read_u32(buf, start + OFFSET_SESSION_ID).unwrap_or(0),
             });
         }
         if next == 0 {
@@ -175,10 +187,17 @@ impl Processes for WinProcesses {
                 buffer.len() * size_of::<u64>(),
             )
         };
-        Ok(parse_records(bytes, buffer.as_ptr() as usize))
+        let mut list = parse_records(bytes, buffer.as_ptr() as usize);
+        for process in &mut list {
+            // The kernel's own processes (System, Registry, ...) have no file to name.
+            if process.pid > SYSTEM_PID {
+                process.path = image_path(process.pid, process.created_at_100ns);
+            }
+        }
+        Ok(list)
     }
 
-    fn terminate(&self, pid: u32) -> Result<(), PortError> {
+    fn terminate(&self, pid: u32, created_at_100ns: u64) -> Result<(), PortError> {
         // The core refuses these too; this is the last line of defence for the ones that can
         // never be right.
         if pid <= SYSTEM_PID || pid == std::process::id() {
@@ -187,12 +206,79 @@ impl Processes for WinProcesses {
             )));
         }
         // SAFETY: plain call; the handle is wrapped at once so it is closed on every path.
-        let handle = unsafe { OpenProcess(PROCESS_TERMINATE, false, pid) }
-            .map(Handle)
-            .map_err(|e| terminate_error(win32_code(&e), pid))?;
+        let handle = unsafe {
+            OpenProcess(
+                PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
+                false,
+                pid,
+            )
+        }
+        .map(Handle)
+        .map_err(|e| terminate_error(win32_code(&e), pid))?;
+        // The id may have been reused since the listing: only the process that started when the
+        // listing said is ended. A handle keeps its process, so the check cannot go stale.
+        match created_at(&handle) {
+            Some(created) if created == created_at_100ns => {}
+            Some(_) => return Err(PortError::NotFound(format!("process {pid}"))),
+            None => {
+                return Err(PortError::Other(
+                    "the start time of the process could not be read".into(),
+                ));
+            }
+        }
         // SAFETY: `handle.0` is a valid process handle with the terminate right.
         unsafe { TerminateProcess(handle.0, 1) }.map_err(|e| terminate_error(win32_code(&e), pid))
     }
+}
+
+/// When the process behind `handle` started, as a file time in 100 ns ticks.
+fn created_at(handle: &Handle) -> Option<u64> {
+    let (mut created, mut exited, mut kernel, mut user) = (
+        FILETIME::default(),
+        FILETIME::default(),
+        FILETIME::default(),
+        FILETIME::default(),
+    );
+    // SAFETY: `handle.0` is a valid process handle with the query right and the four out pointers
+    // are valid for the call.
+    unsafe {
+        GetProcessTimes(
+            handle.0,
+            &raw mut created,
+            &raw mut exited,
+            &raw mut kernel,
+            &raw mut user,
+        )
+    }
+    .ok()?;
+    Some((u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
+}
+
+/// The executable path of process `pid`, when a limited handle can be opened to it and the process
+/// is still the one that started at `created_at_100ns` (else the id was reused and `None`).
+fn image_path(pid: u32, created_at_100ns: u64) -> Option<String> {
+    // SAFETY: plain call; the handle is wrapped at once so it is closed on every path.
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }
+        .map(Handle)
+        .ok()?;
+    if created_at(&handle)? != created_at_100ns {
+        return None;
+    }
+    let mut buffer = vec![0u16; 1024];
+    let mut length = u32::try_from(buffer.len()).ok()?;
+    // SAFETY: `buffer` holds `length` writable UTF-16 units and both pointers are valid for the
+    // call; on success `length` is the number of units written.
+    unsafe {
+        QueryFullProcessImageNameW(
+            handle.0,
+            PROCESS_NAME_WIN32,
+            PWSTR(buffer.as_mut_ptr()),
+            &raw mut length,
+        )
+    }
+    .ok()?;
+    let written = buffer.get(..usize::try_from(length).ok()?)?;
+    Some(String::from_utf16_lossy(written)).filter(|path| !path.is_empty())
 }
 
 /// The typed error of a failed open or terminate: an unknown id is not found, a refusal is
@@ -222,7 +308,7 @@ mod tests {
     fn a_hand_built_buffer_is_read_field_by_field() {
         // Two records: the idle process (left out) and one named "a.exe" whose name sits behind
         // the records in the same buffer.
-        let mut buf = vec![0u8; 400];
+        let mut buf = vec![0u8; 500];
         let base = 0x1000usize;
         let put = |buf: &mut [u8], at: usize, value: u64| {
             buf[at..at + 8].copy_from_slice(&value.to_le_bytes());
@@ -232,15 +318,17 @@ mod tests {
         // Record 1 at 200: no next record.
         let r = 200;
         put(&mut buf, r + OFFSET_PRIVATE_WORKING_SET, 4096);
+        put(&mut buf, r + OFFSET_CREATE_TIME, 777);
+        buf[r + OFFSET_SESSION_ID..r + OFFSET_SESSION_ID + 4].copy_from_slice(&3u32.to_le_bytes());
         put(&mut buf, r + OFFSET_USER_TIME, 30);
         put(&mut buf, r + OFFSET_KERNEL_TIME, 12);
         buf[r + OFFSET_IMAGE_NAME_LENGTH..r + OFFSET_IMAGE_NAME_LENGTH + 2]
             .copy_from_slice(&10u16.to_le_bytes());
-        put(&mut buf, r + OFFSET_IMAGE_NAME_BUFFER, (base + 380) as u64);
+        put(&mut buf, r + OFFSET_IMAGE_NAME_BUFFER, (base + 480) as u64);
         put(&mut buf, r + OFFSET_PID, 77);
         put(&mut buf, r + OFFSET_PARENT_PID, 5);
         for (i, unit) in "a.exe".encode_utf16().enumerate() {
-            buf[380 + i * 2..382 + i * 2].copy_from_slice(&unit.to_le_bytes());
+            buf[480 + i * 2..482 + i * 2].copy_from_slice(&unit.to_le_bytes());
         }
         let list = parse_records(&buf, base);
         assert_eq!(
@@ -251,6 +339,9 @@ mod tests {
                 name: "a.exe".into(),
                 working_set_bytes: 4096,
                 cpu_time_100ns: 42,
+                created_at_100ns: 777,
+                path: None,
+                session_id: 3,
             }]
         );
         // A truncated buffer ends the walk instead of reading past it.
@@ -267,9 +358,16 @@ mod tests {
         // Between 1 MiB and 64 GiB: proves the field offset, not an exact figure.
         assert!((1 << 20..64 << 30).contains(&mine.working_set_bytes));
         assert!(mine.cpu_time_100ns > 0);
+        assert!(mine.created_at_100ns > 0);
+        assert!(
+            mine.path
+                .as_deref()
+                .is_some_and(|p| p.to_lowercase().contains("volt_win"))
+        );
+        assert_ne!(mine.session_id, 0, "a test run is a user's, not session 0");
         assert!(
             list.iter()
-                .any(|p| p.pid == SYSTEM_PID && p.name == "System")
+                .any(|p| p.pid == SYSTEM_PID && p.name == "System" && p.session_id == 0)
         );
     }
 
@@ -292,8 +390,21 @@ mod tests {
         let entry = listed.iter().find(|p| p.pid == pid).expect("the child");
         assert_eq!(entry.parent_pid, std::process::id());
         assert!(entry.name.eq_ignore_ascii_case("ping.exe"));
+        let path = entry.path.clone().expect("the child's path is readable");
+        assert!(path.to_lowercase().ends_with("ping.exe"), "{path}");
+        let created = entry.created_at_100ns;
+        assert!(created > 0);
 
-        processes.terminate(pid).expect("end the test's own child");
+        // A listing that is stale (the id now belongs to another process) ends nothing.
+        assert!(matches!(
+            processes.terminate(pid, created + 1),
+            Err(PortError::NotFound(_))
+        ));
+        assert!(child.try_wait().expect("poll").is_none());
+
+        processes
+            .terminate(pid, created)
+            .expect("end the test's own child");
         let status = child.wait().expect("wait");
         assert_eq!(status.code(), Some(1));
         assert!(!processes.list().expect("list").iter().any(|p| p.pid == pid));
@@ -304,7 +415,7 @@ mod tests {
         let processes = WinProcesses::new();
         for pid in [0, 4, std::process::id()] {
             assert!(matches!(
-                processes.terminate(pid),
+                processes.terminate(pid, 0),
                 Err(PortError::InvalidInput(_))
             ));
         }

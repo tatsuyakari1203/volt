@@ -20,6 +20,7 @@ const MB = 1024 ** 2;
 function group(over: Partial<ProcessGroupView> & Pick<ProcessGroupView, 'id'>): ProcessGroupView {
   return {
     name: over.id,
+    path: null,
     processCount: 1,
     endCount: 1,
     memoryBytes: 10 * MB,

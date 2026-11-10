@@ -6,6 +6,7 @@ function group(id: string, memoryBytes: number, cpuPercent: number | null): Proc
   return {
     id,
     name: id,
+    path: null,
     processCount: 1,
     endCount: 1,
     memoryBytes,

@@ -45,10 +45,13 @@ impl From<Endability> for EndabilityView {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ProcessGroupView {
-    /// Stable identity of the row (the executable name in lower case); pass it to `endApp`.
+    /// Stable identity of the row (the executable path in lower case, or the name when the path
+    /// is not known); pass it to `endApp`.
     pub id: String,
     /// The executable name.
     pub name: String,
+    /// The executable path, when it could be read. Tells apart apps with the same file name.
+    pub path: Option<String>,
     /// How many processes run it.
     pub process_count: u32,
     /// How many of them ending the app would end; 0 when it is protected.
@@ -142,6 +145,7 @@ impl From<&ProcessGroup> for ProcessGroupView {
         Self {
             id: group.key.clone(),
             name: group.name.clone(),
+            path: group.path.clone(),
             process_count: group.process_count,
             end_count: group.end_count,
             memory_bytes: bytes(group.memory_bytes),

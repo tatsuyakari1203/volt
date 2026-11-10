@@ -1,10 +1,11 @@
 //! The process list and ending a task.
 //!
 //! [`ProcessMonitor::sample`] reads the running processes through the [`Processes`] port, groups
-//! them by executable name (one row per app) and works out CPU load from the difference between
+//! them by executable (one row per app: the path when it is known, else the name) and works out CPU load from the difference between
 //! this reading and the previous one. [`ProcessMonitor::end_group`] ends every process of a group
 //! and writes one activity record that says it cannot be undone: an ended process cannot be
-//! brought back, so nothing goes through the undo journal.
+//! brought back, so nothing goes through the undo journal. Each process is ended together with the
+//! creation time the listing gave it, so a process id that was reused in between is never ended.
 //!
 //! Which processes may be ended is decided here, not in the UI. Windows needs a fixed set of
 //! processes to keep running, and Volt must not end itself or the `WebView` it draws in, so both
@@ -24,9 +25,11 @@ use crate::time::{Clock, Timestamp};
 /// The activity label of ending an app.
 pub const PROCESS_END_LABEL: &str = "process.end";
 
-/// Executable names (lower case) of the processes Windows cannot run without. Ending one blue
-/// screens or logs the user out, so none is ever offered.
-const WINDOWS_CRITICAL: [&str; 16] = [
+/// Executable names (lower case) of the processes Windows cannot run without, or that guard the
+/// machine. Ending one blue screens, logs the user out or switches off sound, input or
+/// protection, so none is ever offered. System-owned session 0 processes are protected as a
+/// whole too (see [`ProcessInfo::session_id`]); this list covers the ones that matter by name.
+const WINDOWS_CRITICAL: [&str; 25] = [
     "system",
     "system idle process",
     "secure system",
@@ -43,6 +46,22 @@ const WINDOWS_CRITICAL: [&str; 16] = [
     "dwm.exe",
     "fontdrvhost.exe",
     "sihost.exe",
+    // The local session manager: part of the logon machinery.
+    "lsm.exe",
+    // The Windows audio engine: ending it silences the whole machine until it restarts.
+    "audiodg.exe",
+    // The user-mode driver host: ending it drops devices such as sensors and phones.
+    "wudfhost.exe",
+    // The print spooler.
+    "spoolsv.exe",
+    // Text input (keyboard layouts, IME): ending it breaks typing in other apps.
+    "ctfmon.exe",
+    // Device association: pairing of Bluetooth and network devices.
+    "dashost.exe",
+    // Microsoft Defender engine, network inspection and the Security Center service.
+    "msmpeng.exe",
+    "nissrv.exe",
+    "securityhealthservice.exe",
 ];
 
 /// The lowest process id that may be ended. Ids 0 (idle) and 4 (System) are the kernel.
@@ -99,14 +118,19 @@ pub fn is_windows_critical(name: &str) -> bool {
 /// All processes of one executable, shown as one row.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProcessGroup {
-    /// Stable identity of the row: the executable name in lower case.
+    /// Stable identity of the row: the executable path in lower case when it is known, else the
+    /// executable name in lower case. Two apps with the same file name in different folders are
+    /// two groups.
     pub key: String,
     /// The executable name as the first of its processes spells it.
     pub name: String,
+    /// The executable path, when it could be read.
+    pub path: Option<String>,
     /// How many processes run it.
     pub process_count: u32,
-    /// How many of them ending the group would end (Volt's own `WebView` processes are left out of
-    /// a group they share with another app). 0 for a protected group.
+    /// How many of them ending the group would end (Volt's own `WebView` processes and system-owned
+    /// session 0 processes are left out of a group they share with an app). 0 for a protected
+    /// group.
     pub end_count: u32,
     /// Private working set of all its processes, in bytes.
     pub memory_bytes: u64,
@@ -209,11 +233,11 @@ pub enum EndError {
     List(PortError),
 }
 
-/// CPU readings of the previous sample.
+/// CPU readings of the previous sample, by process id: (creation time, CPU time).
 #[derive(Debug)]
 struct Previous {
     at: Timestamp,
-    cpu_time: HashMap<u32, u64>,
+    cpu_time: HashMap<u32, (u64, u64)>,
 }
 
 /// Running totals of one group while a sample is built.
@@ -221,6 +245,7 @@ struct Totals {
     group: ProcessGroup,
     cpu_delta: u64,
     volt_count: u32,
+    system_count: u32,
 }
 
 /// Reads the process list and ends apps, over the [`Processes`] port.
@@ -285,11 +310,12 @@ impl ProcessMonitor {
 
         let mut by_key: HashMap<String, Totals> = HashMap::new();
         for process in &list {
-            let key = process.name.to_lowercase();
+            let key = group_key(process);
             let totals = by_key.entry(key.clone()).or_insert_with(|| Totals {
                 group: ProcessGroup {
                     key,
                     name: process.name.clone(),
+                    path: process.path.clone().filter(|p| !p.is_empty()),
                     process_count: 0,
                     end_count: 0,
                     memory_bytes: 0,
@@ -298,6 +324,7 @@ impl ProcessMonitor {
                 },
                 cpu_delta: 0,
                 volt_count: 0,
+                system_count: 0,
             });
             totals.group.process_count += 1;
             totals.group.memory_bytes = totals
@@ -309,15 +336,22 @@ impl ProcessMonitor {
                 .saturating_add(deltas.get(&process.pid).copied().unwrap_or(0));
             if volt.contains(&process.pid) {
                 totals.volt_count += 1;
+            } else if is_system_owned(process) {
+                totals.system_count += 1;
             }
         }
         let mut groups: Vec<ProcessGroup> = by_key
             .into_values()
             .map(|mut totals| {
                 let group = &mut totals.group;
-                group.endability = endability(&group.key, totals.volt_count == group.process_count);
+                group.endability = endability(
+                    &group.name.to_lowercase(),
+                    totals.volt_count,
+                    totals.system_count,
+                    group.process_count,
+                );
                 group.end_count = if group.endability.can_end() {
-                    group.process_count - totals.volt_count
+                    group.process_count - totals.volt_count - totals.system_count
                 } else {
                     0
                 };
@@ -340,7 +374,8 @@ impl ProcessMonitor {
 
     /// CPU time used by each process since the previous sample, and the time between the two
     /// samples in 100 ns ticks. `None` for the time when there is no usable previous sample. A
-    /// process that is new, or whose counter went backwards (its id was reused), contributes 0.
+    /// process that is new, or whose id was reused (another creation time, or a counter that went
+    /// backwards), contributes 0.
     fn take_deltas(
         &self,
         list: &[ProcessInfo],
@@ -363,25 +398,32 @@ impl ProcessMonitor {
             }
             elapsed = Some(millis.saturating_mul(TICKS_PER_MILLI));
             for process in list {
-                if let Some(&old) = before.cpu_time.get(&process.pid) {
+                if let Some(&(created, old)) = before.cpu_time.get(&process.pid)
+                    && created == process.created_at_100ns
+                {
                     deltas.insert(process.pid, process.cpu_time_100ns.saturating_sub(old));
                 }
             }
         }
         *previous = Some(Previous {
             at: now,
-            cpu_time: list.iter().map(|p| (p.pid, p.cpu_time_100ns)).collect(),
+            cpu_time: list
+                .iter()
+                .map(|p| (p.pid, (p.created_at_100ns, p.cpu_time_100ns)))
+                .collect(),
         });
         (deltas, elapsed)
     }
 
-    /// Ends every process that runs the executable `name` (case does not matter) and records
-    /// it. The list is read again first, so only what runs now is ended.
+    /// Ends every process of the group `key` (a [`ProcessGroup::key`]; case does not matter) and
+    /// records it. The list is read again first, so only what runs now is ended, and each process
+    /// is ended together with the creation time just read: one whose id was reused since is
+    /// reported as [`EndStatus::AlreadyGone`] and left alone.
     ///
-    /// Windows-critical executables and Volt are refused with [`EndError::Protected`], before
-    /// anything is touched. Volt's own `WebView` processes are skipped when another app shares
-    /// their executable name. A process Windows will not let Volt end is reported as
-    /// [`EndStatus::NeedsAdministrator`]; the others are still ended.
+    /// Windows-critical executables, system-owned session 0 processes and Volt are refused with
+    /// [`EndError::Protected`], before anything is touched. Volt's own `WebView` processes are
+    /// skipped when another app shares their executable. A process Windows will not let Volt end
+    /// is reported as [`EndStatus::NeedsAdministrator`]; the others are still ended.
     pub fn end_group(&self, name: &str, source: Source) -> Result<EndReport, EndError> {
         let key = name.trim().to_lowercase();
         if is_windows_critical(&key) {
@@ -391,24 +433,29 @@ impl ProcessMonitor {
             });
         }
         let list = self.processes.list().map_err(EndError::List)?;
-        let members: Vec<&ProcessInfo> = list
-            .iter()
-            .filter(|p| p.name.to_lowercase() == key)
-            .collect();
+        let members: Vec<&ProcessInfo> = list.iter().filter(|p| group_key(p) == key).collect();
         let Some(first) = members.first() else {
             return Err(EndError::NotRunning(name.to_owned()));
         };
         let display = first.name.clone();
+        if is_windows_critical(&display) {
+            return Err(EndError::Protected {
+                name: display,
+                protection: Protection::Windows,
+            });
+        }
         let volt = volt_pids(&list, self.own_pid);
-        let kernel = members.iter().any(|p| p.pid < FIRST_ENDABLE_PID);
+        let system = members
+            .iter()
+            .any(|p| p.pid < FIRST_ENDABLE_PID || is_system_owned(p));
         let mut targets: Vec<&ProcessInfo> = members
             .into_iter()
-            .filter(|p| p.pid >= FIRST_ENDABLE_PID && !volt.contains(&p.pid))
+            .filter(|p| p.pid >= FIRST_ENDABLE_PID && !is_system_owned(p) && !volt.contains(&p.pid))
             .collect();
         if targets.is_empty() {
             return Err(EndError::Protected {
                 name: display,
-                protection: if kernel {
+                protection: if system {
                     Protection::Windows
                 } else {
                     Protection::Volt
@@ -422,7 +469,7 @@ impl ProcessMonitor {
             .iter()
             .map(|p| ProcessEnd {
                 pid: p.pid,
-                status: match self.processes.terminate(p.pid) {
+                status: match self.processes.terminate(p.pid, p.created_at_100ns) {
                     Ok(()) => EndStatus::Ended,
                     Err(PortError::AccessDenied(_)) => EndStatus::NeedsAdministrator,
                     Err(PortError::NotFound(_)) => EndStatus::AlreadyGone,
@@ -477,12 +524,29 @@ fn percent(used: u64, capacity: u64) -> f64 {
     share.clamp(0.0, 100.0)
 }
 
-fn endability(key: &str, all_volt: bool) -> Endability {
-    if is_windows_critical(key) {
+/// The identity of the group a process belongs to: its executable path in lower case when known,
+/// else its executable name in lower case.
+fn group_key(process: &ProcessInfo) -> String {
+    match process.path.as_deref() {
+        Some(path) if !path.is_empty() => path.to_lowercase(),
+        _ => process.name.to_lowercase(),
+    }
+}
+
+/// Whether a process is system-owned: it runs in session 0, where Windows keeps its services and
+/// system processes. A user's apps never run there.
+fn is_system_owned(process: &ProcessInfo) -> bool {
+    process.session_id == 0
+}
+
+/// `name` is the executable name in lower case; `volt` and `system` count the processes of the
+/// group that are Volt's or system-owned, out of `total`.
+fn endability(name: &str, volt: u32, system: u32, total: u32) -> Endability {
+    if is_windows_critical(name) || (system > 0 && system + volt == total) {
         Endability::Protected(Protection::Windows)
-    } else if all_volt {
+    } else if volt == total {
         Endability::Protected(Protection::Volt)
-    } else if key == "explorer.exe" {
+    } else if name == "explorer.exe" {
         Endability::Explorer
     } else {
         Endability::Allowed
@@ -666,20 +730,8 @@ mod tests {
     #[test]
     fn windows_critical_processes_are_protected_and_never_ended() {
         let s = setup();
-        let names = [
-            "System",
-            "Registry",
-            "smss.exe",
-            "csrss.exe",
-            "wininit.exe",
-            "winlogon.exe",
-            "services.exe",
-            "lsass.exe",
-            "svchost.exe",
-            "dwm.exe",
-            "fontdrvhost.exe",
-            "Memory Compression",
-        ];
+        // Every name on the list, one process each.
+        let names = WINDOWS_CRITICAL;
         for (i, name) in names.iter().enumerate() {
             s.processes
                 .add(500 + u32::try_from(i).expect("small"), name, MIB);
@@ -709,6 +761,169 @@ mod tests {
         assert!(s.events.events().is_empty());
         assert!(s.log.records().is_empty());
         assert_eq!(s.processes.list().expect("list").len(), names.len());
+    }
+
+    #[test]
+    fn each_protected_name_is_critical_in_any_case_and_the_new_ones_are_on_the_list() {
+        for name in WINDOWS_CRITICAL {
+            assert!(is_windows_critical(name), "{name}");
+            assert!(is_windows_critical(&name.to_uppercase()), "{name}");
+        }
+        for name in [
+            "lsm.exe",
+            "audiodg.exe",
+            "wudfhost.exe",
+            "spoolsv.exe",
+            "ctfmon.exe",
+            "dashost.exe",
+            "msmpeng.exe",
+            "nissrv.exe",
+            "securityhealthservice.exe",
+        ] {
+            assert!(WINDOWS_CRITICAL.contains(&name), "{name}");
+            // Protected even when its path is known and the key is the path.
+            let s = setup();
+            s.processes.add(600, name, MIB);
+            s.processes
+                .set_path(600, &format!("C:\\Windows\\System32\\{name}"));
+            let sample = s.monitor.sample().expect("sample");
+            assert_eq!(
+                sample.groups[0].endability,
+                Endability::Protected(Protection::Windows),
+                "{name}"
+            );
+            assert!(matches!(
+                s.monitor.end_group(&sample.groups[0].key, Source::Manual),
+                Err(EndError::Protected {
+                    protection: Protection::Windows,
+                    ..
+                })
+            ));
+            assert!(s.events.events().is_empty(), "{name}");
+        }
+    }
+
+    #[test]
+    fn session_zero_processes_are_never_offered_for_ending() {
+        let s = setup();
+        s.processes.add(700, "vendorsvc.exe", MIB);
+        s.processes.set_session(700, 0);
+        // The same executable also runs in a user's session: only that one is endable.
+        s.processes.add(701, "mixed.exe", MIB);
+        s.processes.set_session(701, 0);
+        s.processes.add(702, "mixed.exe", MIB);
+        let sample = s.monitor.sample().expect("sample");
+        let svc = group(&sample, "vendorsvc.exe");
+        assert_eq!(svc.endability, Endability::Protected(Protection::Windows));
+        assert_eq!(svc.end_count, 0);
+        let mixed = group(&sample, "mixed.exe");
+        assert_eq!(mixed.endability, Endability::Allowed);
+        assert_eq!((mixed.process_count, mixed.end_count), (2, 1));
+        assert_eq!(
+            s.monitor.end_group("vendorsvc.exe", Source::Manual),
+            Err(EndError::Protected {
+                name: "vendorsvc.exe".into(),
+                protection: Protection::Windows
+            })
+        );
+        let report = s
+            .monitor
+            .end_group("mixed.exe", Source::Manual)
+            .expect("end");
+        assert_eq!(report.ended(), 1);
+        let left: Vec<u32> = s
+            .processes
+            .list()
+            .expect("list")
+            .iter()
+            .map(|p| p.pid)
+            .collect();
+        assert_eq!(left, [700, 701]);
+    }
+
+    #[test]
+    fn apps_with_the_same_file_name_but_different_paths_are_separate_groups() {
+        let s = setup();
+        s.processes.add(10, "updater.exe", MIB);
+        s.processes.set_path(10, "C:\\Apps\\One\\Updater.exe");
+        s.processes.add(11, "updater.exe", MIB);
+        s.processes.set_path(11, "C:\\Apps\\One\\Updater.exe");
+        s.processes.add(12, "updater.exe", 2 * MIB);
+        s.processes.set_path(12, "C:\\Apps\\Two\\updater.exe");
+        // No path known: grouped by name.
+        s.processes.add(13, "updater.exe", MIB);
+        let sample = s.monitor.sample().expect("sample");
+        assert_eq!(sample.groups.len(), 3);
+        let one = group(&sample, "c:\\apps\\one\\updater.exe");
+        assert_eq!(one.process_count, 2);
+        assert_eq!(one.path.as_deref(), Some("C:\\Apps\\One\\Updater.exe"));
+        assert_eq!(
+            group(&sample, "c:\\apps\\two\\updater.exe").process_count,
+            1
+        );
+        let unknown = group(&sample, "updater.exe");
+        assert_eq!((unknown.process_count, unknown.path.clone()), (1, None));
+
+        // Ending one group leaves the other apps alone.
+        let report = s
+            .monitor
+            .end_group("C:\\APPS\\ONE\\UPDATER.EXE", Source::Manual)
+            .expect("end");
+        assert_eq!(report.ended(), 2);
+        let left: Vec<u32> = s
+            .processes
+            .list()
+            .expect("list")
+            .iter()
+            .map(|p| p.pid)
+            .collect();
+        assert_eq!(left, [12, 13]);
+    }
+
+    #[test]
+    fn a_reused_process_id_is_reported_gone_and_never_ended() {
+        let s = setup();
+        s.processes.add(200, "app.exe", MIB);
+        s.processes.add(201, "app.exe", MIB);
+        s.processes.set_created(200, 5_000);
+        s.processes.set_created(201, 6_000);
+        // Id 200 now belongs to a newer process than the list the monitor reads shows.
+        s.processes.list_stale_creation(200, 4_000);
+        let report = s.monitor.end_group("app.exe", Source::Manual).expect("end");
+        let status = |pid| {
+            report
+                .outcomes
+                .iter()
+                .find(|o| o.pid == pid)
+                .expect("outcome")
+                .status
+        };
+        assert_eq!(status(200), EndStatus::AlreadyGone);
+        assert_eq!(status(201), EndStatus::Ended);
+        assert_eq!((report.ended(), report.already_gone()), (1, 1));
+        assert_eq!(s.events.events(), [Event::ProcessTerminated(201)]);
+        let left: Vec<u32> = s
+            .processes
+            .list()
+            .expect("list")
+            .iter()
+            .map(|p| p.pid)
+            .collect();
+        assert_eq!(left, [200]);
+    }
+
+    #[test]
+    fn a_reused_id_adds_no_cpu_load_even_when_its_counter_went_up() {
+        let s = setup();
+        s.processes.add_process(10, 1, "a.exe", 0, 1_000);
+        s.processes.set_created(10, 1);
+        s.monitor.sample().expect("first");
+        s.clock.set(2_000);
+        // Same id, another process that has already used far more CPU.
+        s.processes.set_created(10, 2);
+        s.processes.set_cpu_time(10, 9_000_000_000);
+        let sample = s.monitor.sample().expect("second");
+        assert_eq!(group(&sample, "a.exe").cpu_percent, Some(0.0));
     }
 
     #[test]
