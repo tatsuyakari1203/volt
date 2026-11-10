@@ -66,6 +66,27 @@ What `volt-core` contains today:
   injected `Clock`, so it is deterministic in tests. Revert reads the journal, so it works after a
   restart and for whole batches. A batch can carry a label (a plan's `label`, which the tweak
   engine sets to the tweak id), and `batches_with_label` finds a label's batches again.
+- **Activity log:** the history written for people, and the data the future Undo page reads.
+  `ActivityLog` is a port (`volt_core::activity`) that appends records and lists them newest first
+  with a limit and a cursor (the id of the last record seen). A record has a time from the injected
+  `Clock`, a `Source` (manual or automation), an outcome (applied, reverted, failed, rolled back),
+  a one-line summary, and optional links to the journal batch and entry and to the tweak id or plan
+  label. It is deliberately not a view over the journal: it can hold events that are not journaled
+  Operations (cleaning and memory purges will write to it), and a record outlives the journal entry
+  it mentions. The journal stays the source of truth for undo. `render_text` renders records as
+  stable plain-text lines (UTC ISO 8601 time, source, outcome, summary, links) for export.
+  - **Who writes it:** the Executor, when given a log with the builder-style
+    `Executor::with_activity_log` (`TweakEngine::with_activity_log` passes it on and makes the
+    tweak id the label). Without one nothing changes. It writes one record for every operation it
+    applies, fails, reverts or rolls back, and for every entry `reconcile_pending` resolves.
+  - **A failing activity log never blocks a change.** The system change and its journal entry come
+    first and are never conditional on the record. If a record cannot be written the failure is
+    written to the diagnostic log (a warning) and counted: `Executor::activity_write_failures` is
+    the number since the executor was created (clones share it), so the shell can tell the user
+    that the history is incomplete.
+  - **Source of a revert:** a rollback keeps the source of its plan; a revert requested through
+    `revert_entry` or `revert_batch` is recorded as manual, because those calls do not take a
+    source.
 - **Risk and evidence labels:** `Safe`, `Caution`, `Advanced`; `Measured` or `Anecdotal`. The UI
   shows both.
 - **`fakes` cargo feature:** in-memory fakes of every port (`FakeSystem` wires them together
@@ -106,12 +127,15 @@ Still to be built:
 
 ## Persistence
 
-`volt-store` implements the journal and settings ports with SQLite through `rusqlite` (bundled).
+`volt-store` implements the journal, settings and activity log ports with SQLite through `rusqlite`
+(bundled).
 
 - The database runs in WAL mode with `synchronous = FULL`, so a pending journal entry is on disk
   before the system is changed.
 - Schema migrations run through `PRAGMA user_version`. A database with a newer schema than the
-  binary knows is refused, never downgraded. Version 2 added the optional label of a batch.
+  binary knows is refused, never downgraded. Version 2 added the optional label of a batch. Version
+  3 added the `activity` table, which has no foreign key to the journal. Each step is logged at
+  info level, and a failed step is rolled back and logged as an error.
 - A corrupt database is moved aside as `<file>.corrupt-<millis>` and reported to the caller. It is
   never deleted.
 - On startup the composition root opens the store, builds the Executor and calls
@@ -297,3 +321,42 @@ Tests never apply a real tweak, clean real user data or purge memory on the mach
 Errors are typed values in the core, never panics. They cross the IPC boundary as data so the UI
 can explain what failed and what was (or was not) changed. `unwrap()` is denied by lint outside
 tests.
+
+## Logging
+
+There are two logs, for two readers.
+
+- **Activity log** (users): what Volt did, kept in the database, shown on the Undo page and
+  exportable as text. See Core concepts.
+- **Diagnostic log** (developers): what Volt is doing and why something went wrong. Crates emit
+  records through the `log` facade (port errors by class, reconcile results, migration steps,
+  activity write failures). Only the Tauri shell installs a logger: `src-tauri/src/logging.rs`
+  writes `volt.log` in the app log directory with a hard size bound. The file rotates at 512 KiB
+  into `volt.log.1` and `volt.log.2`, three files at most (1.5 MiB in total), and a line longer than
+  a file is cut. Info level in release builds, debug in debug builds. A failure to start or write
+  the log never stops the app. `tauri-plugin-log` was evaluated and not adopted: its total size
+  could not be tested without a running app and it adds a plugin and dependencies, while the
+  writer needed here is small and its bound is tested against a temp directory. There is no
+  frontend logging.
+
+### Redaction rule
+
+Both logs and the text export name the **target** and the **outcome** of an event and nothing
+else:
+
+- Name the target: registry key and value name, service name, the program of a command.
+- Registry values: numbers of the `DWORD` and `QWORD` kinds may be shown. For string and binary
+  kinds (`REG_SZ`, `REG_EXPAND_SZ`, `REG_MULTI_SZ`, `REG_BINARY`) show only the kind and the length.
+- Never include command arguments or command output.
+- Never include file contents.
+- Never include the text of a port error: it can carry command output or data. Show its class
+  ("access denied", "not found", ...) instead.
+
+The helpers in `volt_core::activity` (`redacted_value`, `error_class`) implement the rule, and the
+summaries the Executor writes are built only from them. Code that adds a new kind of event writes
+its summary the same way. Tests put a recognisable secret into a string value, a binary value, a
+command argument, a command's output and a port error, and assert that it appears in no summary, in
+no export and in no diagnostic log line.
+
+The undo journal is not a log: it must hold prior values in full to restore them, so it is stored
+only in the user's database and is never copied into either log.

@@ -33,6 +33,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod activity;
 pub mod command;
 pub mod error;
 pub mod executor;
@@ -50,6 +51,9 @@ pub mod tweak;
 #[cfg(any(test, feature = "fakes"))]
 pub mod fakes;
 
+pub use activity::{
+    ActivityId, ActivityLog, ActivityOutcome, ActivityRecord, NewActivity, render_text,
+};
 pub use command::{Command, CommandOutput, Commands};
 pub use error::{ExecError, PlanError, PortError, RevertError};
 pub use executor::{

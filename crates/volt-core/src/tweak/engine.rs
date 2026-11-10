@@ -12,6 +12,7 @@ use thiserror::Error;
 
 use super::catalogue::Catalogue;
 use super::definition::Tweak;
+use crate::activity::ActivityLog;
 use crate::error::{ExecError, PlanError, PortError, RevertError};
 use crate::executor::{ApplyReport, Executor, RevertReport};
 use crate::journal::{BatchId, EntryState, Journal, Source};
@@ -182,6 +183,21 @@ impl TweakEngine {
         }
     }
 
+    /// Attaches an activity log, see [`Executor::with_activity_log`]. Applies
+    /// are recorded with the tweak id as label, and so are the reverts.
+    #[must_use]
+    pub fn with_activity_log(mut self, activity: Arc<dyn ActivityLog>) -> Self {
+        self.executor = self.executor.with_activity_log(activity);
+        self
+    }
+
+    /// How many activity records could not be written, see
+    /// [`Executor::activity_write_failures`].
+    #[must_use]
+    pub fn activity_write_failures(&self) -> u64 {
+        self.executor.activity_write_failures()
+    }
+
     /// The catalogue this engine works on.
     #[must_use]
     pub fn catalogue(&self) -> &Catalogue {
@@ -294,7 +310,7 @@ impl TweakEngine {
             }
             let report = self
                 .executor
-                .revert_batch(batch)
+                .revert_batch_labelled(batch, Some(&tweak.id))
                 .map_err(|error| TweakError::Revert {
                     tweak: tweak.id.clone(),
                     error,

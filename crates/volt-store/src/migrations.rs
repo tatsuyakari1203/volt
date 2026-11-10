@@ -43,6 +43,24 @@ ALTER TABLE batches ADD COLUMN label TEXT;
 CREATE INDEX batches_label ON batches (label);
 ";
 
+/// The activity log: a history for people, written by the executor (and
+/// later by cleaning and memory purges). It deliberately has no foreign key to
+/// the journal: a record can outlive its journal entry and can describe events
+/// that have none (`batch`, `entry` and `label` are optional links). `outcome`
+/// and `source` hold the enum names, like the journal's `state` and `source`.
+const V3: &str = "
+CREATE TABLE activity (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp_ms INTEGER NOT NULL,
+    source       TEXT NOT NULL,
+    outcome      TEXT NOT NULL,
+    summary      TEXT NOT NULL,
+    batch        INTEGER,
+    entry        INTEGER,
+    label        TEXT
+);
+";
+
 /// Every migration this build knows, in order, with consecutive versions.
 pub(crate) const MIGRATIONS: &[Migration] = &[
     Migration {
@@ -52,6 +70,10 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 2,
         sql: V2,
+    },
+    Migration {
+        version: 3,
+        sql: V3,
     },
 ];
 
@@ -83,10 +105,24 @@ pub(crate) fn migrate(conn: &mut Connection, migrations: &[Migration]) -> Result
         });
     }
     for migration in migrations.iter().filter(|m| m.version > current) {
-        let tx = conn.transaction()?;
-        tx.execute_batch(migration.sql)?;
-        tx.pragma_update(None, "user_version", migration.version)?;
-        tx.commit()?;
+        log::info!(
+            "migrating the database schema to version {}",
+            migration.version
+        );
+        let step = (|| {
+            let tx = conn.transaction()?;
+            tx.execute_batch(migration.sql)?;
+            tx.pragma_update(None, "user_version", migration.version)?;
+            tx.commit()
+        })();
+        if let Err(error) = step {
+            // Rolled back: the database stays at the previous version.
+            log::error!(
+                "schema migration to version {} failed and was rolled back: {error}",
+                migration.version
+            );
+            return Err(error.into());
+        }
     }
     Ok(())
 }

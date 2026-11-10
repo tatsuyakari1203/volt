@@ -52,11 +52,11 @@ impl RawEntry {
     }
 }
 
-fn to_i64(value: u64) -> Result<i64, PortError> {
+pub(crate) fn to_i64(value: u64) -> Result<i64, PortError> {
     i64::try_from(value).map_err(|_| PortError::InvalidInput(format!("id {value} out of range")))
 }
 
-fn to_u64(value: i64) -> Result<u64, PortError> {
+pub(crate) fn to_u64(value: i64) -> Result<u64, PortError> {
     u64::try_from(value)
         .map_err(|_| PortError::Other(format!("journal holds a negative id {value}")))
 }
@@ -71,7 +71,7 @@ fn decode_json<T: DeserializeOwned>(text: &str) -> Result<T, PortError> {
 }
 
 /// Unit-variant enums are stored as their bare name, not as a JSON string.
-fn encode_unit<T: Serialize>(value: &T) -> Result<String, PortError> {
+pub(crate) fn encode_unit<T: Serialize>(value: &T) -> Result<String, PortError> {
     match serde_json::to_value(value) {
         Ok(serde_json::Value::String(name)) => Ok(name),
         Ok(other) => Err(PortError::Other(format!("unexpected encoding {other}"))),
@@ -79,7 +79,7 @@ fn encode_unit<T: Serialize>(value: &T) -> Result<String, PortError> {
     }
 }
 
-fn decode_unit<T: DeserializeOwned>(name: &str) -> Result<T, PortError> {
+pub(crate) fn decode_unit<T: DeserializeOwned>(name: &str) -> Result<T, PortError> {
     decode_json(&serde_json::Value::String(name.to_owned()).to_string())
 }
 

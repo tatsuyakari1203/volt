@@ -12,9 +12,14 @@
 
 use std::fmt;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
+use crate::activity::{
+    self, ActivityLog, ActivityOutcome, NewActivity, applied_summary, exec_reason, failure_summary,
+    restored_summary, revert_reason,
+};
 use crate::error::{ExecError, PortError, RevertError};
 use crate::journal::{BatchId, EntryId, EntryState, Journal, NewEntry, Source};
 use crate::plan::{Plan, PlanItem};
@@ -176,12 +181,26 @@ impl ApplyReport {
     }
 }
 
+/// Why an entry is being undone, which decides the activity outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RevertKind {
+    /// Undone on request.
+    Requested,
+    /// Undone because a later item of the same plan failed.
+    Rollback,
+}
+
 /// Applies plans and reverts journal entries, enforcing write-ahead journaling.
+///
+/// With an [activity log](Executor::with_activity_log) attached it also
+/// writes one record per operation it applies, reverts or fails.
 #[derive(Clone)]
 pub struct Executor {
     ports: Ports,
     journal: Arc<dyn Journal>,
     clock: Arc<dyn Clock>,
+    activity: Option<Arc<dyn ActivityLog>>,
+    activity_failures: Arc<AtomicU64>,
 }
 
 impl fmt::Debug for Executor {
@@ -198,7 +217,31 @@ impl Executor {
             ports,
             journal,
             clock,
+            activity: None,
+            activity_failures: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Attaches an activity log: from now on every operation this executor
+    /// applies, reverts, rolls back or reconciles is also written there, with
+    /// the time from the executor's clock.
+    ///
+    /// The journal stays the source of truth. A failure to write an activity
+    /// record never blocks or fails the change or its journal entry: it is
+    /// written to the diagnostic log (`log::warn!`) and counted, see
+    /// [`Executor::activity_write_failures`].
+    #[must_use]
+    pub fn with_activity_log(mut self, activity: Arc<dyn ActivityLog>) -> Self {
+        self.activity = Some(activity);
+        self
+    }
+
+    /// How many activity records could not be written since this executor
+    /// (and its clones) was created. The shell can show a notice when this
+    /// grows. Always zero without an activity log.
+    #[must_use]
+    pub fn activity_write_failures(&self) -> u64 {
+        self.activity_failures.load(Ordering::Relaxed)
     }
 
     /// Applies a plan item by item and stops at the first failure.
@@ -207,17 +250,27 @@ impl Executor {
     /// nothing was changed. Otherwise the report says exactly which items were
     /// applied, which failed and which were not attempted.
     pub fn apply(&self, plan: &Plan, source: Source) -> Result<ApplyReport, ExecError> {
-        let batch = self
-            .journal
-            .new_batch(plan.label.as_deref())
-            .map_err(ExecError::Journal)?;
+        let label = plan.label.as_deref();
+        let batch = match self.journal.new_batch(label) {
+            Ok(batch) => batch,
+            Err(error) => {
+                let error = ExecError::Journal(error);
+                self.note(
+                    ActivityOutcome::Failed,
+                    source,
+                    format!("Failed to apply a plan: {}", exec_reason(&error)),
+                    (None, None, label),
+                );
+                return Err(error);
+            }
+        };
         let mut outcomes = Vec::with_capacity(plan.items.len());
         let mut halted = false;
         for (index, item) in plan.items.iter().enumerate() {
             let status = if halted {
                 ItemStatus::NotAttempted
             } else {
-                let status = self.apply_item(item, batch, source);
+                let status = self.apply_item(item, batch, source, label);
                 halted = !matches!(status, ItemStatus::Applied { .. });
                 status
             };
@@ -235,7 +288,7 @@ impl Executor {
     pub fn apply_or_rollback(&self, plan: &Plan, source: Source) -> Result<ApplyReport, ExecError> {
         let mut report = self.apply(plan, source)?;
         if !report.is_success() {
-            report.rollback = Some(self.rollback(&report));
+            report.rollback = Some(self.rollback_labelled(&report, plan.label.as_deref()));
         }
         Ok(report)
     }
@@ -244,12 +297,16 @@ impl Executor {
     /// past failures so as much as possible is restored.
     #[must_use]
     pub fn rollback(&self, report: &ApplyReport) -> RevertReport {
+        self.rollback_labelled(report, None)
+    }
+
+    fn rollback_labelled(&self, report: &ApplyReport, label: Option<&str>) -> RevertReport {
         let outcomes = report
             .rollback_targets()
             .into_iter()
             .map(|(entry, allow_pending)| RevertOutcome {
                 entry,
-                result: self.revert_entry_inner(entry, allow_pending),
+                result: self.revert_entry_inner(entry, allow_pending, RevertKind::Rollback, label),
             })
             .collect();
         RevertReport { outcomes }
@@ -258,12 +315,22 @@ impl Executor {
     /// Reverts one applied journal entry. Works from the journal alone, so it
     /// also works after a restart.
     pub fn revert_entry(&self, id: EntryId) -> Result<(), RevertError> {
-        self.revert_entry_inner(id, false)
+        self.revert_entry_inner(id, false, RevertKind::Requested, None)
     }
 
     /// Reverts every applied entry of a batch, newest first. Continues past
     /// failures. `Err` only if the journal cannot be read.
     pub fn revert_batch(&self, batch: BatchId) -> Result<RevertReport, RevertError> {
+        self.revert_batch_labelled(batch, None)
+    }
+
+    /// [`Executor::revert_batch`] that also says which tweak or plan label the
+    /// batch has, for the activity records.
+    pub(crate) fn revert_batch_labelled(
+        &self,
+        batch: BatchId,
+        label: Option<&str>,
+    ) -> Result<RevertReport, RevertError> {
         let entries = self
             .journal
             .batch_entries(batch)
@@ -274,7 +341,7 @@ impl Executor {
             .filter(|entry| entry.state == EntryState::Applied)
             .map(|entry| RevertOutcome {
                 entry: entry.id,
-                result: self.revert_entry_inner(entry.id, false),
+                result: self.revert_entry_inner(entry.id, false, RevertKind::Requested, label),
             })
             .collect();
         Ok(RevertReport { outcomes })
@@ -295,19 +362,44 @@ impl Executor {
         let pending = self.journal.entries_in_state(EntryState::Pending)?;
         let mut outcomes = Vec::with_capacity(pending.len());
         for entry in pending {
+            let subject = activity::subject(&entry.operation);
+            let links = (Some(entry.batch), Some(entry.id), None);
             let resolution = match entry.operation.detect(&self.ports) {
-                Err(error) => Resolution::Undetermined { error },
+                Err(error) => {
+                    log::warn!(
+                        "reconcile: cannot read the state for journal entry {} ({subject}): {}; \
+                         it stays pending",
+                        entry.id.0,
+                        activity::error_class(&error),
+                    );
+                    Resolution::Undetermined { error }
+                }
                 Ok(current) if current == entry.prior => {
                     self.journal.set_state(
                         entry.id,
                         EntryState::Failed,
                         Some(NEVER_APPLIED_REASON.to_owned()),
                     )?;
+                    self.note(
+                        ActivityOutcome::Failed,
+                        entry.source,
+                        format!("Interrupted apply of {subject}: the change never happened"),
+                        links,
+                    );
                     Resolution::NeverApplied
                 }
                 Ok(current) if current == entry.operation.target_state() => {
                     self.journal
                         .set_state(entry.id, EntryState::Applied, None)?;
+                    self.note(
+                        ActivityOutcome::Applied,
+                        entry.source,
+                        format!(
+                            "Confirmed after an interruption: {}",
+                            applied_summary(&entry.operation)
+                        ),
+                        links,
+                    );
                     Resolution::ConfirmedApplied
                 }
                 Ok(_) => {
@@ -316,6 +408,12 @@ impl Executor {
                         EntryState::Failed,
                         Some(STATE_UNKNOWN_REASON.to_owned()),
                     )?;
+                    self.note(
+                        ActivityOutcome::Failed,
+                        entry.source,
+                        format!("Interrupted apply of {subject}: the resulting state is unknown"),
+                        links,
+                    );
                     Resolution::StateUnknown
                 }
             };
@@ -327,8 +425,59 @@ impl Executor {
         Ok(ReconcileReport { outcomes })
     }
 
-    fn apply_item(&self, item: &PlanItem, batch: BatchId, source: Source) -> ItemStatus {
-        let fail = |entry, error| ItemStatus::Failed { entry, error };
+    /// Writes one activity record and one diagnostic log line for an event.
+    /// `links` is the journal batch, the journal entry and the label. Never
+    /// fails: if the activity log cannot take the record, that is counted and
+    /// logged, and the caller carries on (the journal is the source of truth).
+    fn note(
+        &self,
+        outcome: ActivityOutcome,
+        source: Source,
+        summary: String,
+        links: (Option<BatchId>, Option<EntryId>, Option<&str>),
+    ) {
+        let (batch, entry, label) = links;
+        if outcome == ActivityOutcome::Failed {
+            log::warn!("{outcome}: {summary}");
+        } else {
+            log::info!("{outcome}: {summary}");
+        }
+        let Some(activity) = &self.activity else {
+            return;
+        };
+        let record = NewActivity {
+            timestamp: self.clock.now(),
+            source,
+            outcome,
+            summary,
+            batch,
+            entry,
+            label: label.map(str::to_owned),
+        };
+        if let Err(error) = activity.record(record) {
+            self.activity_failures.fetch_add(1, Ordering::Relaxed);
+            // The activity log is a storage adapter: its error describes the
+            // storage, never the operation, so it can be logged as it is.
+            log::warn!("the activity log could not take a record: {error}");
+        }
+    }
+
+    fn apply_item(
+        &self,
+        item: &PlanItem,
+        batch: BatchId,
+        source: Source,
+        label: Option<&str>,
+    ) -> ItemStatus {
+        let fail = |entry: Option<EntryId>, error: ExecError| {
+            self.note(
+                ActivityOutcome::Failed,
+                source,
+                failure_summary("apply", &item.operation, &exec_reason(&error)),
+                (Some(batch), entry, label),
+            );
+            ItemStatus::Failed { entry, error }
+        };
 
         // 1. Detect the prior state. Read-only.
         let prior = match item.operation.detect(&self.ports) {
@@ -360,12 +509,26 @@ impl Executor {
 
         // 4. Record success.
         match self.journal.set_state(entry, EntryState::Applied, None) {
-            Ok(()) => ItemStatus::Applied { entry },
+            Ok(()) => {
+                self.note(
+                    ActivityOutcome::Applied,
+                    source,
+                    applied_summary(&item.operation),
+                    (Some(batch), Some(entry), label),
+                );
+                ItemStatus::Applied { entry }
+            }
             Err(error) => fail(Some(entry), ExecError::MarkApplied(error)),
         }
     }
 
-    fn revert_entry_inner(&self, id: EntryId, allow_pending: bool) -> Result<(), RevertError> {
+    fn revert_entry_inner(
+        &self,
+        id: EntryId,
+        allow_pending: bool,
+        kind: RevertKind,
+        label: Option<&str>,
+    ) -> Result<(), RevertError> {
         let entry = self
             .journal
             .entry(id)
@@ -376,15 +539,41 @@ impl Executor {
         if !revertible {
             return Err(RevertError::NotRevertible(entry.state));
         }
+        let (source, outcome, done, failed_verb) = match kind {
+            RevertKind::Requested => (
+                Source::Manual,
+                ActivityOutcome::Reverted,
+                "Reverted",
+                "revert",
+            ),
+            RevertKind::Rollback => (
+                entry.source,
+                ActivityOutcome::RolledBack,
+                "Rolled back",
+                "roll back",
+            ),
+        };
+        let links = (Some(entry.batch), Some(id), label);
         // Restoring is idempotent, so a crash between this call and the state
         // update below only means the entry is reverted again later.
-        entry
-            .operation
-            .revert(&entry.prior, &self.ports)
-            .map_err(RevertError::Port)?;
-        self.journal
-            .set_state(id, EntryState::Reverted, None)
-            .map_err(RevertError::MarkReverted)
+        if let Err(error) = entry.operation.revert(&entry.prior, &self.ports) {
+            let error = RevertError::Port(error);
+            self.note(
+                ActivityOutcome::Failed,
+                source,
+                failure_summary(failed_verb, &entry.operation, &revert_reason(&error)),
+                links,
+            );
+            return Err(error);
+        }
+        let marked = self.journal.set_state(id, EntryState::Reverted, None);
+        self.note(
+            outcome,
+            source,
+            restored_summary(done, &entry.operation, &entry.prior, marked.is_err()),
+            links,
+        );
+        marked.map_err(RevertError::MarkReverted)
     }
 }
 

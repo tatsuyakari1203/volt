@@ -1084,3 +1084,27 @@ fn sample_tweak_end_to_end_against_the_fakes() {
     assert_eq!(entries.len(), 4);
     assert!(entries.iter().all(|e| e.state == EntryState::Reverted));
 }
+
+#[test]
+fn the_engine_writes_activity_labelled_with_the_tweak_id_for_apply_and_revert() {
+    let catalogue = catalogue(SAMPLE);
+    let system = machine();
+    let engine = engine(&system, &catalogue).with_activity_log(system.activity.clone());
+
+    engine.apply("sample-tweak", Source::Manual).expect("apply");
+    // A new engine over the same journal, as after a restart.
+    let engine = self::engine(&system, &catalogue).with_activity_log(system.activity.clone());
+    engine.revert("sample-tweak").expect("revert");
+
+    let records = system.activity.records();
+    assert_eq!(records.len(), 8, "four steps applied, four reverted");
+    assert!(
+        records
+            .iter()
+            .all(|r| r.label.as_deref() == Some("sample-tweak"))
+    );
+    let count = |outcome| records.iter().filter(|r| r.outcome == outcome).count();
+    assert_eq!(count(crate::ActivityOutcome::Applied), 4);
+    assert_eq!(count(crate::ActivityOutcome::Reverted), 4);
+    assert_eq!(engine.activity_write_failures(), 0);
+}

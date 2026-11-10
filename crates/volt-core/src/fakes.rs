@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use crate::activity::{ActivityId, ActivityLog, ActivityRecord, NewActivity};
 use crate::command::{Command, CommandOutput, Commands};
 use crate::error::PortError;
 use crate::executor::Executor;
@@ -121,6 +122,11 @@ impl FakeRegistry {
     /// Makes every write and delete of `target` fail with `error`.
     pub fn fail_on(&self, target: &RegistryValueRef, error: PortError) {
         lock(&self.failures).insert(Key::of(target), error);
+    }
+
+    /// Removes every failure set with [`FakeRegistry::fail_on`].
+    pub fn clear_failures(&self) {
+        lock(&self.failures).clear();
     }
 
     fn check_failure(&self, key: &Key) -> Result<(), PortError> {
@@ -660,6 +666,74 @@ impl Journal for FakeJournal {
     }
 }
 
+#[derive(Debug, Default)]
+struct ActivityState {
+    records: Vec<ActivityRecord>,
+    fail_with: Option<PortError>,
+}
+
+/// In-memory [`ActivityLog`].
+#[derive(Debug, Default)]
+pub struct FakeActivityLog {
+    state: Mutex<ActivityState>,
+}
+
+impl FakeActivityLog {
+    /// Empty log.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// All records, in write order (oldest first).
+    #[must_use]
+    pub fn records(&self) -> Vec<ActivityRecord> {
+        lock(&self.state).records.clone()
+    }
+
+    /// Makes every following `record` fail with `error`, or stops doing so
+    /// with `None`.
+    pub fn fail_records_with(&self, error: Option<PortError>) {
+        lock(&self.state).fail_with = error;
+    }
+}
+
+impl ActivityLog for FakeActivityLog {
+    fn record(&self, activity: NewActivity) -> Result<ActivityId, PortError> {
+        let mut state = lock(&self.state);
+        if let Some(error) = &state.fail_with {
+            return Err(error.clone());
+        }
+        let id = ActivityId(state.records.len() as u64 + 1);
+        state.records.push(ActivityRecord {
+            id,
+            timestamp: activity.timestamp,
+            source: activity.source,
+            outcome: activity.outcome,
+            summary: activity.summary,
+            batch: activity.batch,
+            entry: activity.entry,
+            label: activity.label,
+        });
+        Ok(id)
+    }
+
+    fn list(
+        &self,
+        limit: usize,
+        before: Option<ActivityId>,
+    ) -> Result<Vec<ActivityRecord>, PortError> {
+        Ok(lock(&self.state)
+            .records
+            .iter()
+            .rev()
+            .filter(|record| before.is_none_or(|cursor| record.id < cursor))
+            .take(limit)
+            .cloned()
+            .collect())
+    }
+}
+
 /// In-memory [`Settings`].
 #[derive(Debug, Default)]
 pub struct FakeSettings {
@@ -724,6 +798,8 @@ pub struct FakeSystem {
     pub commands: Arc<FakeCommands>,
     /// Journal fake.
     pub journal: Arc<FakeJournal>,
+    /// Activity log fake; [`FakeSystem::executor_with_activity`] writes to it.
+    pub activity: Arc<FakeActivityLog>,
     /// Clock fake, starting at 1000 ms.
     pub clock: Arc<ManualClock>,
     /// Ordered record of every side effect of the fakes above.
@@ -743,6 +819,7 @@ impl FakeSystem {
             memory: Arc::new(FakeMemory::with_log(log.clone())),
             commands: Arc::new(FakeCommands::with_log(log.clone())),
             journal: Arc::new(FakeJournal::with_log(log.clone())),
+            activity: Arc::new(FakeActivityLog::new()),
             clock: Arc::new(ManualClock::new(1000)),
             log,
         }
@@ -761,10 +838,18 @@ impl FakeSystem {
         }
     }
 
-    /// An executor over these fakes.
+    /// An executor over these fakes, without an activity log.
     #[must_use]
     pub fn executor(&self) -> Executor {
         Executor::new(self.ports(), self.journal.clone(), self.clock.clone())
+    }
+
+    /// Like [`FakeSystem::executor`], writing to the [`FakeSystem::activity`]
+    /// fake. Activity records take their times from the shared clock, so use
+    /// this only where the exact clock readings do not matter.
+    #[must_use]
+    pub fn executor_with_activity(&self) -> Executor {
+        self.executor().with_activity_log(self.activity.clone())
     }
 }
 
