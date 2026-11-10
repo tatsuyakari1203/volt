@@ -225,6 +225,7 @@ pub fn bindings_builder() -> Builder<tauri::Wry> {
             crate::commands::preview_undo_batch,
             crate::commands::preview_undo_entry,
             crate::commands::history_status,
+            crate::commands::clear_history,
             crate::commands::export_activity,
             crate::commands::export_activity_text,
             crate::commands::list_startup_entries,

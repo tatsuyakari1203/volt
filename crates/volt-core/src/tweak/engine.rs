@@ -468,6 +468,11 @@ impl TweakEngine {
     /// restart. Steps that were already in their target state when the tweak
     /// was applied were not changed by Volt and are left alone.
     pub fn revert(&self, id: &str) -> Result<TweakRevertReport, TweakError> {
+        self.revert_as(id, Source::Manual)
+    }
+
+    /// [`TweakEngine::revert`] that records `source` as who started the revert.
+    pub fn revert_as(&self, id: &str, source: Source) -> Result<TweakRevertReport, TweakError> {
         let tweak = self.tweak(id)?;
         self.check_rights(tweak)?;
         let journal_error = |error| TweakError::Journal {
@@ -493,7 +498,7 @@ impl TweakEngine {
             }
             let report = self
                 .executor
-                .revert_batch_labelled(batch, Some(&tweak.id))
+                .revert_batch(batch, source, Some(&tweak.id))
                 .map_err(|error| TweakError::Revert {
                     tweak: tweak.id.clone(),
                     error,

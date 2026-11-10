@@ -1,15 +1,38 @@
 //! [`ActivityLog`] port on `SQLite`.
 
-use rusqlite::{Row, params};
+use rusqlite::{Connection, Row, params};
 use volt_core::{
     ActivityId, ActivityLog, ActivityOutcome, ActivityRecord, BatchId, EntryId, NewActivity,
-    PortError, Source, Timestamp,
+    PortError, Retention, Source, Timestamp,
 };
 
 use crate::journal::{decode_unit, encode_unit, to_i64, to_u64};
 use crate::store::{Store, db_error};
 
 const COLUMNS: &str = "id, timestamp_ms, source, outcome, summary, batch, entry, label";
+
+/// Write count between two size checks of the log.
+const PRUNE_EVERY: i64 = 100;
+
+/// Records an undo can still reach: linked to a journal entry that is applied (or pending). They
+/// are never pruned or cleared, because the Undo page lists those changes from the log.
+const NOT_UNDOABLE: &str = "(entry IS NULL OR entry NOT IN      (SELECT id FROM journal_entries WHERE state IN ('Applied', 'Pending')))";
+
+/// Deletes records older than the age limit or beyond the newest `max_records`, except the ones an
+/// undo can still reach. Only the `activity` table is written.
+fn prune_in(conn: &Connection, retention: Retention, now: Timestamp) -> Result<u64, PortError> {
+    let cutoff = now.as_unix_millis().saturating_sub(retention.max_age_ms);
+    let keep = i64::try_from(retention.max_records).unwrap_or(i64::MAX);
+    let removed = conn
+        .execute(
+            &format!(
+                "DELETE FROM activity WHERE {NOT_UNDOABLE} AND (timestamp_ms < ?1 OR id <=                  COALESCE((SELECT id FROM activity ORDER BY id DESC LIMIT 1 OFFSET ?2), 0))"
+            ),
+            params![cutoff, keep],
+        )
+        .map_err(|e| db_error(&e))?;
+    Ok(removed as u64)
+}
 
 /// A row as stored, before decoding.
 struct RawRecord {
@@ -73,7 +96,26 @@ impl ActivityLog for Store {
             ],
         )
         .map_err(|e| db_error(&e))?;
-        Ok(ActivityId(to_u64(conn.last_insert_rowid())?))
+        let id = conn.last_insert_rowid();
+        // Cheap upkeep: look at the size once every PRUNE_EVERY writes.
+        if id % PRUNE_EVERY == 0
+            && let Err(error) = prune_in(&conn, Retention::DEFAULT, activity.timestamp)
+        {
+            log::warn!("pruning the activity log failed: {error}");
+        }
+        Ok(ActivityId(to_u64(id)?))
+    }
+
+    fn prune(&self, retention: Retention, now: Timestamp) -> Result<u64, PortError> {
+        prune_in(&self.conn(), retention, now)
+    }
+
+    fn clear(&self) -> Result<u64, PortError> {
+        let conn = self.conn();
+        let removed = conn
+            .execute(&format!("DELETE FROM activity WHERE {NOT_UNDOABLE}"), [])
+            .map_err(|e| db_error(&e))?;
+        Ok(removed as u64)
     }
 
     fn list(

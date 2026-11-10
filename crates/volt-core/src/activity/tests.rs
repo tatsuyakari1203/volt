@@ -281,9 +281,11 @@ fn reverting_records_the_restore_and_a_failed_revert_is_recorded_as_failed() {
         &value_ref("Flag"),
         PortError::AccessDenied("locked".to_owned()),
     );
-    assert!(executor.revert_entry(entry).is_err());
+    assert!(executor.revert_entry(entry, Source::Manual, None).is_err());
     system.registry.clear_failures();
-    executor.revert_entry(entry).expect("revert");
+    executor
+        .revert_entry(entry, Source::Manual, None)
+        .expect("revert");
 
     let records = system.activity.records();
     let outcomes: Vec<_> = records.iter().map(|r| r.outcome).collect();
@@ -320,9 +322,11 @@ fn a_single_entry_or_batch_revert_carries_the_label_the_batch_was_applied_with()
 
     // One entry, then the rest of the batch: neither call is told the label.
     executor
-        .revert_entry(first.expect("entry"))
+        .revert_entry(first.expect("entry"), Source::Manual, None)
         .expect("revert");
-    let batch = executor.revert_batch(report.batch).expect("revert batch");
+    let batch = executor
+        .revert_batch(report.batch, Source::Manual, None)
+        .expect("revert batch");
     assert!(batch.is_complete());
     assert_eq!(
         batch.outcomes.len(),
@@ -548,7 +552,9 @@ fn a_secret_in_a_value_an_argument_or_an_output_appears_nowhere() {
         .apply_or_rollback(&plan, Source::Manual)
         .expect("apply");
     assert!(report.is_success());
-    executor.revert_batch(report.batch).expect("revert");
+    executor
+        .revert_batch(report.batch, Source::Manual, None)
+        .expect("revert");
 
     // The command step fails with the secret in its output; the failure is
     // recorded, rolled back, and the port error text is never used.
@@ -595,4 +601,137 @@ fn a_secret_in_a_value_an_argument_or_an_output_appears_nowhere() {
         "the diagnostic log saw the events"
     );
     assert!(!log.contains(SECRET), "diagnostic log leaks:\n{log}");
+}
+
+// ---- retention, clearing and revert attribution --------------------------------------------
+
+#[test]
+fn a_revert_records_the_source_and_label_that_started_it() {
+    let system = FakeSystem::new();
+    let executor = system.executor_with_activity();
+    let plan = plan_of(&system, vec![set_dword("One", 1), set_dword("Two", 2)]);
+    let report = executor.apply(&plan, Source::Manual).expect("apply");
+    let first = report.applied().next().map(|o| match o.status {
+        ItemStatus::Applied { entry } => entry,
+        _ => unreachable!("filtered to applied"),
+    });
+
+    executor
+        .revert_entry(first.expect("entry"), Source::Automation, Some("auto.rule"))
+        .expect("revert");
+    executor
+        .revert_batch(report.batch, Source::Manual, Some("by.hand"))
+        .expect("revert batch");
+
+    let reverts: Vec<_> = system
+        .activity
+        .records()
+        .into_iter()
+        .filter(|r| r.outcome == ActivityOutcome::Reverted)
+        .map(|r| (r.source, r.label))
+        .collect();
+    assert_eq!(
+        reverts,
+        [
+            (Source::Automation, Some("auto.rule".to_owned())),
+            (Source::Manual, Some("by.hand".to_owned())),
+        ]
+    );
+}
+
+fn log_with(millis: &[i64]) -> FakeActivityLog {
+    let log = FakeActivityLog::new();
+    for (i, ms) in millis.iter().enumerate() {
+        let mut activity = new_activity(&format!("event {i}"));
+        activity.timestamp = Timestamp::from_unix_millis(*ms);
+        log.record(activity).expect("record");
+    }
+    log
+}
+
+#[test]
+fn prune_removes_records_by_age_and_by_count() {
+    let retention = Retention {
+        max_age_ms: 100,
+        max_records: 3,
+    };
+    let now = Timestamp::from_unix_millis(1000);
+
+    let by_age = log_with(&[10, 20, 950, 990]);
+    assert_eq!(by_age.prune(retention, now).expect("prune"), 2);
+    assert_eq!(by_age.records().len(), 2);
+
+    let by_count = log_with(&[900, 910, 920, 930, 940]);
+    assert_eq!(by_count.prune(retention, now).expect("prune"), 2);
+    let kept: Vec<_> = by_count.records().iter().map(|r| r.id.0).collect();
+    assert_eq!(kept, [3, 4, 5], "the newest three stay");
+}
+
+#[test]
+fn clear_and_prune_keep_the_records_of_changes_that_can_still_be_undone() {
+    let log = FakeActivityLog::new();
+    let mut undoable = new_activity("applied");
+    undoable.entry = Some(EntryId(7));
+    undoable.timestamp = Timestamp::from_unix_millis(1);
+    log.record(undoable).expect("record");
+    log.record(new_activity("clean")).expect("record");
+    log.protect_entry(EntryId(7));
+
+    let old = Retention {
+        max_age_ms: 10,
+        max_records: 100,
+    };
+    assert_eq!(
+        log.prune(old, Timestamp::from_unix_millis(1000))
+            .expect("prune"),
+        1
+    );
+    assert_eq!(log.records().len(), 1);
+    assert_eq!(log.clear().expect("clear"), 0);
+    assert_eq!(log.records()[0].entry, Some(EntryId(7)));
+}
+
+#[test]
+fn a_failed_apply_keeps_only_the_error_class_in_the_journal_entry() {
+    let system = FakeSystem::new();
+    let executor = system.executor_with_activity();
+    system.registry.fail_on(
+        &value_ref("Boom"),
+        PortError::Other(format!("output: {SECRET}")),
+    );
+    let plan = plan_of(&system, vec![set_dword("Boom", 1)]);
+    let report = executor.apply(&plan, Source::Manual).expect("apply");
+    assert!(!report.is_success());
+    let failed = system
+        .journal
+        .entries_in_state(EntryState::Failed)
+        .expect("entries");
+    let error = failed[0].error.clone().expect("error text");
+    assert!(!error.contains(SECRET), "{error}");
+    assert_eq!(error, "error");
+}
+
+#[test]
+fn old_entry_errors_with_output_are_redacted_before_they_are_shown() {
+    let system = FakeSystem::new();
+    let executor = system.executor_with_activity();
+    let plan = plan_of(&system, vec![set_dword("One", 1)]);
+    let report = executor.apply(&plan, Source::Manual).expect("apply");
+    let id = report.applied().next().map(|o| match o.status {
+        ItemStatus::Applied { entry } => entry,
+        _ => unreachable!("filtered to applied"),
+    });
+    let mut entry = system
+        .journal
+        .entry(id.expect("entry"))
+        .expect("read")
+        .expect("exists");
+    assert_eq!(redacted_entry_error(&entry), None);
+    entry.error = Some(format!("exit 1: {SECRET}"));
+    assert_eq!(redacted_entry_error(&entry).as_deref(), Some("error"));
+    entry.error = Some("access denied".to_owned());
+    assert_eq!(
+        redacted_entry_error(&entry).as_deref(),
+        Some("access denied")
+    );
 }

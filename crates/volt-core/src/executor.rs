@@ -184,8 +184,8 @@ impl ApplyReport {
 /// Why an entry is being undone, which decides the activity outcome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RevertKind {
-    /// Undone on request.
-    Requested,
+    /// Undone on request by this source.
+    Requested(Source),
     /// Undone because a later item of the same plan failed.
     Rollback,
 }
@@ -319,22 +319,25 @@ impl Executor {
     }
 
     /// Reverts one applied journal entry. Works from the journal alone, so it
-    /// also works after a restart.
-    pub fn revert_entry(&self, id: EntryId) -> Result<(), RevertError> {
-        self.revert_entry_inner(id, false, RevertKind::Requested, None)
+    /// also works after a restart. `source` is who started the revert (the
+    /// activity record says Automation or Manual) and `label` the tweak id or
+    /// plan label; without one the batch's label is used.
+    pub fn revert_entry(
+        &self,
+        id: EntryId,
+        source: Source,
+        label: Option<&str>,
+    ) -> Result<(), RevertError> {
+        self.revert_entry_inner(id, false, RevertKind::Requested(source), label)
     }
 
     /// Reverts every applied entry of a batch, newest first. Continues past
-    /// failures. `Err` only if the journal cannot be read.
-    pub fn revert_batch(&self, batch: BatchId) -> Result<RevertReport, RevertError> {
-        self.revert_batch_labelled(batch, None)
-    }
-
-    /// [`Executor::revert_batch`] that also says which tweak or plan label the
-    /// batch has, for the activity records.
-    pub(crate) fn revert_batch_labelled(
+    /// failures. `Err` only if the journal cannot be read. `source` and `label`
+    /// are as for [`Executor::revert_entry`].
+    pub fn revert_batch(
         &self,
         batch: BatchId,
+        source: Source,
         label: Option<&str>,
     ) -> Result<RevertReport, RevertError> {
         let entries = self
@@ -347,7 +350,12 @@ impl Executor {
             .filter(|entry| entry.state == EntryState::Applied)
             .map(|entry| RevertOutcome {
                 entry: entry.id,
-                result: self.revert_entry_inner(entry.id, false, RevertKind::Requested, label),
+                result: self.revert_entry_inner(
+                    entry.id,
+                    false,
+                    RevertKind::Requested(source),
+                    label,
+                ),
             })
             .collect();
         Ok(RevertReport { outcomes })
@@ -523,7 +531,12 @@ impl Executor {
         if let Err(error) = item.operation.apply(&self.ports) {
             let journal = self
                 .journal
-                .set_state(entry, EntryState::Failed, Some(error.to_string()))
+                // Only the class: a command's output must not be kept in the journal.
+                .set_state(
+                    entry,
+                    EntryState::Failed,
+                    Some(activity::error_class(&error).to_owned()),
+                )
                 .err();
             return fail(Some(entry), ExecError::Apply { error, journal });
         }
@@ -569,12 +582,9 @@ impl Executor {
         };
         let label = label.or(found_label.as_deref());
         let (source, outcome, done, failed_verb) = match kind {
-            RevertKind::Requested => (
-                Source::Manual,
-                ActivityOutcome::Reverted,
-                "Reverted",
-                "revert",
-            ),
+            RevertKind::Requested(source) => {
+                (source, ActivityOutcome::Reverted, "Reverted", "revert")
+            }
             RevertKind::Rollback => (
                 entry.source,
                 ActivityOutcome::RolledBack,

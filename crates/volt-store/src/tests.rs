@@ -109,14 +109,18 @@ fn a_single_entry_and_a_whole_batch_can_be_reverted_after_a_restart() {
     let volt_core::ItemStatus::Applied { entry } = newest.status else {
         panic!("applied");
     };
-    second.revert_entry(entry).expect("revert single entry");
+    second
+        .revert_entry(entry, Source::Manual, None)
+        .expect("revert single entry");
     assert_eq!(
         system.registry.get(&value_ref("A")),
         Some(RegistryValue::Dword(10))
     );
 
     // Then the whole first batch: back to the original 1 and 2.
-    let report = second.revert_batch(report_one.batch).expect("revert batch");
+    let report = second
+        .revert_batch(report_one.batch, Source::Manual, None)
+        .expect("revert batch");
     assert!(report.is_complete());
     assert_eq!(report.outcomes.len(), 2);
     assert_eq!(
@@ -367,7 +371,9 @@ fn an_entry_left_pending_by_a_crash_is_reconciled_on_the_next_start() {
             .expect("pending")
             .is_empty()
     );
-    executor.revert_entry(happened).expect("revert");
+    executor
+        .revert_entry(happened, Source::Manual, None)
+        .expect("revert");
     assert_eq!(
         system.registry.get(&value_ref("B")),
         Some(RegistryValue::Dword(1))
@@ -878,7 +884,9 @@ fn the_executor_writes_activity_into_the_store_and_a_secret_never_reaches_it() {
     .with_label("tweak-a");
     let report = executor.apply(&plan, Source::Manual).expect("apply");
     assert!(report.is_success());
-    executor.revert_batch(report.batch).expect("revert");
+    executor
+        .revert_batch(report.batch, Source::Manual, None)
+        .expect("revert");
     assert_eq!(executor.activity_write_failures(), 0);
 
     let records = store.list(10, None).expect("list");
@@ -916,4 +924,112 @@ fn the_executor_writes_activity_into_the_store_and_a_secret_never_reaches_it() {
         .expect("rows");
     assert_eq!(summaries.len(), 4);
     assert!(summaries.iter().all(|s| !s.contains(SECRET)));
+}
+
+// ---- activity retention -----------------------------------------------------------------
+
+fn activity_at(millis: i64, entry: Option<EntryId>) -> NewActivity {
+    NewActivity {
+        timestamp: Timestamp::from_unix_millis(millis),
+        source: Source::Manual,
+        outcome: ActivityOutcome::Applied,
+        summary: "event".to_owned(),
+        batch: None,
+        entry,
+        label: None,
+    }
+}
+
+#[test]
+fn prune_and_clear_remove_activity_but_never_a_record_an_undo_can_reach() {
+    let dir = TempDir::new().expect("temp dir");
+    let store = open(&db_path(&dir));
+    let batch = store.new_batch(None).expect("batch");
+    let applied = store
+        .record_pending(new_entry(
+            batch,
+            set_dword("A", 1),
+            PriorState::RegistryValue(None),
+        ))
+        .expect("entry");
+    store
+        .set_state(applied, EntryState::Applied, None)
+        .expect("state");
+    let reverted = store
+        .record_pending(new_entry(
+            batch,
+            set_dword("B", 1),
+            PriorState::RegistryValue(None),
+        ))
+        .expect("entry");
+    store
+        .set_state(reverted, EntryState::Reverted, None)
+        .expect("state");
+
+    store.record(activity_at(1, Some(applied))).expect("record");
+    store
+        .record(activity_at(2, Some(reverted)))
+        .expect("record");
+    store.record(activity_at(3, None)).expect("record");
+    store.record(activity_at(990, None)).expect("record");
+
+    let old = volt_core::Retention {
+        max_age_ms: 100,
+        max_records: 100,
+    };
+    let removed = store
+        .prune(old, Timestamp::from_unix_millis(1000))
+        .expect("prune");
+    assert_eq!(removed, 2, "the old reverted and plain records go");
+    let left: Vec<_> = store.list(10, None).expect("list");
+    assert_eq!(left.len(), 2);
+    assert!(left.iter().any(|r| r.entry == Some(applied)));
+
+    assert_eq!(store.clear().expect("clear"), 1);
+    let left = store.list(10, None).expect("list");
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].entry, Some(applied));
+    // The journal is untouched: the entry can still be undone.
+    assert_eq!(
+        store.entry(applied).expect("entry").expect("exists").state,
+        EntryState::Applied
+    );
+}
+
+#[test]
+fn prune_keeps_only_the_newest_records_by_count() {
+    let dir = TempDir::new().expect("temp dir");
+    let store = open(&db_path(&dir));
+    for i in 0..6 {
+        store.record(activity_at(900 + i, None)).expect("record");
+    }
+    let by_count = volt_core::Retention {
+        max_age_ms: 10_000,
+        max_records: 4,
+    };
+    let removed = store
+        .prune(by_count, Timestamp::from_unix_millis(1000))
+        .expect("prune");
+    assert_eq!(removed, 2);
+    let ids: Vec<_> = store
+        .list(10, None)
+        .expect("list")
+        .iter()
+        .map(|r| r.id.0)
+        .collect();
+    assert_eq!(ids, [6, 5, 4, 3]);
+}
+
+#[test]
+fn the_log_prunes_itself_while_it_is_written() {
+    let dir = TempDir::new().expect("temp dir");
+    let store = open(&db_path(&dir));
+    // Records far older than the age limit: the 100th write removes them.
+    for _ in 0..99 {
+        store.record(activity_at(1, None)).expect("record");
+    }
+    let now = volt_core::Retention::DEFAULT.max_age_ms * 2;
+    store.record(activity_at(now, None)).expect("record");
+    let left = store.list(200, None).expect("list");
+    assert_eq!(left.len(), 1);
 }

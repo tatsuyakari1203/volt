@@ -79,7 +79,8 @@ pub mod tweak;
 pub mod fakes;
 
 pub use activity::{
-    ActivityId, ActivityLog, ActivityOutcome, ActivityRecord, NewActivity, render_text,
+    ActivityId, ActivityLog, ActivityOutcome, ActivityRecord, NewActivity, Retention,
+    redacted_entry_error, render_text,
 };
 pub use boost::{
     BOOST_SETTINGS_KEY, BOOST_TEMP_RULE_ID, BoostConfig, BoostReport, JunkFound, SkippedOperation,

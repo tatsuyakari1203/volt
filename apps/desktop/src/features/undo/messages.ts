@@ -135,6 +135,27 @@ export function describeSaveFailure(error: unknown): Notice {
   };
 }
 
+/** Explains a clear that failed. */
+export function describeClearFailure(error: unknown): Notice {
+  return {
+    tone: 'problem',
+    message: `Could not clear the history. ${sentence(describeError(error))}`,
+    details: [],
+  };
+}
+
+/** Confirms that the history was cleared. */
+export function describeCleared(removed: number): Notice {
+  return {
+    tone: 'done',
+    message:
+      removed === 0
+        ? 'Nothing to clear: every record belongs to a change that can still be undone.'
+        : `Cleared ${count(removed, 'record', 'records')}. Changes that can be undone stay in the list.`,
+    details: [],
+  };
+}
+
 /** Confirms a copy to the clipboard. */
 export function describeCopied(records: number): Notice {
   return {

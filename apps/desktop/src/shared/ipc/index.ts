@@ -14,6 +14,7 @@ import {
   type CleanRunResult,
   type CleanScanProgress,
   type CleanScanResult,
+  type ClearResult,
   commands,
   type EmptyBinResult,
   type EndAppResult,
@@ -58,6 +59,7 @@ export type {
   CleanRunResult,
   CleanScanProgress,
   CleanScanResult,
+  ClearResult,
   DeductionView,
   DiskView,
   EmptyBinResult,
@@ -344,6 +346,11 @@ export async function previewUndoBatch(batch: string): Promise<UndoPreview> {
  */
 export async function previewUndoEntry(entry: string): Promise<UndoPreview> {
   return call(() => commands.previewUndoEntry(entry));
+}
+
+/** Clears the activity history; changes that can still be undone stay listed. */
+export async function clearHistory(): Promise<ClearResult> {
+  return call(() => commands.clearHistory());
 }
 
 /** Whether the activity history is complete since the app started. */

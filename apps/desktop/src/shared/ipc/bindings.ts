@@ -203,6 +203,17 @@ async historyStatus() : Promise<Result<HistoryStatus, IpcError>> {
 }
 },
 /**
+ * Tauri command: clears the activity history (undoable changes stay listed).
+ */
+async clearHistory() : Promise<Result<ClearResult, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("clear_history") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Tauri command: asks the user where to save the activity log (a native save dialog) and writes
  * it as a text file. The file system is reached from Rust only: the UI is granted no file
  * system or dialog permission. Closing the dialog is `cancelled`, not an error.
@@ -864,6 +875,14 @@ needsAdministrator: boolean;
  * Files younger than this many days are never taken (0: no minimum).
  */
 minAgeDays: number }
+/**
+ * How many records [`clear_history`] removed.
+ */
+export type ClearResult = { 
+/**
+ * Records removed from the activity history.
+ */
+removed: number }
 /**
  * One reason the score is below 100.
  */

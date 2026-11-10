@@ -1,7 +1,8 @@
-import { ClipboardCopy, Download, History, Loader2, TriangleAlert } from 'lucide-react';
+import { ClipboardCopy, Download, History, Loader2, Trash2, TriangleAlert } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   type ActivityItem,
+  clearHistory,
   exportActivity,
   exportActivityText,
   historyStatus,
@@ -15,10 +16,13 @@ import {
 } from '../../shared/ipc';
 import { Button, Card, cx, PageHeader } from '../../shared/ui';
 import { type BatchTarget, BatchUndoDialog } from './BatchUndoDialog';
+import { ClearHistoryDialog } from './ClearHistoryDialog';
 import { type EntryTarget, EntryUndoDialog } from './EntryUndoDialog';
 import { HistoryList } from './HistoryList';
 import { groupHistory } from './history';
 import {
+  describeCleared,
+  describeClearFailure,
   describeCopied,
   describeCopyFailure,
   describeError,
@@ -62,6 +66,7 @@ export function UndoScreen() {
   const [confirming, setConfirming] = useState<BatchTarget | null>(null);
   const [confirmingEntry, setConfirmingEntry] = useState<EntryTarget | null>(null);
   const [incomplete, setIncomplete] = useState(false);
+  const [clearing, setClearing] = useState<'closed' | 'asking' | 'running'>('closed');
   const alive = useRef(true);
   const lastShown = useRef<string | null>(null);
 
@@ -242,6 +247,21 @@ export function UndoScreen() {
     }
   };
 
+  const clear = async () => {
+    setClearing('running');
+    setNotice(null);
+    let outcome: Notice;
+    try {
+      outcome = describeCleared((await clearHistory()).removed);
+    } catch (error) {
+      outcome = describeClearFailure(error);
+    }
+    await refresh();
+    if (!alive.current) return;
+    setClearing('closed');
+    setNotice(outcome);
+  };
+
   const nextCursor = load.status === 'ready' ? load.nextCursor : null;
   const hasRecords = items.length > 0;
 
@@ -279,6 +299,14 @@ export function UndoScreen() {
                 onClick={() => void copy()}
               >
                 Copy
+              </Button>
+              <Button
+                size="sm"
+                icon={<Trash2 aria-hidden size={16} />}
+                disabled={exporting !== null}
+                onClick={() => setClearing('asking')}
+              >
+                Clear
               </Button>
             </div>
           </div>
@@ -334,6 +362,12 @@ export function UndoScreen() {
           </>
         ) : null}
       </div>
+      <ClearHistoryDialog
+        open={clearing !== 'closed'}
+        busy={clearing === 'running'}
+        onClose={() => setClearing('closed')}
+        onConfirm={() => void clear()}
+      />
       <EntryUndoDialog
         target={confirmingEntry}
         onClose={() => setConfirmingEntry(null)}

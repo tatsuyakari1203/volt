@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use crate::activity::{ActivityId, ActivityLog, ActivityRecord, NewActivity};
+use crate::activity::{ActivityId, ActivityLog, ActivityRecord, NewActivity, Retention};
 use crate::command::{Command, CommandOutput, Commands};
 use crate::error::PortError;
 use crate::executor::Executor;
@@ -1068,6 +1068,7 @@ impl Journal for FakeJournal {
 struct ActivityState {
     records: Vec<ActivityRecord>,
     fail_with: Option<PortError>,
+    protected: Vec<crate::journal::EntryId>,
 }
 
 /// In-memory [`ActivityLog`].
@@ -1093,6 +1094,12 @@ impl FakeActivityLog {
     /// with `None`.
     pub fn fail_records_with(&self, error: Option<PortError>) {
         lock(&self.state).fail_with = error;
+    }
+
+    /// Marks a journal entry as one that can still be undone: `prune` and `clear` keep the
+    /// records linked to it (the real adapter reads this from the journal).
+    pub fn protect_entry(&self, entry: crate::journal::EntryId) {
+        lock(&self.state).protected.push(entry);
     }
 }
 
@@ -1129,6 +1136,34 @@ impl ActivityLog for FakeActivityLog {
             .take(limit)
             .cloned()
             .collect())
+    }
+
+    fn prune(&self, retention: Retention, now: Timestamp) -> Result<u64, PortError> {
+        let mut state = lock(&self.state);
+        let cutoff = now.as_unix_millis().saturating_sub(retention.max_age_ms);
+        let total = state.records.len();
+        let protected = state.protected.clone();
+        let mut index = 0;
+        let before = total;
+        state.records.retain(|record| {
+            index += 1;
+            let rank_from_newest = total - index;
+            let expired = record.timestamp.as_unix_millis() < cutoff
+                || rank_from_newest >= retention.max_records;
+            let kept = record.entry.is_some_and(|e| protected.contains(&e));
+            !expired || kept
+        });
+        Ok((before - state.records.len()) as u64)
+    }
+
+    fn clear(&self) -> Result<u64, PortError> {
+        let mut state = lock(&self.state);
+        let protected = state.protected.clone();
+        let before = state.records.len();
+        state
+            .records
+            .retain(|record| record.entry.is_some_and(|e| protected.contains(&e)));
+        Ok((before - state.records.len()) as u64)
     }
 }
 
