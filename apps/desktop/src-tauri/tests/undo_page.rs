@@ -712,3 +712,51 @@ fn clearing_the_history_keeps_what_can_still_be_undone_and_never_touches_the_jou
         .batch_entries(BatchId(batch.parse().expect("id")));
     assert_eq!(entries.expect("entries").len(), 2);
 }
+
+#[test]
+fn memory_process_and_cleaning_records_get_readable_titles() {
+    let dir = TempDir::new().expect("temp dir");
+    let (_system, core) = fake_core(&dir, r"Software\VoltTest\Titles");
+    let known_rule = core
+        .clean_engine()
+        .and_then(|engine| engine.rules().rules().first().map(|rule| rule.id.clone()));
+    let mut labels = vec![
+        volt_core::MEMORY_LABEL.to_owned(),
+        volt_core::PROCESS_END_LABEL.to_owned(),
+        "recycle-bin".to_owned(),
+        "no-such-label".to_owned(),
+    ];
+    labels.extend(known_rule.clone());
+    for label in &labels {
+        core.activity
+            .record(NewActivity {
+                timestamp: Timestamp::from_unix_millis(1_000),
+                source: Source::Manual,
+                outcome: ActivityOutcome::Applied,
+                summary: "x".to_owned(),
+                batch: None,
+                entry: None,
+                label: Some(label.clone()),
+            })
+            .expect("record");
+    }
+    let rows = items(&core);
+    let title = |label: &str| {
+        rows.iter()
+            .find(|row| row.label.as_deref() == Some(label))
+            .and_then(|row| row.title.clone())
+    };
+    assert_eq!(
+        title(volt_core::MEMORY_LABEL).as_deref(),
+        Some("Memory cleaning")
+    );
+    assert_eq!(
+        title(volt_core::PROCESS_END_LABEL).as_deref(),
+        Some("Ended apps")
+    );
+    assert_eq!(title("recycle-bin").as_deref(), Some("Recycle Bin"));
+    assert_eq!(title("no-such-label"), None);
+    if let Some(id) = known_rule {
+        assert!(title(&id).is_some_and(|text| text.starts_with("Cleaning: ")));
+    }
+}

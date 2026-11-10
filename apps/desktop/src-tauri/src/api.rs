@@ -16,11 +16,11 @@ use volt_core::activity::{exec_reason, restore_words_for, revert_reason, subject
 use volt_core::startup::STARTUP_LABEL;
 use volt_core::{
     ActivityId, ActivityOutcome, ActivityRecord, ApplyOutcome, BatchId, Category, ChangeOutcome,
-    Clock, EntryId, EntryState, Evidence, ItemStatus, JournalEntry, RESET_LABEL_SUFFIX,
-    RestartRequirement, RevertError, RevertOutcome, RevertReport, Risk, Source, StartupEntry,
-    StartupOrigin, StartupScope, StartupState, StepPreview, SystemClock, Timestamp,
-    TweakApplyReport, TweakError, TweakRevertReport, TweakState, activity, overwrites_of,
-    render_text,
+    Clock, EntryId, EntryState, Evidence, ItemStatus, JournalEntry, MEMORY_LABEL,
+    PROCESS_END_LABEL, RESET_LABEL_SUFFIX, RestartRequirement, RevertError, RevertOutcome,
+    RevertReport, Risk, Source, StartupEntry, StartupOrigin, StartupScope, StartupState,
+    StepPreview, SystemClock, Timestamp, TweakApplyReport, TweakError, TweakRevertReport,
+    TweakState, activity, overwrites_of, render_text,
 };
 
 use crate::IpcError;
@@ -435,6 +435,15 @@ pub enum ExportResult {
 
 /// What the Undo page calls the batches the startup manager writes.
 const STARTUP_TITLE: &str = "Startup apps";
+
+/// What the Undo page calls a memory cleaning run (the Memory page, Boost and the tray).
+const MEMORY_TITLE: &str = "Memory cleaning";
+
+/// What the Undo page calls ending apps from the Processes page.
+const PROCESS_END_TITLE: &str = "Ended apps";
+
+/// What the Undo page calls emptying the Recycle Bin.
+const RECYCLE_BIN_TITLE: &str = "Recycle Bin";
 
 /// Where a startup entry comes from. Mirrors [`volt_core::StartupOrigin`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -1050,6 +1059,34 @@ fn change_state(
     }
 }
 
+/// What the Undo page calls a record, from its label: a tweak, a startup change, a cleaning rule,
+/// a memory run or ending apps. `None` for a label nothing knows (the page then shows the summary).
+fn activity_title(core: &AppCore, label: &str) -> Option<String> {
+    match label {
+        STARTUP_LABEL => return Some(STARTUP_TITLE.to_owned()),
+        MEMORY_LABEL => return Some(MEMORY_TITLE.to_owned()),
+        PROCESS_END_LABEL => return Some(PROCESS_END_TITLE.to_owned()),
+        "recycle-bin" => return Some(RECYCLE_BIN_TITLE.to_owned()),
+        _ => {}
+    }
+    if let Some(id) = label.strip_suffix(RESET_LABEL_SUFFIX) {
+        return core
+            .engine
+            .catalogue()
+            .get(id)
+            .map(|tweak| format!("{} (set to the Windows default)", tweak.title));
+    }
+    core.engine
+        .catalogue()
+        .get(label)
+        .map(|tweak| tweak.title.clone())
+        .or_else(|| {
+            core.clean_engine()
+                .and_then(|engine| engine.rules().get(label))
+                .map(|rule| format!("Cleaning: {}", rule.title))
+        })
+}
+
 fn activity_item(core: &AppCore, record: &ActivityRecord) -> ActivityItem {
     let lookup = lookup_entry(core, record);
     let (state, reason) = change_state(record.outcome, &lookup);
@@ -1076,22 +1113,10 @@ fn activity_item(core: &AppCore, record: &ActivityRecord) -> ActivityItem {
             _ => ActivityStatus::Other,
         },
         summary: record.summary.clone(),
-        title: record.label.as_deref().and_then(|label| {
-            if label == STARTUP_LABEL {
-                return Some(STARTUP_TITLE.to_owned());
-            }
-            if let Some(id) = label.strip_suffix(RESET_LABEL_SUFFIX) {
-                return core
-                    .engine
-                    .catalogue()
-                    .get(id)
-                    .map(|tweak| format!("{} (set to the Windows default)", tweak.title));
-            }
-            core.engine
-                .catalogue()
-                .get(label)
-                .map(|tweak| tweak.title.clone())
-        }),
+        title: record
+            .label
+            .as_deref()
+            .and_then(|label| activity_title(core, label)),
         label: record.label.clone(),
         batch: record.batch.map(|batch| batch.0.to_string()),
         entry: record.entry.map(|entry| entry.0.to_string()),

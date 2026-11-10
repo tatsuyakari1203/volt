@@ -673,8 +673,8 @@ areas: MemoryAreaView[];
 moveTempToRecycleBin: boolean }
 /**
  * Sent to every window when Boost was started from the tray, with the report. A window that is
- * open shows it on Home; with no window the report is only in the activity history and the tray
- * tooltip.
+ * open shows it on Home; with no window the report is in the activity history, the tray tooltip
+ * and a desktop notification.
  */
 export type BoostFinished = BoostResult
 /**

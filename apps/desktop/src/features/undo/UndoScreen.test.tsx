@@ -638,3 +638,23 @@ it('does not clear when the confirmation is cancelled', async () => {
   await user.click(await screen.findByRole('button', { name: 'Cancel' }));
   expect(ipc.clearHistory).not.toHaveBeenCalled();
 });
+
+it('names a memory or process record by its title, and leaves an unknown one by its status', async () => {
+  ipc.listActivity.mockResolvedValue(
+    page([
+      item('3', { summary: 'Ended 2 apps', label: 'process.end', title: 'Ended apps' }),
+      item('2', {
+        summary: 'Trimmed working sets',
+        label: 'memory.clean',
+        title: 'Memory cleaning',
+      }),
+      item('1', { summary: 'Something', label: 'unknown', title: null }),
+    ]),
+  );
+  render(<UndoScreen />);
+  await screen.findByRole('list', { name: 'Changes' });
+  const [ended, memory, other] = rows();
+  expect(ended?.textContent).toContain('Ended apps: Applied');
+  expect(memory?.textContent).toContain('Memory cleaning: Applied');
+  expect(other?.textContent).not.toContain(': Applied');
+});

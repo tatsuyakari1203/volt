@@ -6,6 +6,7 @@ import {
   type MemoryAreaView,
   type MemoryListsView,
 } from '../ipc';
+import { formatBytes } from './size';
 
 function assertNever(value: never): never {
   throw new Error(`Unhandled value: ${JSON.stringify(value)}`);
@@ -22,19 +23,7 @@ export function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-const KIB = 1024;
-const MIB = KIB * 1024;
-const GIB = MIB * 1024;
-
-/** A byte count the way Windows writes it: binary units labelled GB and MB. */
-export function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes < 0) return '—';
-  if (bytes >= GIB) {
-    const gib = bytes / GIB;
-    return `${gib >= 100 ? Math.round(gib) : gib.toFixed(1).replace(/\.0$/, '')} GB`;
-  }
-  return `${Math.round(bytes / MIB)} MB`;
-}
+const MIB = 1024 * 1024;
 
 /** The change between two readings, signed: "+1.2 GB", "-300 MB" or "no change". */
 export function formatChange(before: number, after: number): string {

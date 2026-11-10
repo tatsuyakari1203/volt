@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { MetricsView } from '../../shared/ipc';
+import { formatBytes } from '../../shared/text/size';
 import { buildCards, NO_VALUE } from './cards';
-import { driveName, formatBytes, formatPercent } from './format';
+import { driveName, formatPercent } from './format';
 import { fixHint, fixLink, headline, levelLabel } from './messages';
 
 const GIB = 1024 ** 3;

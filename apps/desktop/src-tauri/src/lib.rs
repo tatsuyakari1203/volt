@@ -80,6 +80,8 @@ pub fn run() {
         // Only the Rust side opens the save dialog (export_activity); no capability grants it,
         // or any file system access, to the UI.
         .plugin(tauri_plugin_dialog::init())
+        // Only the tray's Boost shows a notification, from Rust; no capability grants it to the UI.
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(bindings.invoke_handler())
         .setup(move |app| {
             logging::install(app.handle());

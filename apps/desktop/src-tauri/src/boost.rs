@@ -119,8 +119,8 @@ pub struct BoostResult {
 }
 
 /// Sent to every window when Boost was started from the tray, with the report. A window that is
-/// open shows it on Home; with no window the report is only in the activity history and the tray
-/// tooltip.
+/// open shows it on Home; with no window the report is in the activity history, the tray tooltip
+/// and a desktop notification.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type, Event)]
 pub struct BoostFinished(pub BoostResult);
 
@@ -222,6 +222,47 @@ pub fn tooltip_line(outcome: &Result<BoostResult, IpcError>) -> String {
     }
 }
 
+/// The text of the notification a tray Boost shows when no window is open. It says what ran and
+/// how memory changed; it never claims disk space was freed.
+#[must_use]
+pub fn notification_body(outcome: &Result<BoostResult, IpcError>) -> String {
+    match outcome {
+        Err(_) => "Boost could not run.".to_owned(),
+        Ok(result) => {
+            let mut parts = Vec::new();
+            match (result.available_before, result.available_after) {
+                (Some(before), Some(after)) => parts.push(format!(
+                    "Memory available {} to {}.",
+                    gib(before),
+                    gib(after)
+                )),
+                _ => parts.push("Boost done.".to_owned()),
+            }
+            if let Some(moved) = &result.moved_to_bin {
+                parts.push(format!(
+                    "{} moved to the Recycle Bin.",
+                    count_files(moved.files)
+                ));
+            }
+            if !result.skipped.is_empty() {
+                parts.push(format!(
+                    "{} skipped: open Volt to see why.",
+                    result.skipped.len()
+                ));
+            }
+            parts.join(" ")
+        }
+    }
+}
+
+fn count_files(files: u32) -> String {
+    if files == 1 {
+        "1 file".to_owned()
+    } else {
+        format!("{files} files")
+    }
+}
+
 fn gib(bytes: f64) -> String {
     format!("{:.1} GB", bytes / f64::from(1u32 << 30))
 }
@@ -299,5 +340,38 @@ mod tests {
             message: "x".into(),
         };
         assert_eq!(tooltip_line(&Err(error)), "Volt: Boost could not run");
+    }
+
+    #[test]
+    fn the_notification_says_what_changed_and_what_was_skipped() {
+        let result = BoostResult {
+            memory_before: None,
+            memory_after: None,
+            available_before: Some(4.0 * f64::from(1u32 << 30)),
+            available_after: Some(5.5 * f64::from(1u32 << 30)),
+            areas: Vec::new(),
+            skipped: vec![SkippedOperationView {
+                area: MemoryAreaView::StandbyList,
+                state: OperationState::NeedsAdministrator,
+                reason: "x".into(),
+            }],
+            junk: None,
+            moved_to_bin: Some(MovedToBinView {
+                files: 1,
+                bytes: 10.0,
+                skipped: 0,
+            }),
+            recorded: true,
+        };
+        let body = notification_body(&Ok(result));
+        assert_eq!(
+            body,
+            "Memory available 4.0 GB to 5.5 GB. 1 file moved to the Recycle Bin. 1 skipped: open Volt to see why."
+        );
+        assert!(!body.contains("freed"));
+        let error = IpcError::Other {
+            message: "x".into(),
+        };
+        assert_eq!(notification_body(&Err(error)), "Boost could not run.");
     }
 }

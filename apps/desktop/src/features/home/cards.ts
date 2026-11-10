@@ -1,5 +1,6 @@
 import type { MetricsView } from '../../shared/ipc';
-import { driveName, formatBytes, formatPercent } from './format';
+import { formatBytes } from '../../shared/text/size';
+import { driveName, formatPercent } from './format';
 
 /** The four live cards, in the order they are shown. */
 export type MetricCardId = 'cpu' | 'memory' | 'gpu' | 'disk';

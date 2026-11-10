@@ -1,15 +1,16 @@
 //! The tray icon and its menu. The tray is what keeps Volt reachable while no window exists.
 //!
 //! Boost runs here, in Rust, through the same use case as the Home button ([`boost::boost_of`]),
-//! so it works with the window closed: the engines record it in the activity history and the
-//! tooltip shows the result. A window that is open also receives [`BoostFinished`] and shows the
-//! report on Home.
+//! so it works with the window closed: the engines record it in the activity history, the tooltip
+//! shows the result and, when no window is open, a desktop notification says what happened. A
+//! window that is open also receives [`BoostFinished`] and shows the report on Home.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{App, AppHandle, Manager, Runtime};
+use tauri_plugin_notification::NotificationExt;
 use tauri_specta::Event as _;
 
 use crate::boost::{self, BoostFinished};
@@ -145,7 +146,8 @@ fn run<R: Runtime>(app: &AppHandle<R>, action: TrayAction) {
 }
 
 /// Runs Boost on a worker thread (it reads and changes memory, so never on the main thread).
-/// The result goes to the tooltip and, as an event, to a window that is open.
+/// The result goes to the tooltip, to a notification when no window is open and, as an event, to
+/// a window that is open.
 fn start_boost<R: Runtime>(app: &AppHandle<R>) {
     if !app.state::<BoostRunning>().try_start() {
         return;
@@ -161,6 +163,16 @@ fn start_boost<R: Runtime>(app: &AppHandle<R>) {
         if let Some(tray) = app.tray_by_id(TRAY_ID) {
             // A failed tooltip update changes nothing that matters.
             let _ = tray.set_tooltip(Some(boost::tooltip_line(&outcome)));
+        }
+        if app.get_webview_window(window::MAIN_WINDOW).is_none() {
+            // With a window open the report is on Home; with none, this is the only feedback.
+            // A notification that cannot be shown (disabled in Windows) leaves the tooltip.
+            let _ = app
+                .notification()
+                .builder()
+                .title("Volt Boost")
+                .body(boost::notification_body(&outcome))
+                .show();
         }
         if let Ok(result) = outcome {
             // A failed emit only means nobody is listening.

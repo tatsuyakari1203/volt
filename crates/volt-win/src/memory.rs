@@ -46,8 +46,9 @@ use windows::Win32::Foundation::{
     STATUS_PRIVILEGE_NOT_HELD,
 };
 use windows::Win32::Security::{
-    AdjustTokenPrivileges, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, SE_INCREASE_QUOTA_NAME,
-    SE_PRIVILEGE_ENABLED, SE_PROF_SINGLE_PROCESS_NAME, TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES,
+    AdjustTokenPrivileges, GetTokenInformation, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW,
+    SE_INCREASE_QUOTA_NAME, SE_PRIVILEGE_ENABLED, SE_PROF_SINGLE_PROCESS_NAME,
+    TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY, TokenPrivileges,
 };
 use windows::Win32::System::Memory::SetSystemFileCacheSize;
 use windows::Win32::System::ProcessStatus::EnumProcesses;
@@ -198,6 +199,65 @@ fn enable_privilege(name: PCWSTR) -> Result<(), PortError> {
     Ok(())
 }
 
+/// The attributes of a privilege in this process's token, or `None` when the token does not hold
+/// it at all (a standard, non-elevated token). Only reads the token: unlike [`enable_privilege`]
+/// it changes nothing, so asking which operations are available has no side effect.
+fn privilege_attributes(name: PCWSTR) -> Result<Option<u32>, PortError> {
+    let mut token = HANDLE::default();
+    // SAFETY: `GetCurrentProcess` returns the pseudo handle of this process, which needs no
+    // closing; `token` is a valid out pointer that lives for the call.
+    unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut token) }
+        .map_err(|e| PortError::Other(format!("OpenProcessToken: {e}")))?;
+    let token = OwnedHandle(token);
+
+    let mut luid = LUID::default();
+    // SAFETY: `name` is a NUL-terminated constant string, the system name is null (this machine)
+    // and `luid` is a valid out pointer that lives for the call.
+    unsafe { LookupPrivilegeValueW(PCWSTR::null(), name, &raw mut luid) }
+        .map_err(|e| PortError::Other(format!("LookupPrivilegeValueW: {e}")))?;
+
+    let mut needed = 0u32;
+    // SAFETY: a null buffer of length 0 asks only for the size; `needed` is a valid out pointer.
+    // The call fails with ERROR_INSUFFICIENT_BUFFER by design, so its result is not an error.
+    let _ = unsafe { GetTokenInformation(token.0, TokenPrivileges, None, 0, &raw mut needed) };
+    if needed == 0 {
+        return Err(PortError::Other("GetTokenInformation: no size".into()));
+    }
+    // 8-byte words, so the buffer is aligned for `TOKEN_PRIVILEGES`.
+    let mut buffer = vec![0u64; (needed as usize).div_ceil(size_of::<u64>())];
+    // SAFETY: `buffer` is writable and at least `needed` bytes long; `needed` is a valid out
+    // pointer. Both live for the call.
+    unsafe {
+        GetTokenInformation(
+            token.0,
+            TokenPrivileges,
+            Some(buffer.as_mut_ptr().cast::<c_void>()),
+            needed,
+            &raw mut needed,
+        )
+    }
+    .map_err(|e| PortError::Other(format!("GetTokenInformation: {e}")))?;
+
+    let header = buffer.as_ptr().cast::<TOKEN_PRIVILEGES>();
+    // SAFETY: the call above filled `buffer` with a `TOKEN_PRIVILEGES` header followed by
+    // `PrivilegeCount` entries, all inside the `needed` bytes it wrote. The pointer is aligned
+    // (u64 words) and `buffer` outlives every read below.
+    let (count, first) = unsafe {
+        (
+            (*header).PrivilegeCount as usize,
+            (&raw const (*header).Privileges).cast::<LUID_AND_ATTRIBUTES>(),
+        )
+    };
+    for index in 0..count {
+        // SAFETY: `index < PrivilegeCount`, so the entry lies inside the filled buffer.
+        let entry = unsafe { *first.add(index) };
+        if entry.Luid.LowPart == luid.LowPart && entry.Luid.HighPart == luid.HighPart {
+            return Ok(Some(entry.Attributes.0));
+        }
+    }
+    Ok(None)
+}
+
 /// Reads the raw memory lists. Needs no privilege.
 fn read_raw_lists() -> Result<RawMemoryLists, PortError> {
     let mut raw = RawMemoryLists::default();
@@ -338,9 +398,10 @@ impl Memory for WinMemory {
     fn availability(&self, area: MemoryArea) -> Availability {
         match privilege_for(area) {
             None => Availability::Available,
-            Some(name) => match enable_privilege(name) {
-                Ok(()) => Availability::Available,
-                Err(PortError::AccessDenied(_)) => Availability::NeedsAdministrator,
+            // Held (enabled or not) is enough: `purge` enables it just before it is needed.
+            Some(name) => match privilege_attributes(name) {
+                Ok(Some(_)) => Availability::Available,
+                Ok(None) => Availability::NeedsAdministrator,
                 Err(_) => Availability::Unsupported,
             },
         }
@@ -475,12 +536,39 @@ mod tests {
             Availability::Available
         );
         // Whether the others are available depends on whether the test runs elevated; either
-        // answer is valid, and asking only reads the token (and enables a privilege in it).
+        // answer is valid, and asking only reads the token.
         for area in [MemoryArea::StandbyList, MemoryArea::FileCache] {
             assert!(matches!(
                 adapter.availability(area),
                 Availability::Available | Availability::NeedsAdministrator
             ));
         }
+    }
+
+    #[test]
+    fn asking_for_availability_leaves_the_token_untouched() {
+        let names = [SE_PROF_SINGLE_PROCESS_NAME, SE_INCREASE_QUOTA_NAME];
+        let before: Vec<_> = names.iter().map(|n| privilege_attributes(*n)).collect();
+        let adapter = WinMemory::new();
+        for area in [
+            MemoryArea::StandbyList,
+            MemoryArea::StandbyListLowPriority,
+            MemoryArea::ModifiedList,
+            MemoryArea::FileCache,
+            MemoryArea::WorkingSets,
+        ] {
+            let _ = adapter.availability(area);
+        }
+        let after: Vec<_> = names.iter().map(|n| privilege_attributes(*n)).collect();
+        assert_eq!(before, after, "no privilege was enabled by the check");
+    }
+
+    #[test]
+    fn a_privilege_every_user_holds_is_found_in_the_token() {
+        use windows::Win32::Security::SE_CHANGE_NOTIFY_NAME;
+        assert!(matches!(
+            privilege_attributes(SE_CHANGE_NOTIFY_NAME),
+            Ok(Some(_))
+        ));
     }
 }
