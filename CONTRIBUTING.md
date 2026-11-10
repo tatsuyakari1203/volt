@@ -27,6 +27,8 @@ Volt changes registries, services and files on real machines, so the bar for cha
 [Conventional Commits](https://www.conventionalcommits.org/). Allowed scopes are listed in
 `commitlint.config.mjs`. Reference the issue in a footer: `Refs: #12`.
 
+Contributions are accepted under the MIT license, the same license as the project.
+
 ## Adding a tweak or a cleaning rule
 
 A tweak or rule is accepted only if it has: a read-only detect step, an apply step, a revert step,

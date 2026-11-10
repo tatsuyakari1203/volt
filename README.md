@@ -8,6 +8,7 @@ Free memory, clean junk, control startup and apply system tweaks, with every cha
 journaled and reversible.
 
 [![CI](https://github.com/tatsuyakari1203/volt/actions/workflows/ci.yml/badge.svg)](https://github.com/tatsuyakari1203/volt/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 ![Status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-orange)
 ![Platform: Windows 10 and 11](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D4)
 ![Built with Tauri 2 and Rust](https://img.shields.io/badge/built%20with-Tauri%202%20%2B%20Rust-24C8DB)
@@ -140,5 +141,4 @@ Found a vulnerability? Please report it privately as described in [SECURITY.md](
 
 ## License
 
-A license has not been chosen yet. Until a `LICENSE` file is added, no license is granted and all
-rights are reserved.
+Volt is released under the [MIT license](LICENSE).
