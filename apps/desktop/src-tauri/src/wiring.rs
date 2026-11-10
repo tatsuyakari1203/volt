@@ -13,6 +13,7 @@
 
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use tauri::{AppHandle, Manager as _};
@@ -106,6 +107,7 @@ pub struct AppCore {
     pub startup: StartupReport,
     startup_apps: Option<StartupManager>,
     gate: Mutex<()>,
+    history_incomplete: AtomicBool,
     clean: Option<CleanEngine>,
     clean_session: CleanSession,
     recycle_bin: Option<RecycleBinManager>,
@@ -141,6 +143,7 @@ impl AppCore {
             startup,
             startup_apps: None,
             gate: Mutex::new(()),
+            history_incomplete: AtomicBool::new(false),
             clean: None,
             clean_session: CleanSession::default(),
             recycle_bin: None,
@@ -222,6 +225,18 @@ impl AppCore {
     pub fn exclusive(&self) -> MutexGuard<'_, ()> {
         // The guard protects no data, so a poisoned lock only means another call panicked.
         self.gate.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Remembers, until the app restarts, that an activity record could not be written, so the
+    /// Undo page can say its history is incomplete.
+    pub fn note_history_incomplete(&self) {
+        self.history_incomplete.store(true, Ordering::Relaxed);
+    }
+
+    /// Whether any activity record failed to be written since the app started.
+    #[must_use]
+    pub fn history_incomplete(&self) -> bool {
+        self.history_incomplete.load(Ordering::Relaxed) || self.engine.activity_write_failures() > 0
     }
 }
 

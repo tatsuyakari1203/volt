@@ -4,14 +4,18 @@ import {
   type ActivityItem,
   exportActivity,
   exportActivityText,
+  historyStatus,
   IpcUnavailableError,
   listActivity,
+  previewUndoEntry,
+  type UndoPreview,
   type UndoResult,
   undoBatch,
   undoEntry,
 } from '../../shared/ipc';
 import { Button, Card, cx, PageHeader } from '../../shared/ui';
 import { type BatchTarget, BatchUndoDialog } from './BatchUndoDialog';
+import { type EntryTarget, EntryUndoDialog } from './EntryUndoDialog';
 import { HistoryList } from './HistoryList';
 import { groupHistory } from './history';
 import {
@@ -56,8 +60,10 @@ export function UndoScreen() {
   const [exporting, setExporting] = useState<'save' | 'copy' | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [confirming, setConfirming] = useState<BatchTarget | null>(null);
+  const [confirmingEntry, setConfirmingEntry] = useState<EntryTarget | null>(null);
+  const [incomplete, setIncomplete] = useState(false);
   const alive = useRef(true);
-  const shown = useRef(0);
+  const lastShown = useRef<string | null>(null);
 
   useEffect(() => {
     alive.current = true;
@@ -67,10 +73,20 @@ export function UndoScreen() {
   }, []);
 
   const items = load.status === 'ready' ? load.items : [];
-  shown.current = items.length;
+  lastShown.current = items.length > 0 ? (items[items.length - 1]?.id ?? null) : null;
   const entries = useMemo(() => groupHistory(items), [items]);
 
+  /** Asks the shell whether any activity record failed to be written; never blocks the list. */
+  const checkHistory = useCallback(() => {
+    historyStatus()
+      .then((status) => {
+        if (alive.current) setIncomplete(status.incomplete);
+      })
+      .catch(() => {});
+  }, []);
+
   const read = useCallback(() => {
+    checkHistory();
     setLoad({ status: 'loading' });
     listActivity(PAGE_SIZE)
       .then((page) => {
@@ -81,21 +97,31 @@ export function UndoScreen() {
       .catch((error: unknown) => {
         if (alive.current) setLoad({ status: 'error', message: describeLoadError(error) });
       });
-  }, []);
+  }, [checkHistory]);
 
   useEffect(read, [read]);
 
   /**
-   * Reads the list again without hiding it, keeping about as many records as were shown, so a
-   * row's state is never older than the journal after an undo.
+   * Reads the list again without hiding it, keeping every record that was shown, however many
+   * pages that took, so a row's state is never older than the journal after an undo. New records
+   * (the undo itself) arrive at the top, so it reads down to the oldest record that was loaded.
    */
   const refresh = useCallback(async () => {
-    const limit = Math.min(MAX_PAGE, Math.max(PAGE_SIZE, shown.current + 20));
+    checkHistory();
+    const oldest = lastShown.current;
     try {
-      const page = await listActivity(limit);
-      if (alive.current) {
-        setLoad({ status: 'ready', items: page.items, nextCursor: page.nextCursor });
+      const loaded: ActivityItem[] = [];
+      let cursor: string | undefined;
+      let next: string | null = null;
+      for (;;) {
+        const page = await listActivity(MAX_PAGE, cursor);
+        loaded.push(...page.items);
+        next = page.nextCursor;
+        const reached = oldest === null || page.items.some((row) => row.id === oldest);
+        if (next === null || (reached && loaded.length >= PAGE_SIZE)) break;
+        cursor = next;
       }
+      if (alive.current) setLoad({ status: 'ready', items: loaded, nextCursor: next });
     } catch (error) {
       if (alive.current) {
         setNotice({
@@ -105,7 +131,7 @@ export function UndoScreen() {
         });
       }
     }
-  }, []);
+  }, [checkHistory]);
 
   const older = (cursor: string) => {
     setMore('loading');
@@ -149,10 +175,39 @@ export function UndoScreen() {
     setBusy(null);
   };
 
-  const undoOne = (item: ActivityItem) => {
+  const undoOne = async (item: ActivityItem) => {
     if (item.entry === null) return;
     const entry = item.entry;
-    void runUndo(`entry:${entry}`, 'change', () => undoEntry(entry));
+    // The core says whether a later change to the same setting would be overwritten; if so, the
+    // user confirms first.
+    setBusy(`entry:${entry}`);
+    setNotice(null);
+    let preview: UndoPreview;
+    try {
+      preview = await previewUndoEntry(entry);
+    } catch (error) {
+      if (alive.current) {
+        setBusy(null);
+        setNotice({
+          tone: 'problem',
+          message: `Could not check what this undo would change. ${describeError(error)}`,
+          details: [],
+        });
+      }
+      return;
+    }
+    if (!alive.current) return;
+    if (preview.overwrites.length > 0) {
+      setBusy(null);
+      setConfirmingEntry({ entry, preview });
+      return;
+    }
+    await runUndo(`entry:${entry}`, 'change', () => undoEntry(entry));
+  };
+
+  const confirmEntry = (target: EntryTarget) => {
+    setConfirmingEntry(null);
+    void runUndo(`entry:${target.entry}`, 'change', () => undoEntry(target.entry));
   };
 
   const confirmBatch = (target: BatchTarget) => {
@@ -197,6 +252,7 @@ export function UndoScreen() {
         description="Every change Volt made, newest first. Undo one change, or all the changes made together."
       />
       <div className="flex flex-col gap-3">
+        {incomplete ? <IncompleteNotice /> : null}
         {notice ? <NoticeBar notice={notice} onDismiss={() => setNotice(null)} /> : null}
 
         {hasRecords ? (
@@ -260,7 +316,7 @@ export function UndoScreen() {
             <HistoryList
               entries={entries}
               busy={busy}
-              onUndoEntry={undoOne}
+              onUndoEntry={(item) => void undoOne(item)}
               onUndoBatch={(batch, title) => setConfirming({ batch, title })}
             />
             {nextCursor ? (
@@ -278,6 +334,11 @@ export function UndoScreen() {
           </>
         ) : null}
       </div>
+      <EntryUndoDialog
+        target={confirmingEntry}
+        onClose={() => setConfirmingEntry(null)}
+        onConfirm={confirmEntry}
+      />
       <BatchUndoDialog
         target={confirming}
         onClose={() => setConfirming(null)}
@@ -319,6 +380,22 @@ function NoticeBar({ notice, onDismiss }: { notice: Notice; onDismiss: () => voi
       >
         Dismiss
       </button>
+    </div>
+  );
+}
+
+/** Shown while the history is known to be missing records: the changes themselves are safe. */
+function IncompleteNotice() {
+  return (
+    <div
+      role="status"
+      className="flex items-start gap-2 rounded-md border border-line bg-surface-sunken p-3 text-body"
+    >
+      <TriangleAlert aria-hidden size={18} className="mt-0.5 shrink-0 text-muted" />
+      <p>
+        This history is incomplete: some changes could not be written to it since Volt started.
+        Those changes were still made, but they may be missing from this list.
+      </p>
     </div>
   );
 }

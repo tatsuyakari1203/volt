@@ -8,6 +8,7 @@ import {
   getAppInfo,
   getAutostartEnabled,
   getBoostConfig,
+  historyStatus,
   IpcCommandError,
   type IpcError,
   IpcUnavailableError,
@@ -16,6 +17,7 @@ import {
   onAppReady,
   onBoostFinished,
   previewUndoBatch,
+  previewUndoEntry,
   revertTweak,
   runBoost,
   setAutostartEnabled,
@@ -180,9 +182,15 @@ describe('tweak and activity commands', () => {
     expect(invoke).toHaveBeenLastCalledWith('undo_entry', { entry: '7' });
     await undoBatch('3');
     expect(invoke).toHaveBeenLastCalledWith('undo_batch', { batch: '3' });
-    invoke.mockResolvedValue({ items: [] });
+    invoke.mockResolvedValue({ items: [], overwrites: [] });
     await previewUndoBatch('3');
     expect(invoke).toHaveBeenLastCalledWith('preview_undo_batch', { batch: '3' });
+    await previewUndoEntry('7');
+    expect(invoke).toHaveBeenLastCalledWith('preview_undo_entry', { entry: '7' });
+    invoke.mockResolvedValue({ incomplete: false });
+    await expect(historyStatus()).resolves.toEqual({ incomplete: false });
+    expect(invoke).toHaveBeenLastCalledWith('history_status');
+    invoke.mockResolvedValue({ items: [], overwrites: [] });
     invoke.mockResolvedValue({ kind: 'cancelled' });
     await expect(exportActivity()).resolves.toEqual({ kind: 'cancelled' });
     expect(invoke).toHaveBeenLastCalledWith('export_activity');

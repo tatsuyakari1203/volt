@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { previewUndoBatch, type UndoPreviewItem } from '../../shared/ipc';
+import { previewUndoBatch, type UndoPreview } from '../../shared/ipc';
 import { Button, Dialog } from '../../shared/ui';
 import { describeError } from './messages';
+import { OverwriteWarning } from './OverwriteWarning';
 
 /** The batch the user asked to undo. */
 export interface BatchTarget {
@@ -14,7 +15,7 @@ export interface BatchTarget {
 type Preview =
   | { status: 'loading' }
   | { status: 'error'; message: string }
-  | { status: 'ready'; items: UndoPreviewItem[] };
+  | { status: 'ready'; preview: UndoPreview };
 
 export interface BatchUndoDialogProps {
   /** The batch to confirm, or `null` while closed. */
@@ -45,7 +46,7 @@ export function BatchUndoDialog({ target, onClose, onConfirm }: BatchUndoDialogP
     setPreview({ status: 'loading' });
     previewUndoBatch(batch)
       .then((result) => {
-        if (current) setPreview({ status: 'ready', items: result.items });
+        if (current) setPreview({ status: 'ready', preview: result });
       })
       .catch((error: unknown) => {
         if (current) setPreview({ status: 'error', message: describeError(error) });
@@ -55,7 +56,8 @@ export function BatchUndoDialog({ target, onClose, onConfirm }: BatchUndoDialogP
     };
   }, [batch]);
 
-  const items = preview.status === 'ready' ? preview.items : [];
+  const items = preview.status === 'ready' ? preview.preview.items : [];
+  const overwrites = preview.status === 'ready' ? preview.preview.overwrites : [];
   return (
     <Dialog
       open={target !== null}
@@ -97,6 +99,7 @@ export function BatchUndoDialog({ target, onClose, onConfirm }: BatchUndoDialogP
           Nothing is left to undo in this batch. It was already undone.
         </p>
       ) : null}
+      <OverwriteWarning overwrites={overwrites} />
       {items.length > 0 ? (
         <ul aria-label="What will be restored" className="max-h-60 space-y-2 overflow-y-auto">
           {items.map((item) => (

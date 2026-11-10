@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::PortError;
 use crate::operation::{Operation, PriorState};
+use crate::registry::RegistryValueRef;
 use crate::time::Timestamp;
 
 /// Identifier of a journal entry, assigned by the journal.
@@ -137,4 +138,162 @@ pub trait Journal: Send + Sync {
     /// All entries currently in `state`, ordered by ascending id. Used to find
     /// entries a crash left [`EntryState::Pending`].
     fn entries_in_state(&self, state: EntryState) -> Result<Vec<JournalEntry>, PortError>;
+}
+
+/// What an operation changes, as far as two operations can be compared: the same registry value
+/// or the same service. A command has no comparable target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Target {
+    Registry(RegistryValueRef),
+    Service(String),
+}
+
+fn target_of(operation: &Operation) -> Option<Target> {
+    match operation {
+        Operation::SetRegistryValue { target, .. } | Operation::DeleteRegistryValue { target } => {
+            Some(Target::Registry(target.clone()))
+        }
+        Operation::SetServiceStartType { service, .. } => {
+            Some(Target::Service(service.to_lowercase()))
+        }
+        _ => None,
+    }
+}
+
+/// An undo that would silently replace a later change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Overwrite {
+    /// The entry the user wants to undo.
+    pub entry: EntryId,
+    /// The newest later entry, still applied, that changed the same target.
+    pub later: JournalEntry,
+}
+
+/// For each of `undoing` (applied entries about to be undone together), finds the newest entry
+/// that is still applied, was written after it, changed the same registry value or service, and
+/// is not itself being undone. Undoing the older entry puts back its prior value and so replaces
+/// what that later entry set. Reads the journal only.
+///
+/// # Errors
+/// The journal's error when it cannot be read.
+pub fn overwrites_of(
+    journal: &dyn Journal,
+    undoing: &[JournalEntry],
+) -> Result<Vec<Overwrite>, PortError> {
+    if undoing.is_empty() {
+        return Ok(Vec::new());
+    }
+    let applied = journal.entries_in_state(EntryState::Applied)?;
+    Ok(undoing
+        .iter()
+        .filter_map(|entry| {
+            let target = target_of(&entry.operation)?;
+            applied
+                .iter()
+                .filter(|later| {
+                    later.id > entry.id
+                        && !undoing.iter().any(|other| other.id == later.id)
+                        && target_of(&later.operation).as_ref() == Some(&target)
+                })
+                .max_by_key(|later| later.id)
+                .map(|later| Overwrite {
+                    entry: entry.id,
+                    later: later.clone(),
+                })
+        })
+        .collect())
+}
+
+#[cfg(test)]
+mod overwrite_tests {
+    use super::*;
+    use crate::fakes::FakeJournal;
+    use crate::registry::{RegistryHive, RegistryValue};
+    use crate::service::ServiceStartType;
+
+    fn set(journal: &FakeJournal, batch: BatchId, name: &str, value: u32) -> EntryId {
+        let id = journal
+            .record_pending(NewEntry {
+                batch,
+                timestamp: Timestamp::from_unix_millis(1),
+                source: Source::Manual,
+                operation: Operation::SetRegistryValue {
+                    target: RegistryValueRef::new(
+                        RegistryHive::CurrentUser,
+                        r"Software\VoltTest",
+                        name,
+                    ),
+                    value: RegistryValue::Dword(value),
+                },
+                prior: PriorState::RegistryValue(None),
+            })
+            .unwrap();
+        journal.set_state(id, EntryState::Applied, None).unwrap();
+        id
+    }
+
+    fn undoing(journal: &FakeJournal, ids: &[EntryId]) -> Vec<JournalEntry> {
+        ids.iter()
+            .map(|id| journal.entry(*id).unwrap().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn a_later_change_to_the_same_value_is_named() {
+        let journal = FakeJournal::new();
+        let first = set(&journal, BatchId(1), "A", 1);
+        let _other = set(&journal, BatchId(2), "B", 1);
+        let second = set(&journal, BatchId(3), "A", 2);
+        let third = set(&journal, BatchId(4), "A", 3);
+        let found = overwrites_of(&journal, &undoing(&journal, &[first])).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].entry, first);
+        assert_eq!(found[0].later.id, third);
+        // The newest entry has nothing after it.
+        assert!(
+            overwrites_of(&journal, &undoing(&journal, &[third]))
+                .unwrap()
+                .is_empty()
+        );
+        let _ = second;
+    }
+
+    #[test]
+    fn a_later_change_that_is_undone_or_in_the_same_undo_is_not_a_conflict() {
+        let journal = FakeJournal::new();
+        let first = set(&journal, BatchId(1), "A", 1);
+        let second = set(&journal, BatchId(1), "A", 2);
+        let both = undoing(&journal, &[first, second]);
+        assert!(overwrites_of(&journal, &both).unwrap().is_empty());
+        journal
+            .set_state(second, EntryState::Reverted, None)
+            .unwrap();
+        assert!(
+            overwrites_of(&journal, &undoing(&journal, &[first]))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn services_match_by_name_ignoring_case() {
+        let journal = FakeJournal::new();
+        let service = |name: &str| NewEntry {
+            batch: BatchId(1),
+            timestamp: Timestamp::from_unix_millis(1),
+            source: Source::Manual,
+            operation: Operation::SetServiceStartType {
+                service: name.to_owned(),
+                start_type: ServiceStartType::Disabled,
+            },
+            prior: PriorState::ServiceStartType(ServiceStartType::Automatic),
+        };
+        let a = journal.record_pending(service("DiagTrack")).unwrap();
+        let b = journal.record_pending(service("diagtrack")).unwrap();
+        for id in [a, b] {
+            journal.set_state(id, EntryState::Applied, None).unwrap();
+        }
+        let found = overwrites_of(&journal, &undoing(&journal, &[a])).unwrap();
+        assert_eq!(found[0].later.id, b);
+    }
 }

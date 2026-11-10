@@ -487,6 +487,9 @@ pub fn cancel_cleaning_scan(core: &AppCore) {
 }
 
 fn run_view(core: &AppCore, report: &CleanReport) -> CleanRunResult {
+    if report.activity_write_failures > 0 {
+        core.note_history_incomplete();
+    }
     let engine = core.clean_engine();
     let mut groups: Vec<SkipGroup> = Vec::new();
     for skip in report.rules.iter().flat_map(|rule| &rule.skipped) {
@@ -594,6 +597,9 @@ pub fn recycle_bin_status(core: &AppCore) -> Result<RecycleBinView, IpcError> {
 /// The port's error when the bin cannot be read or emptied.
 pub fn empty_recycle_bin(core: &AppCore) -> Result<EmptyBinResult, IpcError> {
     let report = recycle_bin(core)?.empty(Source::Manual)?;
+    if report.activity_write_failed {
+        core.note_history_incomplete();
+    }
     Ok(EmptyBinResult {
         emptied: report.emptied,
         item_count: count64(report.before.item_count),

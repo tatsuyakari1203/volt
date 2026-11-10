@@ -10,7 +10,7 @@ use tauri_specta::Event as _;
 
 use crate::IpcError;
 use crate::api::{
-    self, ActivityExport, ActivityPage, ApplyResult, ExportResult, RevertResult,
+    self, ActivityExport, ActivityPage, ApplyResult, ExportResult, HistoryStatus, RevertResult,
     StartupChangeResult, StartupList, TweakInfo, TweakPlanView, UndoPreview, UndoResult,
 };
 use crate::cleaner::{
@@ -229,6 +229,24 @@ pub(crate) async fn preview_undo_batch(
     batch: String,
 ) -> Result<UndoPreview, IpcError> {
     blocking(&state, move |core| api::preview_undo_batch(core, &batch)).await
+}
+
+/// Tauri command: what undoing one change would do right now, including a later change it would
+/// overwrite. Reads only.
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn preview_undo_entry(
+    state: State<'_, AppState>,
+    entry: String,
+) -> Result<UndoPreview, IpcError> {
+    blocking(&state, move |core| api::preview_undo_entry(core, &entry)).await
+}
+
+/// Tauri command: whether the activity history is complete.
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn history_status(state: State<'_, AppState>) -> Result<HistoryStatus, IpcError> {
+    blocking(&state, api::history_status).await
 }
 
 /// Tauri command: renders the whole activity log as text, for the copy-to-clipboard fallback.
