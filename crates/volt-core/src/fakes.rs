@@ -259,7 +259,14 @@ impl FileSystem for FakeFileSystem {
         Ok(lock(&self.entries).get(path).copied())
     }
 
-    fn move_to_trash(&self, path: &Path) -> Result<(), PortError> {
+    fn move_to_trash(&self, root: &Path, path: &Path) -> Result<(), PortError> {
+        if !path.starts_with(root) {
+            return Err(PortError::InvalidInput(format!(
+                "{} is outside {}",
+                path.display(),
+                root.display()
+            )));
+        }
         if lock(&self.entries).remove(path).is_none() {
             return Err(PortError::NotFound(path.display().to_string()));
         }
@@ -672,11 +679,16 @@ mod tests {
                 is_dir: false
             }))
         );
-        fs.move_to_trash(path).expect("trash");
+        let root = Path::new("C:/Temp");
+        assert!(matches!(
+            fs.move_to_trash(Path::new("C:/Other"), path),
+            Err(PortError::InvalidInput(_))
+        ));
+        fs.move_to_trash(root, path).expect("trash");
         assert_eq!(fs.stat(path), Ok(None));
         assert_eq!(fs.trashed(), [path.to_path_buf()]);
         assert!(matches!(
-            fs.move_to_trash(path),
+            fs.move_to_trash(root, path),
             Err(PortError::NotFound(_))
         ));
     }

@@ -1,2 +1,9 @@
 [files]
 extend-exclude = ["pnpm-lock.yaml", "Cargo.lock", ".backlog/config.yml"]
+
+[default.extend-identifiers]
+# Win32 IFileOperation flag names (FOF_* / FOFX_*), used by volt-win.
+FOF_ALLOWUNDO = "FOF_ALLOWUNDO"
+FOF_NOCONFIRMATION = "FOF_NOCONFIRMATION"
+FOF_NOERRORUI = "FOF_NOERRORUI"
+FOF_SILENT = "FOF_SILENT"
