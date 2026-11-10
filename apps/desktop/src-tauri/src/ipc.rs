@@ -50,6 +50,11 @@ pub enum IpcError {
         /// Human-readable detail.
         message: String,
     },
+    /// A command did not finish in time and was stopped.
+    TimedOut {
+        /// Human-readable detail.
+        message: String,
+    },
     /// Any other failure.
     Other {
         /// Human-readable detail.
@@ -66,6 +71,7 @@ impl IpcError {
             | Self::AccessDenied { message }
             | Self::Unsupported { message }
             | Self::InvalidInput { message }
+            | Self::TimedOut { message }
             | Self::Other { message } => message,
         }
     }
@@ -78,6 +84,7 @@ impl From<PortError> for IpcError {
             PortError::AccessDenied(message) => Self::AccessDenied { message },
             PortError::Unsupported(message) => Self::Unsupported { message },
             PortError::InvalidInput(message) => Self::InvalidInput { message },
+            PortError::TimedOut(message) => Self::TimedOut { message },
             // `PortError` is non-exhaustive: a variant added later degrades to `Other` with its
             // own message until the UI learns about it.
             other => Self::Other {
@@ -94,6 +101,7 @@ fn kinded(port: &PortError, message: String) -> IpcError {
         PortError::AccessDenied(_) => IpcError::AccessDenied { message },
         PortError::Unsupported(_) => IpcError::Unsupported { message },
         PortError::InvalidInput(_) => IpcError::InvalidInput { message },
+        PortError::TimedOut(_) => IpcError::TimedOut { message },
         // `PortError` is non-exhaustive: a variant added later degrades to `Other`.
         _ => IpcError::Other { message },
     }
@@ -292,6 +300,12 @@ mod tests {
                 PortError::InvalidInput("path".into()),
                 IpcError::InvalidInput {
                     message: "path".into(),
+                },
+            ),
+            (
+                PortError::TimedOut("slow".into()),
+                IpcError::TimedOut {
+                    message: "slow".into(),
                 },
             ),
             (

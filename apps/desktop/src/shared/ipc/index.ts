@@ -138,6 +138,8 @@ export function describeIpcError(error: IpcError): string {
       return `Not supported: ${error.message}`;
     case 'invalidInput':
       return `Invalid input: ${error.message}`;
+    case 'timedOut':
+      return `Timed out: ${error.message}`;
     case 'other':
       return error.message;
     default:

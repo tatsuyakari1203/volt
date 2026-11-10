@@ -79,6 +79,7 @@ describe('describeIpcError', () => {
     [{ kind: 'accessDenied', message: 'b' }, 'Access denied: b'],
     [{ kind: 'unsupported', message: 'c' }, 'Not supported: c'],
     [{ kind: 'invalidInput', message: 'd' }, 'Invalid input: d'],
+    [{ kind: 'timedOut', message: 'f' }, 'Timed out: f'],
     [{ kind: 'other', message: 'e' }, 'e'],
   ])('describes %j', (error, text) => {
     expect(describeIpcError(error)).toBe(text);

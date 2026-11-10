@@ -1207,6 +1207,10 @@ export type IpcError =
  */
 { kind: "invalidInput"; message: string } | 
 /**
+ * A command did not finish in time and was stopped.
+ */
+{ kind: "timedOut"; message: string } | 
+/**
  * Any other failure.
  */
 { kind: "other"; message: string }

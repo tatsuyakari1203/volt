@@ -31,7 +31,7 @@ mod services;
 mod version;
 mod wide;
 
-pub use command::{CommandError, DEFAULT_MAX_OUTPUT, DEFAULT_TIMEOUT, WinCommands};
+pub use command::{DEFAULT_MAX_OUTPUT, DEFAULT_TIMEOUT, WinCommands};
 pub use files::WinFileSystem;
 pub use folders::WinKnownFolders;
 pub use memory::WinMemory;

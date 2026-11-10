@@ -23,6 +23,9 @@ pub enum PortError {
     /// The request itself is malformed (bad key path, mismatched prior state).
     #[error("invalid input: {0}")]
     InvalidInput(String),
+    /// A command did not finish in time and was stopped.
+    #[error("timed out: {0}")]
+    TimedOut(String),
     /// Any other failure, with a human-readable message.
     #[error("{0}")]
     Other(String),

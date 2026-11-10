@@ -92,7 +92,7 @@ pub use clean::{
     RecycleBin, RecycleBinManager, RecycleBinStatus, RuleClean, RuleScan, RulesError, ScanError,
     ScanFailure, ScanObserver, SkipReason,
 };
-pub use command::{Command, CommandOutput, Commands};
+pub use command::{Command, CommandOutput, Commands, MAX_TIMEOUT_SECS};
 pub use error::{ExecError, PlanError, PortError, RevertError};
 pub use executor::{
     ApplyReport, Executor, ItemOutcome, ItemStatus, ReconcileOutcome, ReconcileReport, Resolution,

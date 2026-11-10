@@ -290,6 +290,7 @@ pub fn error_class(error: &PortError) -> &'static str {
         PortError::AccessDenied(_) => "access denied",
         PortError::Unsupported(_) => "unsupported",
         PortError::InvalidInput(_) => "invalid input",
+        PortError::TimedOut(_) => "timed out",
         PortError::Other(_) => "error",
     }
 }

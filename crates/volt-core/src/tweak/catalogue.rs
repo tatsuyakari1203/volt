@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use toml::{Table, Value};
 
 use super::definition::{Category, RestartRequirement, Tweak, TweakStep};
-use crate::command::Command;
+use crate::command::{Command, MAX_TIMEOUT_SECS};
 use crate::label::{Evidence, Risk};
 use crate::registry::{RegistryHive, RegistryValue, RegistryView};
 use crate::service::ServiceStartType;
@@ -211,6 +211,7 @@ impl Catalogue {
     /// apply = { program = "powercfg", args = ["/hibernate", "off"] }
     /// revert = { program = "powercfg", args = ["/hibernate", "on"] }   # required
     /// off = { program = "powercfg", args = ["/hibernate", "on"] }      # optional: what a reset runs
+    /// # Any command table may add `timeout_secs = 120` (1 to 600; the default is the adapter's).
     /// ```
     ///
     /// A tweak can be reset (turned off although Volt did not apply it) only when every step says
@@ -613,7 +614,7 @@ impl Reader<'_> {
             return None;
         };
         let inner = format!("{field}.");
-        self.only_keys(command_table, &inner, &["program", "args"]);
+        self.only_keys(command_table, &inner, &["program", "args", "timeout_secs"]);
         let mut program = self.text(command_table, &inner, "program", false);
         if program
             .as_deref()
@@ -639,10 +640,32 @@ impl Reader<'_> {
             );
             return None;
         }
+        let timeout_secs = match command_table.get("timeout_secs") {
+            None => None,
+            Some(value) => Some(self.timeout_secs(value, format!("{inner}timeout_secs"))?),
+        };
         Some(Command {
             program: program?,
             args: args?,
+            timeout_secs,
         })
+    }
+
+    /// A command's own time limit: whole seconds from 1 to [`MAX_TIMEOUT_SECS`].
+    fn timeout_secs(&mut self, value: &Value, field: String) -> Option<u32> {
+        let secs = value
+            .as_integer()
+            .and_then(|n| u32::try_from(n).ok())
+            .filter(|n| (1..=MAX_TIMEOUT_SECS).contains(n));
+        if secs.is_none() {
+            self.report(
+                field,
+                IssueKind::Invalid(format!(
+                    "must be a whole number of seconds from 1 to {MAX_TIMEOUT_SECS}"
+                )),
+            );
+        }
+        secs
     }
 
     /// Two steps that change the same registry value or service.
