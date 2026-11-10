@@ -416,10 +416,14 @@ fn disabling_writes_the_windows_record_through_the_journal_and_reads_back_disabl
         f.system.registry.get(&user_run("Sample Sync")),
         Some(RegistryValue::Sz(r"C:\s.exe".into()))
     );
-    // The journal holds the previous value, "there was none", under the label.
+    // The journal holds the previous value, "there was none" (and that the approval key did not
+    // exist either, so undoing removes the empty keys), under the label.
     let recorded = f.system.journal.entry(entry).expect("read").expect("entry");
     assert_eq!(recorded.state, EntryState::Applied);
-    assert_eq!(recorded.prior, PriorState::RegistryValue(None));
+    assert_eq!(
+        recorded.prior,
+        PriorState::RegistryValueInNewKey { missing_levels: 3 }
+    );
     assert_eq!(
         f.system
             .journal

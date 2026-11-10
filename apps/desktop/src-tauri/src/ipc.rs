@@ -135,6 +135,7 @@ impl From<TweakError> for IpcError {
                 ..
             } => Self::NotFound { message },
             TweakError::NothingToReset(_)
+            | TweakError::AppliedByVolt(_)
             | TweakError::Revert {
                 error: RevertError::NotRevertible(_),
                 ..

@@ -10,7 +10,9 @@ use crate::error::{ExecError, PortError};
 use crate::executor::ItemStatus;
 use crate::fakes::{Event, FakeSystem};
 use crate::journal::{EntryState, Journal, Source};
-use crate::registry::{Registry, RegistryHive, RegistryValue, RegistryValueRef};
+use crate::registry::{
+    Registry, RegistryHive, RegistryKeyRef, RegistryValue, RegistryValueRef, RegistryView,
+};
 use crate::service::ServiceStartType;
 use crate::{Evidence, Risk, Services};
 
@@ -155,6 +157,7 @@ fn a_valid_definition_loads_with_every_field() {
             name: "Flag".to_owned(),
             view: crate::RegistryView::Native,
             value: RegistryValue::Dword(0),
+            off: None,
         }
     );
     assert!(matches!(tweak.steps[3], TweakStep::Command { .. }));
@@ -1299,4 +1302,518 @@ fn a_tweak_with_a_service_or_command_cannot_be_reset() {
         Err(TweakError::NothingToReset("sample-tweak".to_owned()))
     );
     assert_before(&system);
+}
+
+// ---- registry key steps -------------------------------------------------------------------
+
+/// A key that has to exist, and a value in it.
+const KEY_TWEAK: &str = r#"
+[[tweak]]
+id = "key-tweak"
+title = "Key tweak"
+description = "A key and a value in it."
+category = "appearance"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "A preference."
+
+[[tweak.steps]]
+kind = "registry_key"
+hive = "HKCU"
+subkey = 'Software\VoltTest\Keys\Made'
+exists = true
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\VoltTest\Keys\Made'
+name = "Flag"
+value = { dword = 1 }
+"#;
+
+/// A key that has to be absent.
+const GONE_TWEAK: &str = r#"
+[[tweak]]
+id = "gone-tweak"
+title = "Gone tweak"
+description = "A key that is deleted."
+category = "appearance"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "A preference."
+
+[[tweak.steps]]
+kind = "registry_key"
+hive = "HKCU"
+subkey = 'Software\VoltTest\Keys\Gone'
+exists = false
+"#;
+
+/// A key below `HKCU\Software\VoltTest\Keys`; an empty `path` is that key itself.
+fn key_at(path: &str) -> RegistryKeyRef {
+    let subkey = if path.is_empty() {
+        r"Software\VoltTest\Keys".to_owned()
+    } else {
+        format!(r"Software\VoltTest\Keys\{path}")
+    };
+    RegistryKeyRef::new(RegistryHive::CurrentUser, subkey, RegistryView::Native)
+}
+
+fn exists_at(system: &FakeSystem, subkey: &str) -> bool {
+    system
+        .registry
+        .key_exists(RegistryHive::CurrentUser, subkey, RegistryView::Native)
+        .expect("the fake answers")
+}
+
+fn key_exists(system: &FakeSystem, path: &str) -> bool {
+    exists_at(system, &key_at(path).subkey)
+}
+
+#[test]
+fn a_key_step_creates_the_key_and_a_revert_removes_what_the_apply_created() {
+    let system = FakeSystem::new();
+    let catalogue = catalogue(KEY_TWEAK);
+    let engine = engine(&system, &catalogue);
+    assert_eq!(engine.state("key-tweak"), Ok(TweakState::NotApplied));
+    let plan = engine.plan("key-tweak").expect("plan");
+    assert_eq!(plan.items.len(), 2);
+    assert_eq!(plan.items[0].preview.current, "key missing");
+    assert_eq!(plan.items[0].preview.target, "key exists");
+
+    let report = engine.apply("key-tweak", Source::Manual).expect("apply");
+    assert_eq!(report.outcome, ApplyOutcome::Applied);
+    assert_eq!(engine.state("key-tweak"), Ok(TweakState::Applied));
+    assert!(key_exists(&system, "Made"));
+    assert!(
+        system
+            .log
+            .events()
+            .contains(&Event::RegistryKeyCreate(key_at("Made")))
+    );
+
+    assert!(engine.revert("key-tweak").expect("revert").is_complete());
+    // The key, and the parents the apply had to create, are gone: nothing is left behind.
+    assert!(!key_exists(&system, "Made"));
+    assert!(!key_exists(&system, ""));
+    assert!(!exists_at(&system, r"Software\VoltTest"));
+    assert!(!exists_at(&system, "Software"));
+    assert_eq!(engine.state("key-tweak"), Ok(TweakState::NotApplied));
+}
+
+#[test]
+fn a_revert_keeps_a_key_that_existed_before_with_its_other_values() {
+    let system = FakeSystem::new();
+    let catalogue = catalogue(KEY_TWEAK);
+    let engine = engine(&system, &catalogue);
+    let other = key_at("Made").value("Other");
+    system.registry.set(&other, RegistryValue::Dword(5));
+
+    // The key is there already, so only the value is applied.
+    assert_eq!(engine.state("key-tweak"), Ok(TweakState::Partial));
+    engine.apply("key-tweak", Source::Manual).expect("apply");
+    assert!(
+        !system
+            .log
+            .events()
+            .iter()
+            .any(|event| matches!(event, Event::RegistryKeyCreate(_)))
+    );
+    assert!(engine.revert("key-tweak").expect("revert").is_complete());
+
+    assert!(key_exists(&system, "Made"));
+    assert_eq!(system.registry.get(&other), Some(RegistryValue::Dword(5)));
+    assert_eq!(system.registry.get(&key_at("Made").value("Flag")), None);
+}
+
+#[test]
+fn a_revert_does_not_remove_a_key_that_holds_something_it_did_not_write() {
+    let system = FakeSystem::new();
+    let catalogue = catalogue(KEY_TWEAK);
+    let engine = engine(&system, &catalogue);
+    engine.apply("key-tweak", Source::Manual).expect("apply");
+    // Another program puts a subkey into the key, and a value next to it in the parent.
+    system
+        .registry
+        .set(&key_at(r"Made\Sub").value("x"), RegistryValue::Dword(1));
+    system
+        .registry
+        .set(&key_at("").value("Parent"), RegistryValue::Dword(2));
+
+    assert!(engine.revert("key-tweak").expect("revert").is_complete());
+    assert_eq!(system.registry.get(&key_at("Made").value("Flag")), None);
+    assert!(key_exists(&system, "Made"), "a key with a subkey stays");
+    assert!(key_exists(&system, r"Made\Sub"));
+    assert_eq!(
+        system.registry.get(&key_at("").value("Parent")),
+        Some(RegistryValue::Dword(2))
+    );
+}
+
+#[test]
+fn a_value_step_that_had_to_create_its_key_removes_only_what_it_created() {
+    let system = FakeSystem::new();
+    let catalogue = catalogue(REGISTRY_ONLY);
+    let engine = engine(&system, &catalogue);
+    // `Software\VoltTest` exists already, `Tweaks` below it does not.
+    system.registry.add_key(
+        RegistryHive::CurrentUser,
+        r"Software\VoltTest",
+        RegistryView::Native,
+    );
+
+    engine.apply("reg-tweak", Source::Manual).expect("apply");
+    assert!(engine.revert("reg-tweak").expect("revert").is_complete());
+
+    assert!(!exists_at(&system, r"Software\VoltTest\Tweaks"));
+    assert!(exists_at(&system, r"Software\VoltTest"));
+    assert!(exists_at(&system, "Software"));
+}
+
+#[test]
+fn a_failed_step_after_a_key_step_rolls_the_created_keys_back() {
+    let system = FakeSystem::new();
+    let catalogue = catalogue(KEY_TWEAK);
+    let engine = engine(&system, &catalogue);
+    system.registry.fail_on(
+        &key_at("Made").value("Flag"),
+        PortError::AccessDenied("test".to_owned()),
+    );
+
+    let report = engine.apply("key-tweak", Source::Manual).expect("report");
+    assert_eq!(report.outcome, ApplyOutcome::RolledBack);
+    assert!(
+        !key_exists(&system, "Made"),
+        "the key the first step made is gone again"
+    );
+    assert!(!exists_at(&system, "Software"));
+}
+
+#[test]
+fn a_key_delete_step_records_the_key_and_a_revert_puts_it_back_exactly() {
+    let system = FakeSystem::new();
+    let catalogue = catalogue(GONE_TWEAK);
+    let engine = engine(&system, &catalogue);
+    let gone = |name: &str| key_at("Gone").value(name);
+    system.registry.set(&gone("A"), RegistryValue::Dword(1));
+    system
+        .registry
+        .set(&gone("B"), RegistryValue::Sz("two".to_owned()));
+    system
+        .registry
+        .set(&gone(""), RegistryValue::Binary(vec![1, 2, 3]));
+    let before = system.registry.list_values(&key_at("Gone")).expect("lists");
+    assert_eq!(before.len(), 3);
+
+    assert_eq!(engine.state("gone-tweak"), Ok(TweakState::NotApplied));
+    assert_eq!(
+        engine.plan("gone-tweak").expect("plan").items[0]
+            .preview
+            .current,
+        "key exists, 3 values"
+    );
+    engine.apply("gone-tweak", Source::Manual).expect("apply");
+    assert_eq!(engine.state("gone-tweak"), Ok(TweakState::Applied));
+    assert!(!key_exists(&system, "Gone"));
+    assert!(
+        system
+            .log
+            .events()
+            .contains(&Event::RegistryKeyDelete(key_at("Gone")))
+    );
+
+    assert!(engine.revert("gone-tweak").expect("revert").is_complete());
+    assert!(key_exists(&system, "Gone"));
+    assert_eq!(
+        system.registry.list_values(&key_at("Gone")).expect("lists"),
+        before,
+        "every value is back with its type"
+    );
+}
+
+#[test]
+fn a_key_with_subkeys_or_more_data_than_can_be_recorded_is_never_deleted() {
+    let catalogue = catalogue(GONE_TWEAK);
+
+    // A subkey.
+    let system = FakeSystem::new();
+    let engine = engine(&system, &catalogue);
+    system
+        .registry
+        .set(&key_at(r"Gone\Child").value("x"), RegistryValue::Dword(1));
+    let report = engine.apply("gone-tweak", Source::Manual).expect("report");
+    assert_eq!(report.outcome, ApplyOutcome::RolledBack);
+    let executor_report = report.report.expect("executor report");
+    assert!(matches!(
+        executor_report.outcomes[0].status,
+        ItemStatus::Failed {
+            error: ExecError::Apply {
+                error: PortError::InvalidInput(_),
+                ..
+            },
+            ..
+        }
+    ));
+    assert!(key_exists(&system, r"Gone\Child"));
+
+    // Too many values to record.
+    let system = FakeSystem::new();
+    let engine = self::engine(&system, &catalogue);
+    for n in 0..=crate::registry::MAX_RECORDED_VALUES {
+        system.registry.set(
+            &key_at("Gone").value(format!("v{n}")),
+            RegistryValue::Dword(1),
+        );
+    }
+    let report = engine.apply("gone-tweak", Source::Manual).expect("report");
+    assert_eq!(report.outcome, ApplyOutcome::RolledBack);
+    assert_eq!(
+        system
+            .registry
+            .list_values(&key_at("Gone"))
+            .expect("lists")
+            .len(),
+        crate::registry::MAX_RECORDED_VALUES + 1,
+        "nothing was deleted"
+    );
+}
+
+// ---- off values and reset -----------------------------------------------------------------
+
+/// Every step kind, with a Windows default where one is known.
+const OFF_TWEAK: &str = r#"
+[[tweak]]
+id = "off-tweak"
+title = "Off tweak"
+description = "Every step says what it goes back to."
+category = "appearance"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "A preference."
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\VoltTest\Tweaks'
+name = "WithDefault"
+value = { dword = 0 }
+off = { dword = 3 }
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\VoltTest\Tweaks'
+name = "WithoutDefault"
+value = { dword = 0 }
+
+[[tweak.steps]]
+kind = "registry_delete"
+hive = "HKCU"
+subkey = 'Software\VoltTest\Tweaks'
+name = "Legacy"
+off = { sz = "legacy" }
+
+[[tweak.steps]]
+kind = "service"
+service = "SampleSvc"
+start_type = "disabled"
+off = "automatic_delayed"
+
+[[tweak.steps]]
+kind = "command"
+detect = { program = "sample-tool", args = ["--is-enabled"] }
+apply = { program = "sample-tool", args = ["--enable"] }
+revert = { program = "sample-tool", args = ["--disable"] }
+off = { program = "sample-tool", args = ["--turn-off"] }
+"#;
+
+/// The machine as `OFF_TWEAK` leaves it, set outside Volt.
+fn set_outside_volt() -> FakeSystem {
+    let system = FakeSystem::new();
+    system
+        .registry
+        .set(&registry_ref("WithDefault"), RegistryValue::Dword(0));
+    system
+        .registry
+        .set(&registry_ref("WithoutDefault"), RegistryValue::Dword(0));
+    system.services.add("SampleSvc", ServiceStartType::Disabled);
+    system.commands.add_toggle(
+        detect(),
+        apply_cmd(),
+        Command::new("sample-tool", ["--turn-off"]),
+        true,
+    );
+    system
+}
+
+#[test]
+fn a_reset_writes_the_declared_default_removes_a_value_without_one_and_can_be_undone() {
+    let system = set_outside_volt();
+    let catalogue = catalogue(OFF_TWEAK);
+    let engine = engine(&system, &catalogue);
+    assert_eq!(engine.state("off-tweak"), Ok(TweakState::Applied));
+
+    let plan = engine.reset_plan("off-tweak").expect("plan").expect("some");
+    assert_eq!(plan.items.len(), 5);
+    // The last step goes first.
+    assert_eq!(plan.items[0].preview.target, "not applied");
+
+    let report = engine.reset("off-tweak", Source::Manual).expect("reset");
+    assert_eq!(report.outcome, ApplyOutcome::Applied);
+    assert_eq!(engine.state("off-tweak"), Ok(TweakState::NotApplied));
+    assert_eq!(
+        system.registry.get(&registry_ref("WithDefault")),
+        Some(RegistryValue::Dword(3)),
+        "the declared default is written"
+    );
+    assert_eq!(
+        system.registry.get(&registry_ref("WithoutDefault")),
+        None,
+        "without one the value is removed"
+    );
+    assert_eq!(
+        system.registry.get(&registry_ref("Legacy")),
+        Some(RegistryValue::Sz("legacy".to_owned())),
+        "a deleted value comes back as its default"
+    );
+    assert_eq!(
+        system.services.start_type("SampleSvc"),
+        Ok(ServiceStartType::AutomaticDelayed)
+    );
+    assert_eq!(system.commands.is_on(&detect()), Some(false));
+
+    // A reset is not something revert switches back on, but the journal can undo it.
+    assert_eq!(
+        engine.revert("off-tweak"),
+        Err(TweakError::NothingToRevert("off-tweak".to_owned()))
+    );
+    let batches = system
+        .journal
+        .batches_with_label("off-tweak:reset")
+        .expect("batches");
+    assert_eq!(batches.len(), 1);
+    let undone = engine
+        .executor()
+        .revert_batch(batches[0], Source::Manual, None)
+        .expect("undo");
+    assert!(undone.is_complete());
+    assert_eq!(engine.state("off-tweak"), Ok(TweakState::Applied));
+    assert_eq!(system.registry.get(&registry_ref("Legacy")), None);
+    assert_eq!(
+        system.registry.get(&registry_ref("WithDefault")),
+        Some(RegistryValue::Dword(0))
+    );
+    assert_eq!(
+        system.services.start_type("SampleSvc"),
+        Ok(ServiceStartType::Disabled)
+    );
+    assert_eq!(system.commands.is_on(&detect()), Some(true));
+}
+
+#[test]
+fn a_reset_of_a_key_step_deletes_the_key_after_the_value_in_it() {
+    let system = FakeSystem::new();
+    let catalogue = catalogue(KEY_TWEAK);
+    let engine = engine(&system, &catalogue);
+    system
+        .registry
+        .set(&key_at("Made").value("Flag"), RegistryValue::Dword(1));
+    assert_eq!(engine.state("key-tweak"), Ok(TweakState::Applied));
+
+    let report = engine.reset("key-tweak", Source::Manual).expect("reset");
+    assert_eq!(report.outcome, ApplyOutcome::Applied);
+    assert!(!key_exists(&system, "Made"));
+    assert_eq!(engine.state("key-tweak"), Ok(TweakState::NotApplied));
+
+    // The journal brings the key back with its value.
+    let batches = system
+        .journal
+        .batches_with_label("key-tweak:reset")
+        .expect("batches");
+    engine
+        .executor()
+        .revert_batch(batches[0], Source::Manual, None)
+        .expect("undo");
+    assert_eq!(
+        system.registry.get(&key_at("Made").value("Flag")),
+        Some(RegistryValue::Dword(1))
+    );
+    assert_eq!(engine.state("key-tweak"), Ok(TweakState::Applied));
+}
+
+#[test]
+fn a_tweak_that_volt_applied_is_not_reset_because_undo_is_the_way_back() {
+    let system = FakeSystem::new();
+    let catalogue = catalogue(KEY_TWEAK);
+    let engine = engine(&system, &catalogue);
+    engine.apply("key-tweak", Source::Manual).expect("apply");
+    assert_eq!(engine.applied_by_volt("key-tweak"), Ok(true));
+    assert_eq!(
+        engine.reset("key-tweak", Source::Manual),
+        Err(TweakError::AppliedByVolt("key-tweak".to_owned()))
+    );
+    assert!(key_exists(&system, "Made"), "nothing was changed");
+    // Undo is.
+    assert!(engine.revert("key-tweak").expect("revert").is_complete());
+    assert_eq!(engine.state("key-tweak"), Ok(TweakState::NotApplied));
+}
+
+#[test]
+fn a_tweak_with_a_step_that_has_no_declared_default_cannot_be_reset() {
+    // A key that has to be absent: Volt does not know what to put there.
+    let catalogue = catalogue(GONE_TWEAK);
+    let system = FakeSystem::new();
+    let engine = engine(&system, &catalogue);
+    assert_eq!(engine.reset_plan("gone-tweak"), Ok(None));
+    assert_eq!(
+        engine.reset("gone-tweak", Source::Manual),
+        Err(TweakError::NothingToReset("gone-tweak".to_owned()))
+    );
+}
+
+#[test]
+fn off_values_and_key_steps_are_validated_by_name() {
+    let step = |body: &str| tweak_with(&[], &format!("[[tweak.steps]]\n{body}\n"));
+    // `off` equal to the value could never be turned off.
+    let issue = first_issue(&step(
+        "kind = \"registry_set\"\nhive = \"HKCU\"\nsubkey = 'Software\\X'\nname = \"V\"\nvalue = { dword = 0 }\noff = { dword = 0 }",
+    ));
+    assert_eq!(issue.field, "steps[0].off");
+    let issue = first_issue(&step(
+        "kind = \"service\"\nservice = \"S\"\nstart_type = \"disabled\"\noff = \"disabled\"",
+    ));
+    assert_eq!(issue.field, "steps[0].off");
+    // A key step needs `exists`, knows no `off` and takes a well-formed path.
+    let issue = first_issue(&step(
+        "kind = \"registry_key\"\nhive = \"HKCU\"\nsubkey = 'Software\\X'",
+    ));
+    assert_eq!(issue.field, "steps[0].exists");
+    assert_eq!(issue.kind, IssueKind::MissingField);
+    let issue = first_issue(&step(
+        "kind = \"registry_key\"\nhive = \"HKCU\"\nsubkey = 'Software\\X'\nexists = true\noff = true",
+    ));
+    assert_eq!(issue.field, "steps[0].off");
+    assert_eq!(issue.kind, IssueKind::UnknownField);
+    let issue = first_issue(&step(
+        "kind = \"registry_key\"\nhive = \"HKCU\"\nsubkey = 'Software\\\\X'\nexists = true",
+    ));
+    assert_eq!(issue.field, "steps[0].subkey");
+    // The same key twice is one step too many.
+    let issue = first_issue(&step(
+        "kind = \"registry_key\"\nhive = \"HKCU\"\nsubkey = 'Software\\X'\nexists = true\n\n[[tweak.steps]]\nkind = \"registry_key\"\nhive = \"HKCU\"\nsubkey = 'software\\x'\nexists = false",
+    ));
+    assert_eq!(issue.kind, IssueKind::DuplicateTarget { first_step: 0 });
+}
+
+#[test]
+fn the_serialized_form_of_key_steps_and_off_values_loads_back_unchanged() {
+    for (text, id) in [(OFF_TWEAK, "off-tweak"), (KEY_TWEAK, "key-tweak")] {
+        let original = catalogue(text);
+        let tweak = toml::Value::try_from(original.get(id).expect("tweak"))
+            .expect("serializes to TOML data");
+        let mut root = toml::Table::new();
+        root.insert("tweak".to_owned(), toml::Value::Array(vec![tweak]));
+        let reloaded = Catalogue::from_root(&root).expect("reloads");
+        assert_eq!(reloaded, *original, "{id}");
+    }
 }

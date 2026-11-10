@@ -388,7 +388,7 @@ fn restore_words_follow_the_redaction_rule() {
 fn reconcile_pending_records_what_it_decided() {
     let system = FakeSystem::new();
     let operation = set_dword("Flag", 1);
-    let prior = PriorState::RegistryValue(None);
+    let prior = operation.detect(&system.ports()).expect("detect");
     let batch = system.journal.new_batch(None).expect("batch");
     let pending = |system: &FakeSystem| {
         system
@@ -546,6 +546,7 @@ fn a_secret_in_a_value_an_argument_or_an_output_appears_nowhere() {
         detect: Command::new("tool.exe", ["detect", SECRET]),
         apply: Command::new("tool.exe", ["apply", SECRET]),
         revert: Command::new("tool.exe", ["revert", SECRET]),
+        effect_after: true,
     });
     let plan = plan_with(&ports, operations[..4].to_vec()).with_label("tweak.secret");
     let report = executor

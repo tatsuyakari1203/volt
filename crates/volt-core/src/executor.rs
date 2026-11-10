@@ -402,7 +402,7 @@ impl Executor {
                     );
                     Resolution::NeverApplied
                 }
-                Ok(current) if current == entry.operation.target_state() => {
+                Ok(current) if entry.operation.is_target(&current) => {
                     self.journal
                         .set_state(entry.id, EntryState::Applied, None)?;
                     self.note(

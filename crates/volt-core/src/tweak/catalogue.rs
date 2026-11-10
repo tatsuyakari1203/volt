@@ -185,22 +185,37 @@ impl Catalogue {
     /// name = "HibernateEnabled"         # "" is the key's default value
     /// view = "native"                   # optional: native, bit32, bit64
     /// value = { dword = 0 }             # dword, qword, sz, expand_sz, multi_sz, binary
+    /// off = { dword = 1 }               # optional: the Windows default, which a reset writes;
+    ///                                   # without it a reset removes the value
     ///
     /// [[tweak.steps]]
-    /// kind = "registry_delete"          # same fields, without `value`
+    /// kind = "registry_delete"          # same fields, without `value`; `off` is what a reset
+    ///                                   # writes back, and without it a reset is not possible
+    ///
+    /// [[tweak.steps]]
+    /// kind = "registry_key"             # a key that must exist, or must be absent
+    /// hive = "HKCU"                     # (same `hive`, `subkey` and `view` as above)
+    /// subkey = 'Software\Example'
+    /// exists = true                     # false: the key must not exist (no reset then)
     ///
     /// [[tweak.steps]]
     /// kind = "service"
     /// service = "SysMain"
     /// start_type = "disabled"           # boot, system, automatic, automatic_delayed,
     ///                                   # manual, disabled
+    /// off = "automatic"                 # optional: the Windows default a reset sets
     ///
     /// [[tweak.steps]]
     /// kind = "command"                  # program + argument list, never a shell string
     /// detect = { program = "powercfg", args = ["/query"] }   # exit 0 = applied, 1 = not
     /// apply = { program = "powercfg", args = ["/hibernate", "off"] }
     /// revert = { program = "powercfg", args = ["/hibernate", "on"] }   # required
+    /// off = { program = "powercfg", args = ["/hibernate", "on"] }      # optional: what a reset runs
     /// ```
+    ///
+    /// A tweak can be reset (turned off although Volt did not apply it) only when every step says
+    /// what it goes back to: a set step always does, the others need `off` (a key step that makes
+    /// a key exist is deleted).
     ///
     /// The whole catalogue is rejected when anything is wrong, and the error
     /// lists every problem (tweak id and field path each), not only the first.
@@ -404,73 +419,138 @@ impl Reader<'_> {
     fn step(&mut self, table: &Table, path: &str) -> Option<TweakStep> {
         let kind = self.text(table, path, "kind", false)?;
         match kind.as_str() {
-            "registry_set" => {
-                self.only_keys(
-                    table,
-                    path,
-                    &["kind", "hive", "subkey", "name", "view", "value"],
-                );
-                let target = self.registry_target(table, path);
-                let value = self.parsed::<RegistryValue>(table, path, "value");
-                let (hive, subkey, name, view) = target?;
-                Some(TweakStep::RegistrySet {
-                    hive,
-                    subkey,
-                    name,
-                    view,
-                    value: value?,
-                })
-            }
-            "registry_delete" => {
-                self.only_keys(table, path, &["kind", "hive", "subkey", "name", "view"]);
-                let (hive, subkey, name, view) = self.registry_target(table, path)?;
-                Some(TweakStep::RegistryDelete {
-                    hive,
-                    subkey,
-                    name,
-                    view,
-                })
-            }
-            "service" => {
-                self.only_keys(table, path, &["kind", "service", "start_type"]);
-                let service = self.text(table, path, "service", false);
-                if let Some(name) = &service
-                    && let Some(reason) = service_problem(name)
-                {
-                    self.report(
-                        format!("{path}service"),
-                        IssueKind::Malformed(reason.to_owned()),
-                    );
-                    return None;
-                }
-                let start_type = self.parsed::<ServiceStartType>(table, path, "start_type");
-                Some(TweakStep::Service {
-                    service: service?,
-                    start_type: start_type?,
-                })
-            }
-            "command" => {
-                self.only_keys(table, path, &["kind", "detect", "apply", "revert"]);
-                let detect = self.command(table, path, "detect", IssueKind::MissingField);
-                let apply = self.command(table, path, "apply", IssueKind::MissingField);
-                let revert = self.command(table, path, "revert", IssueKind::MissingRevert);
-                Some(TweakStep::Command {
-                    detect: detect?,
-                    apply: apply?,
-                    revert: revert?,
-                })
-            }
+            "registry_set" => self.registry_set_step(table, path),
+            "registry_delete" => self.registry_delete_step(table, path),
+            "registry_key" => self.registry_key_step(table, path),
+            "service" => self.service_step(table, path),
+            "command" => self.command_step(table, path),
             other => {
                 self.report(
                     format!("{path}kind"),
                     IssueKind::UnknownValue(format!(
                         "unknown step kind `{other}`, expected one of `registry_set`, \
-                         `registry_delete`, `service`, `command`"
+                         `registry_delete`, `registry_key`, `service`, `command`"
                     )),
                 );
                 None
             }
         }
+    }
+
+    fn registry_set_step(&mut self, table: &Table, path: &str) -> Option<TweakStep> {
+        self.only_keys(
+            table,
+            path,
+            &["kind", "hive", "subkey", "name", "view", "value", "off"],
+        );
+        let target = self.registry_target(table, path);
+        let value = self.parsed::<RegistryValue>(table, path, "value");
+        let off = self.parsed_or::<Option<RegistryValue>>(table, path, "off", None);
+        if let (Some(value), Some(Some(off))) = (&value, &off)
+            && !self.off_differs(path, "value", value == off)
+        {
+            return None;
+        }
+        let (hive, subkey, name, view) = target?;
+        Some(TweakStep::RegistrySet {
+            hive,
+            subkey,
+            name,
+            view,
+            value: value?,
+            off: off?,
+        })
+    }
+
+    fn registry_delete_step(&mut self, table: &Table, path: &str) -> Option<TweakStep> {
+        self.only_keys(
+            table,
+            path,
+            &["kind", "hive", "subkey", "name", "view", "off"],
+        );
+        let target = self.registry_target(table, path);
+        let off = self.parsed_or::<Option<RegistryValue>>(table, path, "off", None);
+        let (hive, subkey, name, view) = target?;
+        Some(TweakStep::RegistryDelete {
+            hive,
+            subkey,
+            name,
+            view,
+            off: off?,
+        })
+    }
+
+    fn registry_key_step(&mut self, table: &Table, path: &str) -> Option<TweakStep> {
+        self.only_keys(table, path, &["kind", "hive", "subkey", "view", "exists"]);
+        let hive = self.parsed::<RegistryHive>(table, path, "hive");
+        let subkey = self.subkey(table, path);
+        let view = self.parsed_or(table, path, "view", RegistryView::Native);
+        let exists = self.parsed::<bool>(table, path, "exists");
+        Some(TweakStep::RegistryKey {
+            hive: hive?,
+            subkey: subkey?,
+            view: view?,
+            exists: exists?,
+        })
+    }
+
+    fn service_step(&mut self, table: &Table, path: &str) -> Option<TweakStep> {
+        self.only_keys(table, path, &["kind", "service", "start_type", "off"]);
+        let service = self.text(table, path, "service", false);
+        if let Some(name) = &service
+            && let Some(reason) = service_problem(name)
+        {
+            self.report(
+                format!("{path}service"),
+                IssueKind::Malformed(reason.to_owned()),
+            );
+            return None;
+        }
+        let start_type = self.parsed::<ServiceStartType>(table, path, "start_type");
+        let off = self.parsed_or::<Option<ServiceStartType>>(table, path, "off", None);
+        if let (Some(start_type), Some(Some(off))) = (&start_type, &off)
+            && !self.off_differs(path, "start_type", start_type == off)
+        {
+            return None;
+        }
+        Some(TweakStep::Service {
+            service: service?,
+            start_type: start_type?,
+            off: off?,
+        })
+    }
+
+    fn command_step(&mut self, table: &Table, path: &str) -> Option<TweakStep> {
+        self.only_keys(table, path, &["kind", "detect", "apply", "revert", "off"]);
+        let detect = self.command(table, path, "detect", IssueKind::MissingField);
+        let apply = self.command(table, path, "apply", IssueKind::MissingField);
+        let revert = self.command(table, path, "revert", IssueKind::MissingRevert);
+        let off = if table.contains_key("off") {
+            self.command(table, path, "off", IssueKind::MissingField)
+                .map(Some)
+        } else {
+            Some(None)
+        };
+        Some(TweakStep::Command {
+            detect: detect?,
+            apply: apply?,
+            revert: revert?,
+            off: off?,
+        })
+    }
+
+    /// Reports `off` when it equals what the step sets (`same`): the step could never be turned
+    /// off. Returns whether it is fine.
+    fn off_differs(&mut self, path: &str, field: &str, same: bool) -> bool {
+        if same {
+            self.report(
+                format!("{path}off"),
+                IssueKind::Invalid(format!(
+                    "must differ from `{field}`, or the step could never be turned off"
+                )),
+            );
+        }
+        !same
     }
 
     fn registry_target(
@@ -479,14 +559,7 @@ impl Reader<'_> {
         path: &str,
     ) -> Option<(RegistryHive, String, String, RegistryView)> {
         let hive = self.parsed::<RegistryHive>(table, path, "hive");
-        let mut subkey = self.text(table, path, "subkey", false);
-        if let Some(reason) = subkey.as_deref().and_then(subkey_problem) {
-            self.report(
-                format!("{path}subkey"),
-                IssueKind::Malformed(reason.to_owned()),
-            );
-            subkey = None;
-        }
+        let subkey = self.subkey(table, path);
         let mut name = self.text(table, path, "name", true);
         if name
             .as_deref()
@@ -500,6 +573,19 @@ impl Reader<'_> {
         }
         let view = self.parsed_or(table, path, "view", RegistryView::Native);
         Some((hive?, subkey?, name?, view?))
+    }
+
+    /// The `subkey` field: a well-formed registry path.
+    fn subkey(&mut self, table: &Table, path: &str) -> Option<String> {
+        let subkey = self.text(table, path, "subkey", false)?;
+        if let Some(reason) = subkey_problem(&subkey) {
+            self.report(
+                format!("{path}subkey"),
+                IssueKind::Malformed(reason.to_owned()),
+            );
+            return None;
+        }
+        Some(subkey)
     }
 
     /// A command table: a non-empty `program` and an optional `args` list.
@@ -576,7 +662,11 @@ impl Reader<'_> {
                     subkey,
                     name,
                     view,
+                    ..
                 } => format!("{hive:?}|{view:?}|{subkey}|{name}").to_lowercase(),
+                TweakStep::RegistryKey {
+                    hive, subkey, view, ..
+                } => format!("key|{hive:?}|{view:?}|{subkey}").to_lowercase(),
                 TweakStep::Service { service, .. } => format!("service|{service}").to_lowercase(),
                 TweakStep::Command { .. } => continue,
             };

@@ -166,7 +166,7 @@ export function categoryLabel(category: TweakCategory): string {
 export function describeReset(tweak: TweakInfo, result: RevertResult): Outcome {
   if (result.status === 'reverted') {
     return {
-      message: `"${tweak.title}" is off. Volt removed its value, so Windows uses its own default. You can undo this on the Undo page.`,
+      message: `"${tweak.title}" is off. Volt put it back to the Windows default. You can undo this on the Undo page.`,
       tone: 'done',
       undoable: false,
     };

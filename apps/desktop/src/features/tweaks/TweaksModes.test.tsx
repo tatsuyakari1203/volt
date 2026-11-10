@@ -199,7 +199,7 @@ describe('a tweak that was already on', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Turn off' }));
     expect(ipc.resetTweak).toHaveBeenCalledWith('show-file-extensions');
     await vi.waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('false'));
-    expect(await screen.findByText(/Windows uses its own default/)).toBeTruthy();
+    expect(await screen.findByText(/Windows default/)).toBeTruthy();
   });
 
   it('cannot be switched off when Volt does not know the default', async () => {

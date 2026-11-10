@@ -43,6 +43,10 @@ pub enum Event {
     RegistryWrite(RegistryValueRef),
     /// A registry value was deleted.
     RegistryDelete(RegistryValueRef),
+    /// A registry key was created.
+    RegistryKeyCreate(RegistryKeyRef),
+    /// A registry key was deleted.
+    RegistryKeyDelete(RegistryKeyRef),
     /// A service start type was changed.
     ServiceSetStartType(String, ServiceStartType),
     /// A path was moved to the trash.
@@ -98,7 +102,9 @@ pub struct FakeRegistry {
     /// The spelling of each value name as it was written, for listings.
     names: Mutex<HashMap<Key, String>>,
     failures: Mutex<HashMap<Key, PortError>>,
-    /// Keys that exist without any value in them (see [`FakeRegistry::add_key`]).
+    /// Every key that exists, with its parents, also when it holds no value (see
+    /// [`FakeRegistry::add_key`]). Writing a value creates its key and keeps it after the value is
+    /// deleted, like the real registry.
     keys: Mutex<HashSet<KeyPath>>,
     key_failures: Mutex<HashMap<KeyPath, PortError>>,
     log: EventLog,
@@ -127,8 +133,22 @@ impl FakeRegistry {
 
     fn store(&self, target: &RegistryValueRef, value: RegistryValue) {
         let key = Key::of(target);
+        self.add_path(target.hive, target.view, &key.2);
         lock(&self.names).insert(key.clone(), target.name.clone());
         lock(&self.values).insert(key, value);
+    }
+
+    /// Makes a key and its parents exist. `path` is lower-case.
+    fn add_path(&self, hive: RegistryHive, view: RegistryView, path: &str) {
+        let mut keys = lock(&self.keys);
+        let mut prefix = String::new();
+        for part in path.split('\\').filter(|part| !part.is_empty()) {
+            if !prefix.is_empty() {
+                prefix.push('\\');
+            }
+            prefix.push_str(part);
+            keys.insert((hive, view, prefix.clone()));
+        }
     }
 
     /// Reads a value directly. For asserting in a test.
@@ -150,7 +170,7 @@ impl FakeRegistry {
     /// Makes `subkey` exist without any value in it, like a marker key. Without logging. For
     /// arranging a test.
     pub fn add_key(&self, hive: RegistryHive, subkey: &str, view: RegistryView) {
-        lock(&self.keys).insert((hive, view, subkey.to_lowercase()));
+        self.add_path(hive, view, &subkey.to_lowercase());
     }
 
     /// Makes every [`Registry::key_exists`] of `subkey` fail with `error`.
@@ -226,14 +246,64 @@ impl Registry for FakeRegistry {
         if let Some(error) = lock(&self.key_failures).get(&path) {
             return Err(error.clone());
         }
-        if lock(&self.keys).contains(&path) {
-            return Ok(true);
+        Ok(lock(&self.keys).contains(&path))
+    }
+
+    fn list_subkeys(&self, key: &RegistryKeyRef) -> Result<Vec<String>, PortError> {
+        let prefix = format!("{}\\", key.subkey.to_lowercase());
+        let mut names: Vec<String> = lock(&self.keys)
+            .iter()
+            .filter(|(hive, view, _)| *hive == key.hive && *view == key.view)
+            .filter_map(|(_, _, path)| path.strip_prefix(&prefix))
+            .filter(|rest| !rest.contains('\\'))
+            .map(str::to_owned)
+            .collect();
+        names.sort();
+        Ok(names)
+    }
+
+    fn create_key(&self, key: &RegistryKeyRef) -> Result<(), PortError> {
+        if key.subkey.is_empty() {
+            return Err(PortError::InvalidInput(
+                "a registry key to create or delete must be below a hive".to_owned(),
+            ));
         }
-        // A key also exists when a value lives in it or in one of its descendants.
-        let child_prefix = format!("{}\\", path.2);
-        Ok(lock(&self.values).keys().any(|key| {
-            key.0 == hive && key.1 == view && (key.2 == path.2 || key.2.starts_with(&child_prefix))
-        }))
+        let path = (key.hive, key.view, key.subkey.to_lowercase());
+        let existed = lock(&self.keys).contains(&path);
+        self.add_path(key.hive, key.view, &path.2);
+        if !existed {
+            self.log.push(Event::RegistryKeyCreate(key.clone()));
+        }
+        Ok(())
+    }
+
+    fn delete_key(&self, key: &RegistryKeyRef) -> Result<(), PortError> {
+        if key.subkey.is_empty() {
+            return Err(PortError::InvalidInput(
+                "a registry key to create or delete must be below a hive".to_owned(),
+            ));
+        }
+        let path = (key.hive, key.view, key.subkey.to_lowercase());
+        if !lock(&self.keys).contains(&path) {
+            return Err(PortError::NotFound(key.to_string()));
+        }
+        if !self.list_subkeys(key)?.is_empty() {
+            return Err(PortError::Other(format!("{key} has subkeys")));
+        }
+        let mut values = lock(&self.values);
+        let doomed: Vec<Key> = values
+            .keys()
+            .filter(|k| k.0 == key.hive && k.1 == key.view && k.2 == path.2)
+            .cloned()
+            .collect();
+        let mut names = lock(&self.names);
+        for value in doomed {
+            values.remove(&value);
+            names.remove(&value);
+        }
+        lock(&self.keys).remove(&path);
+        self.log.push(Event::RegistryKeyDelete(key.clone()));
+        Ok(())
     }
 }
 
