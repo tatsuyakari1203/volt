@@ -277,8 +277,8 @@ async listCleaningRules() : Promise<Result<CleaningRuleInfo[], IpcError>> {
 },
 /**
  * Tauri command: scans every cleaning rule (read-only) and keeps the plan in the shell under the
- * returned id. Emits `cleanScanProgress` before each rule; `cancelCleaningScan` stops it between
- * rules. Runs off the main thread. The result has counts and sizes, never a full path.
+ * returned id. Emits `cleanScanProgress` before each rule; `cancelCleaningScan` stops it, even
+ * inside a rule (the result then says `cancelled` and lists what was reached). Runs off the main thread. The result has counts and sizes, never a full path.
  */
 async scanCleaning() : Promise<Result<CleanScanResult, IpcError>> {
     try {
@@ -289,8 +289,20 @@ async scanCleaning() : Promise<Result<CleanScanResult, IpcError>> {
 }
 },
 /**
- * Tauri command: asks the running scan to stop before its next rule. Does nothing when no scan
- * runs.
+ * Tauri command: like `scanCleaning` for the chosen rules only (read-only). The page uses it to
+ * continue with the rest of a rule whose scan was truncated, after cleaning what was listed.
+ */
+async scanCleaningRules(ruleIds: string[]) : Promise<Result<CleanScanResult, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("scan_cleaning_rules", { ruleIds }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: asks the running scan to stop, inside the rule it is walking or before its next
+ * one. Does nothing when no scan runs.
  */
 async cancelCleaningScan() : Promise<Result<null, IpcError>> {
     try {
@@ -924,11 +936,13 @@ total: number }
  */
 export type CleanScanResult = { 
 /**
- * Names this scan when cleaning it; empty when the scan was cancelled.
+ * Names this scan when cleaning it; empty when the scan was cancelled before it looked at
+ * any rule.
  */
 planId: string; 
 /**
- * Whether the scan was cancelled. Nothing was found and the earlier scan, if any, still
+ * Whether the scan was cancelled and is partial: `rules` lists only the rules it got to, the
+ * last of them possibly `truncated`. With no rule at all the earlier scan, if any, still
  * stands.
  */
 cancelled: boolean; 

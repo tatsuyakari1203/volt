@@ -334,6 +334,14 @@ fn chromium_tree() -> Tree {
         ("Default/Cache/a/b/last", Taken),
         ("Profile 1/Code Cache/js/abc_0", Taken),
         ("Default/GPUCache/data_0", Taken),
+        ("Default/DawnGraphiteCache/data_0", Taken),
+        ("Profile 1/DawnWebGPUCache/data_1", Taken),
+        ("Default/DawnCache/data_2", Taken),
+        ("GrShaderCache/data_0", Taken),
+        ("GraphiteDawnCache/data_0", Taken),
+        ("ShaderCache/GPUCache/data_0", Taken),
+        ("Default/Service Worker/CacheStorage/origin/entry", Excluded),
+        ("component_crx_cache/package", NotMatching),
         ("Default/GPUCache/limit", TakenAtAgeLimit),
         ("Default/GPUCache/fresh", TooNew),
         ("Default/Cookies", NotMatching),
@@ -405,7 +413,7 @@ fn fixture(id: &str) -> Option<Tree> {
             ("link", Link),
             ("e1/e2/e3/e4/e5/too-deep", TooDeep),
         ],
-        "chrome-cache" | "edge-cache" | "brave-cache" => chromium_tree(),
+        "chrome-cache" | "edge-cache" | "brave-cache" | "vivaldi-cache" => chromium_tree(),
         "firefox-cache" => vec![
             ("abcd1234.default-release/cache2/entries/ABCDEF", Taken),
             ("abcd1234.default-release/cache2/index", Taken),
@@ -645,6 +653,7 @@ fn every_rule_has_a_fixture_and_every_fixture_covers_what_the_rule_allows() {
         "chrome-cache",
         "edge-cache",
         "brave-cache",
+        "vivaldi-cache",
         "firefox-cache",
         "directx-shader-cache",
         "nvidia-shader-cache",
@@ -866,8 +875,31 @@ fn a_missing_root_is_nothing_to_clean_and_never_a_sign_of_missing_rights() {
 
 // ---- browser caches ---------------------------------------------------------------------------
 
-const BROWSER_RULES: [&str; 4] = ["chrome-cache", "edge-cache", "brave-cache", "firefox-cache"];
-const CACHE_FOLDERS: [&str; 4] = ["cache", "code cache", "gpucache", "cache2"];
+const BROWSER_RULES: [&str; 5] = [
+    "chrome-cache",
+    "edge-cache",
+    "brave-cache",
+    "vivaldi-cache",
+    "firefox-cache",
+];
+/// Cache folders directly inside a profile folder.
+const CACHE_FOLDERS: [&str; 7] = [
+    "cache",
+    "code cache",
+    "gpucache",
+    "cache2",
+    "dawncache",
+    "dawngraphitecache",
+    "dawnwebgpucache",
+];
+/// GPU cache folders directly in a Chromium "User Data" folder, beside the profile folders.
+const TOP_LEVEL_CACHES: [&str; 3] = ["grshadercache", "graphitedawncache", "shadercache"];
+
+/// Whether `parts` (lower case, below the root) is a file inside a cache folder.
+fn in_cache_folder(parts: &[String]) -> bool {
+    (parts.len() >= 3 && CACHE_FOLDERS.contains(&parts[1].as_str()))
+        || (parts.len() >= 2 && TOP_LEVEL_CACHES.contains(&parts[0].as_str()))
+}
 
 /// What a browser keeps next to its cache, in Chromium and Firefox profiles alike. A clean must
 /// never list any of it.
@@ -915,6 +947,7 @@ fn realistic_profiles(world: &World, rule: &CleaningRule) -> PathBuf {
             "Cache/Cache_Data/f_000001",
             "Code Cache/js/abc_0",
             "GPUCache/data_0",
+            "DawnGraphiteCache/data_0",
         ]
     };
     for profile in profiles {
@@ -925,6 +958,11 @@ fn realistic_profiles(world: &World, rule: &CleaningRule) -> PathBuf {
         for data in USER_DATA {
             let path = below(&root, &format!("{profile}/{data}/entry.bin"));
             world.fs.add_file_at(path, 100, ago(30 * DAY));
+        }
+    }
+    if !firefox {
+        for top in ["GrShaderCache/data_0", "ShaderCache/GPUCache/data_0"] {
+            world.fs.add_file_at(below(&root, top), 100, ago(30 * DAY));
         }
     }
     world
@@ -955,8 +993,8 @@ fn browser_rules_never_list_cookies_history_logins_sessions_bookmarks_or_extensi
             let parts = parts_below(&root, &item.path);
             // Always a file inside <profile>/<cache folder>, never user data.
             assert!(
-                parts.len() >= 3 && CACHE_FOLDERS.contains(&parts[1].as_str()),
-                "{id}: {parts:?} is not inside a cache folder of a profile"
+                in_cache_folder(&parts),
+                "{id}: {parts:?} is not inside a cache folder"
             );
         }
         // A clean moves nothing else either, and leaves every user data file in place.
@@ -964,10 +1002,7 @@ fn browser_rules_never_list_cookies_history_logins_sessions_bookmarks_or_extensi
         assert_eq!(report.skipped_count(), 0, "{id}");
         for trashed in world.fs.trashed() {
             let parts = parts_below(&root, &trashed);
-            assert!(
-                parts.len() >= 3 && CACHE_FOLDERS.contains(&parts[1].as_str()),
-                "{id}: {parts:?} was moved"
-            );
+            assert!(in_cache_folder(&parts), "{id}: {parts:?} was moved");
         }
         assert!(
             world.fs.exists(&below(&root, "Local State")),
@@ -1037,6 +1072,7 @@ fn a_running_browser_is_named_by_the_scan_and_a_stopped_one_is_not() {
     assert_eq!(running("firefox-cache"), ["firefox.exe"]);
     assert!(running("edge-cache").is_empty());
     assert!(running("brave-cache").is_empty());
+    assert!(running("vivaldi-cache").is_empty());
 }
 
 // ---- shader caches and chat app caches --------------------------------------------------------

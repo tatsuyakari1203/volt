@@ -135,8 +135,8 @@ pub(crate) async fn list_cleaning_rules(
 }
 
 /// Tauri command: scans every cleaning rule (read-only) and keeps the plan in the shell under the
-/// returned id. Emits `cleanScanProgress` before each rule; `cancelCleaningScan` stops it between
-/// rules. Runs off the main thread. The result has counts and sizes, never a full path.
+/// returned id. Emits `cleanScanProgress` before each rule; `cancelCleaningScan` stops it, even
+/// inside a rule (the result then says `cancelled` and lists what was reached). Runs off the main thread. The result has counts and sizes, never a full path.
 #[tauri::command]
 #[specta::specta]
 pub(crate) async fn scan_cleaning(
@@ -152,8 +152,25 @@ pub(crate) async fn scan_cleaning(
     .await
 }
 
-/// Tauri command: asks the running scan to stop before its next rule. Does nothing when no scan
-/// runs.
+/// Tauri command: like `scanCleaning` for the chosen rules only (read-only). The page uses it to
+/// continue with the rest of a rule whose scan was truncated, after cleaning what was listed.
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn scan_cleaning_rules(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    rule_ids: Vec<String>,
+) -> Result<CleanScanResult, IpcError> {
+    blocking(&state, move |core| {
+        cleaner::scan_cleaning_rules(core, &rule_ids, &|progress| {
+            let _ = progress.emit(&app);
+        })
+    })
+    .await
+}
+
+/// Tauri command: asks the running scan to stop, inside the rule it is walking or before its next
+/// one. Does nothing when no scan runs.
 #[tauri::command]
 #[specta::specta]
 #[allow(

@@ -200,8 +200,9 @@ pub struct RuleScan {
     pub root_exists: bool,
     /// Set when the rule could not be scanned at all; `items` is then empty.
     pub failure: Option<ScanFailure>,
-    /// Whether the scan stopped at the item cap ([`MAX_ITEMS_PER_RULE`]): there
-    /// is more to clean than `items` lists, and the counts are partial.
+    /// Whether the scan stopped at the item cap ([`MAX_ITEMS_PER_RULE`]) or
+    /// was cancelled while this rule was walked: there is more to clean than
+    /// `items` lists, and the counts are partial.
     pub truncated: bool,
     /// What a clean would move to the Recycle Bin. A folder is listed after
     /// everything inside it, so cleaning in this order empties it first.
@@ -267,6 +268,10 @@ pub struct CleanPlan {
     pub scanned_at: Timestamp,
     /// One entry per scanned rule, in the order requested.
     pub rules: Vec<RuleScan>,
+    /// Whether the scan was cancelled before it finished: `rules` then holds
+    /// only the rules that were started, the last of them possibly
+    /// [`truncated`](RuleScan::truncated) by the cancel.
+    pub cancelled: bool,
 }
 
 impl CleanPlan {

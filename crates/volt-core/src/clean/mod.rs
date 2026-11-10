@@ -71,17 +71,14 @@ use crate::time::Clock;
 #[error("unknown cleaning rule \"{0}\"")]
 pub struct UnknownRule(pub String);
 
-/// Why an observed scan produced no plan.
+/// Why an observed scan produced no plan. A cancelled scan is not an error: it
+/// returns the part it did, marked [`CleanPlan::cancelled`].
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[non_exhaustive]
 pub enum ScanError {
     /// A rule id is not known.
     #[error(transparent)]
     UnknownRule(#[from] UnknownRule),
-    /// The observer asked to stop between two rules. Nothing was changed (a
-    /// scan never changes anything) and no plan exists.
-    #[error("the scan was cancelled")]
-    Cancelled,
 }
 
 /// Watches a scan and may stop it, for scans long enough to show progress.
@@ -90,8 +87,9 @@ pub trait ScanObserver {
     /// `total`.
     fn progress(&self, done: usize, total: usize);
 
-    /// Asked before each rule; `true` stops the scan with
-    /// [`ScanError::Cancelled`].
+    /// Asked before each rule and before each entry of the folder being
+    /// walked; `true` stops the scan, which then returns the part it did as a
+    /// [`CleanPlan`] with `cancelled` set. It must be cheap.
     fn is_cancelled(&self) -> bool;
 }
 
@@ -202,13 +200,17 @@ impl CleanEngine {
             scanned_at: now,
             rules: rules
                 .into_iter()
-                .map(|rule| self.scan_rule(rule, now))
+                .map(|rule| self.scan_rule(rule, now, None))
                 .collect(),
+            cancelled: false,
         })
     }
 
     /// [`scan`](Self::scan) that reports progress before each rule and can be
-    /// cancelled between rules through `observer`.
+    /// cancelled through `observer`, between rules or inside the one being
+    /// walked. A cancelled scan returns the rules it started with
+    /// [`CleanPlan::cancelled`] set; the rule it stopped in is
+    /// [`RuleScan::truncated`].
     pub fn scan_observed<S: AsRef<str>>(
         &self,
         rule_ids: &[S],
@@ -225,16 +227,25 @@ impl CleanEngine {
         let now = self.clock.now();
         let total = rules.len();
         let mut scanned = Vec::with_capacity(total);
+        let mut cancelled = false;
         for (done, rule) in rules.into_iter().enumerate() {
             if observer.is_cancelled() {
-                return Err(ScanError::Cancelled);
+                cancelled = true;
+                break;
             }
             observer.progress(done, total);
-            scanned.push(self.scan_rule(rule, now));
+            let scan = self.scan_rule(rule, now, Some(observer));
+            // A rule cut short while a cancel is pending was stopped by it.
+            cancelled = scan.truncated && observer.is_cancelled();
+            scanned.push(scan);
+            if cancelled {
+                break;
+            }
         }
         Ok(CleanPlan {
             scanned_at: now,
             rules: scanned,
+            cancelled,
         })
     }
 
@@ -248,8 +259,9 @@ impl CleanEngine {
                 .rules
                 .rules()
                 .iter()
-                .map(|rule| self.scan_rule(rule, now))
+                .map(|rule| self.scan_rule(rule, now, None))
                 .collect(),
+            cancelled: false,
         }
     }
 }

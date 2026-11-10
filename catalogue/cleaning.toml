@@ -151,6 +151,14 @@ max_depth = 0
 # never a whole profile. The `exclude` list keeps the walk out of the folders that hold the user's
 # own data, as a second guard. A browser keeps the files of its cache open while it runs: those
 # files are skipped, and a scan says so when the browser is running (`locked_by`).
+#
+# The Chromium rules also take the GPU caches that sit beside the profile folders (GrShaderCache,
+# GraphiteDawnCache, ShaderCache: directly in "User Data") and the per-profile Dawn caches. All of
+# these were checked read-only on a machine with Chrome and Edge; Vivaldi shares the Chromium layout
+# (its user data folder is documented) but was not installed there. Left out on purpose: Service
+# Worker storage (CacheStorage, ScriptCache: it is site data, offline pages included), the crx
+# caches of extensions and components, and Opera (its cache and profile folders could not be
+# verified, so no rule guesses at them).
 
 [[rule]]
 id = "chrome-cache"
@@ -159,7 +167,17 @@ description = """
 Copies of web pages, pictures and scripts that Chrome saved in each of its profiles so that sites load faster, plus the compiled code and graphics caches it builds from them. Only those cache folders are taken: cookies, history, saved passwords, bookmarks, open tabs, extensions and site data are never touched, so you stay signed in. Files modified in the last day are kept, and files Chrome has open while it runs are skipped. Sites load a little slower the first time afterwards while the cache fills again."""
 category = "browser_cache"
 risk = "safe"
-include = ["*/Cache/**", "*/Code Cache/**", "*/GPUCache/**"]
+include = [
+    "*/Cache/**",
+    "*/Code Cache/**",
+    "*/GPUCache/**",
+    "*/DawnCache/**",
+    "*/DawnGraphiteCache/**",
+    "*/DawnWebGPUCache/**",
+    "GrShaderCache/**",
+    "GraphiteDawnCache/**",
+    "ShaderCache/**",
+]
 exclude = [
     "*/Extensions",
     "*/IndexedDB",
@@ -186,7 +204,17 @@ description = """
 Copies of web pages, pictures and scripts that Edge saved in each of its profiles so that sites load faster, plus the compiled code and graphics caches it builds from them. Only those cache folders are taken: cookies, history, saved passwords, bookmarks, open tabs, extensions and site data are never touched, so you stay signed in. Files modified in the last day are kept, and files Edge has open while it runs are skipped. Sites load a little slower the first time afterwards while the cache fills again."""
 category = "browser_cache"
 risk = "safe"
-include = ["*/Cache/**", "*/Code Cache/**", "*/GPUCache/**"]
+include = [
+    "*/Cache/**",
+    "*/Code Cache/**",
+    "*/GPUCache/**",
+    "*/DawnCache/**",
+    "*/DawnGraphiteCache/**",
+    "*/DawnWebGPUCache/**",
+    "GrShaderCache/**",
+    "GraphiteDawnCache/**",
+    "ShaderCache/**",
+]
 exclude = [
     "*/Extensions",
     "*/IndexedDB",
@@ -213,7 +241,17 @@ description = """
 Copies of web pages, pictures and scripts that Brave saved in each of its profiles so that sites load faster, plus the compiled code and graphics caches it builds from them. Only those cache folders are taken: cookies, history, saved passwords, bookmarks, open tabs, extensions and site data are never touched, so you stay signed in. Files modified in the last day are kept, and files Brave has open while it runs are skipped. Sites load a little slower the first time afterwards while the cache fills again."""
 category = "browser_cache"
 risk = "safe"
-include = ["*/Cache/**", "*/Code Cache/**", "*/GPUCache/**"]
+include = [
+    "*/Cache/**",
+    "*/Code Cache/**",
+    "*/GPUCache/**",
+    "*/DawnCache/**",
+    "*/DawnGraphiteCache/**",
+    "*/DawnWebGPUCache/**",
+    "GrShaderCache/**",
+    "GraphiteDawnCache/**",
+    "ShaderCache/**",
+]
 exclude = [
     "*/Extensions",
     "*/IndexedDB",
@@ -228,6 +266,43 @@ locked_by = ["brave.exe"]
 [rule.root]
 location = "local_app_data"
 path = "BraveSoftware/Brave-Browser/User Data"
+
+[rule.constraints]
+min_age_days = 1
+max_depth = 4
+
+[[rule]]
+id = "vivaldi-cache"
+title = "Vivaldi cache"
+description = """
+Copies of web pages, pictures and scripts that Vivaldi saved in each of its profiles so that sites load faster, plus the compiled code and graphics caches it builds from them. Only those cache folders are taken: cookies, history, saved passwords, bookmarks, open tabs, extensions and site data are never touched, so you stay signed in. Files modified in the last day are kept, and files Vivaldi has open while it runs are skipped. Sites load a little slower the first time afterwards while the cache fills again."""
+category = "browser_cache"
+risk = "safe"
+include = [
+    "*/Cache/**",
+    "*/Code Cache/**",
+    "*/GPUCache/**",
+    "*/DawnCache/**",
+    "*/DawnGraphiteCache/**",
+    "*/DawnWebGPUCache/**",
+    "GrShaderCache/**",
+    "GraphiteDawnCache/**",
+    "ShaderCache/**",
+]
+exclude = [
+    "*/Extensions",
+    "*/IndexedDB",
+    "*/Local Storage",
+    "*/Network",
+    "*/Service Worker",
+    "*/Sessions",
+    "*/Storage",
+]
+locked_by = ["vivaldi.exe"]
+
+[rule.root]
+location = "local_app_data"
+path = "Vivaldi/User Data"
 
 [rule.constraints]
 min_age_days = 1
