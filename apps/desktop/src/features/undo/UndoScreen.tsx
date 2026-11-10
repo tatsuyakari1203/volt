@@ -206,17 +206,18 @@ export function UndoScreen() {
       setConfirmingEntry({ entry, preview });
       return;
     }
-    await runUndo(`entry:${entry}`, 'change', () => undoEntry(entry));
+    await runUndo(`entry:${entry}`, 'change', () => undoEntry(entry, []));
   };
 
   const confirmEntry = (target: EntryTarget) => {
     setConfirmingEntry(null);
-    void runUndo(`entry:${target.entry}`, 'change', () => undoEntry(target.entry));
+    const shown = target.preview.overwrites.map((found) => found.laterEntry);
+    void runUndo(`entry:${target.entry}`, 'change', () => undoEntry(target.entry, shown));
   };
 
-  const confirmBatch = (target: BatchTarget) => {
+  const confirmBatch = (target: BatchTarget, shown: string[]) => {
     setConfirming(null);
-    void runUndo(`batch:${target.batch}`, 'batch', () => undoBatch(target.batch));
+    void runUndo(`batch:${target.batch}`, 'batch', () => undoBatch(target.batch, shown));
   };
 
   const save = async () => {
@@ -251,7 +252,8 @@ export function UndoScreen() {
     setNotice(null);
     let outcome: Notice;
     try {
-      outcome = describeCleared((await clearHistory()).removed);
+      const cleared = await clearHistory();
+      outcome = describeCleared(cleared.removed, cleared.kept);
     } catch (error) {
       outcome = describeClearFailure(error);
     }

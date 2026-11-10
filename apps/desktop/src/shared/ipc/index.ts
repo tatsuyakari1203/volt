@@ -341,17 +341,21 @@ export async function getHealthReport(): Promise<HealthView> {
 /**
  * Undoes one change: `entry` is the `entry` of an activity row. Resolves with how it ended
  * (restored, failed or nothing to undo); a failed restore is a result, not a rejection.
+ * `acknowledged` holds the `laterEntry` ids of the later changes the user was shown (from
+ * `previewUndoEntry`); an undo that would overwrite another one resolves with
+ * `needsAcknowledgement` and changes nothing.
  */
-export async function undoEntry(entry: string): Promise<UndoResult> {
-  return call(() => commands.undoEntry(entry));
+export async function undoEntry(entry: string, acknowledged: string[] = []): Promise<UndoResult> {
+  return call(() => commands.undoEntry(entry, acknowledged));
 }
 
 /**
  * Undoes every change of a batch (the `batch` of an activity row) that is still applied. Resolves
  * with how it ended (restored, partly restored with what failed, failed or nothing to undo).
+ * `acknowledged` works as for `undoEntry`.
  */
-export async function undoBatch(batch: string): Promise<UndoResult> {
-  return call(() => commands.undoBatch(batch));
+export async function undoBatch(batch: string, acknowledged: string[] = []): Promise<UndoResult> {
+  return call(() => commands.undoBatch(batch, acknowledged));
 }
 
 /** What undoing a batch would restore right now, newest first. Reads only. */

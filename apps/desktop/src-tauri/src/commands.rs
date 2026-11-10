@@ -202,14 +202,20 @@ pub(crate) async fn empty_recycle_bin(
 }
 
 /// Tauri command: undoes one journal entry (the `entry` of an activity line) and reports exactly
-/// how it ended (restored, partly restored, failed or nothing to undo).
+/// how it ended (restored, partly restored, failed or nothing to undo). `acknowledged` holds the
+/// `laterEntry` ids of the later changes the user was shown; without them an undo that would
+/// overwrite one is refused with `needsAcknowledgement`.
 #[tauri::command]
 #[specta::specta]
 pub(crate) async fn undo_entry(
     state: State<'_, AppState>,
     entry: String,
+    acknowledged: Vec<String>,
 ) -> Result<UndoResult, IpcError> {
-    blocking(&state, move |core| api::undo_entry(core, &entry)).await
+    blocking(&state, move |core| {
+        api::undo_entry(core, &entry, &acknowledged)
+    })
+    .await
 }
 
 /// Tauri command: undoes every applied entry of a journal batch (the `batch` of an activity
@@ -219,8 +225,12 @@ pub(crate) async fn undo_entry(
 pub(crate) async fn undo_batch(
     state: State<'_, AppState>,
     batch: String,
+    acknowledged: Vec<String>,
 ) -> Result<UndoResult, IpcError> {
-    blocking(&state, move |core| api::undo_batch(core, &batch)).await
+    blocking(&state, move |core| {
+        api::undo_batch(core, &batch, &acknowledged)
+    })
+    .await
 }
 
 /// Tauri command: lists what undoing a batch would restore right now. Reads only.

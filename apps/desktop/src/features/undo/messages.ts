@@ -119,6 +119,12 @@ export function describeUndo(result: UndoResult, scope: 'change' | 'batch'): Not
       };
     case 'nothingToUndo':
       return { tone: 'info', message: t('undo.nothing'), details };
+    case 'needsAcknowledgement':
+      return {
+        tone: 'problem',
+        message: t('undo.needsAcknowledgement'),
+        details: result.overwrites.map((found) => t('undo.changedLater', { what: found.what })),
+      };
     default:
       return assertNever(result.status);
   }
@@ -171,13 +177,14 @@ export function describeClearFailure(error: unknown): Notice {
 }
 
 /** Confirms that the history was cleared. */
-export function describeCleared(removed: number): Notice {
+export function describeCleared(removed: number, kept: number): Notice {
+  const stays = kept === 0 ? '' : ` ${tn('undo.cleared.kept', kept)}`;
   return {
     tone: 'done',
     message:
-      removed === 0
+      (removed === 0
         ? t('undo.cleared.none')
-        : t('undo.cleared.some', { records: tn('count.record', removed) }),
+        : t('undo.cleared.some', { records: tn('count.record', removed) })) + stays,
     details: [],
   };
 }

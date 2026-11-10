@@ -178,11 +178,17 @@ describe('tweak and activity commands', () => {
   });
 
   it('undoes, previews and exports through the generated commands with string ids', async () => {
-    invoke.mockResolvedValue({ status: 'restored', restored: 1, failed: 0, failures: [] });
+    invoke.mockResolvedValue({
+      status: 'restored',
+      restored: 1,
+      failed: 0,
+      failures: [],
+      overwrites: [],
+    });
     await expect(undoEntry('7')).resolves.toMatchObject({ status: 'restored' });
-    expect(invoke).toHaveBeenLastCalledWith('undo_entry', { entry: '7' });
-    await undoBatch('3');
-    expect(invoke).toHaveBeenLastCalledWith('undo_batch', { batch: '3' });
+    expect(invoke).toHaveBeenLastCalledWith('undo_entry', { entry: '7', acknowledged: [] });
+    await undoBatch('3', ['9']);
+    expect(invoke).toHaveBeenLastCalledWith('undo_batch', { batch: '3', acknowledged: ['9'] });
     invoke.mockResolvedValue({ items: [], overwrites: [] });
     await previewUndoBatch('3');
     expect(invoke).toHaveBeenLastCalledWith('preview_undo_batch', { batch: '3' });

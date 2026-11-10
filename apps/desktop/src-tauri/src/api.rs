@@ -319,6 +319,9 @@ pub enum UndoStatus {
     Failed,
     /// The journal holds nothing to undo here: it was already undone, or never was a change.
     NothingToUndo,
+    /// Nothing was changed: the undo would replace a later change the caller has not
+    /// acknowledged. `overwrites` lists them; call again with their `laterEntry` ids to go ahead.
+    NeedsAcknowledgement,
 }
 
 /// One change an undo could not restore.
@@ -345,6 +348,9 @@ pub struct UndoResult {
     pub failed: u32,
     /// The ones that could not be restored, with the reason.
     pub failures: Vec<UndoFailure>,
+    /// The later changes the undo would overwrite that were not acknowledged; filled only when
+    /// `status` is `needsAcknowledgement`.
+    pub overwrites: Vec<UndoOverwrite>,
 }
 
 /// One change an undo of a batch would restore.
@@ -414,6 +420,8 @@ pub struct ActivityExport {
 pub struct ClearResult {
     /// Records removed from the activity history.
     pub removed: u32,
+    /// Records left in the history because their change can still be undone.
+    pub kept: u32,
 }
 
 /// How [`export_activity`] ended.
@@ -739,7 +747,14 @@ pub fn list_activity(
 /// Undoes one journal entry: puts back the value the journal recorded before the change. Reports
 /// precisely how it ended. An entry that is not applied (already undone, failed) is "nothing to
 /// undo", not an error; an unknown entry is `notFound`.
-pub fn undo_entry(core: &AppCore, entry: &str) -> Result<UndoResult, IpcError> {
+///
+/// An undo that would overwrite a later change is refused (`needsAcknowledgement`, nothing
+/// changed) unless `acknowledged` holds the `laterEntry` id of each such change.
+pub fn undo_entry(
+    core: &AppCore,
+    entry: &str,
+    acknowledged: &[String],
+) -> Result<UndoResult, IpcError> {
     let id = EntryId(parse_id(entry, "journal entry")?);
     let _exclusive = core.exclusive();
     let found = core
@@ -751,6 +766,9 @@ pub fn undo_entry(core: &AppCore, entry: &str) -> Result<UndoResult, IpcError> {
         })?;
     if found.state != EntryState::Applied {
         return Ok(undo_result(core, &RevertReport::default()));
+    }
+    if let Some(refused) = unacknowledged(core, std::slice::from_ref(&found), acknowledged)? {
+        return Ok(refused);
     }
     let failures_before = core.engine.activity_write_failures();
     let result = core
@@ -766,8 +784,13 @@ pub fn undo_entry(core: &AppCore, entry: &str) -> Result<UndoResult, IpcError> {
 
 /// Undoes every applied entry of a journal batch, newest first, and carries on past a failure so
 /// as much as possible is restored. Reports precisely how it ended; a batch with nothing applied
-/// is "nothing to undo".
-pub fn undo_batch(core: &AppCore, batch: &str) -> Result<UndoResult, IpcError> {
+/// is "nothing to undo". Refused like [`undo_entry`] when a later change would be overwritten and
+/// not acknowledged.
+pub fn undo_batch(
+    core: &AppCore,
+    batch: &str,
+    acknowledged: &[String],
+) -> Result<UndoResult, IpcError> {
     let batch = BatchId(parse_id(batch, "batch")?);
     let _exclusive = core.exclusive();
     let entries = core.journal.batch_entries(batch).map_err(IpcError::from)?;
@@ -776,6 +799,13 @@ pub fn undo_batch(core: &AppCore, batch: &str) -> Result<UndoResult, IpcError> {
         .any(|entry| entry.state == EntryState::Applied)
     {
         return Ok(undo_result(core, &RevertReport::default()));
+    }
+    let applied: Vec<JournalEntry> = entries
+        .into_iter()
+        .filter(|entry| entry.state == EntryState::Applied)
+        .collect();
+    if let Some(refused) = unacknowledged(core, &applied, acknowledged)? {
+        return Ok(refused);
     }
     let failures_before = core.engine.activity_write_failures();
     let report = core
@@ -811,8 +841,11 @@ pub fn preview_undo_entry(core: &AppCore, entry: &str) -> Result<UndoPreview, Ip
     undo_preview(core, &applied)
 }
 
-fn undo_preview(core: &AppCore, applied: &[JournalEntry]) -> Result<UndoPreview, IpcError> {
-    let overwrites = overwrites_of(core.journal.as_ref(), applied)
+fn overwrite_items(
+    core: &AppCore,
+    applied: &[JournalEntry],
+) -> Result<Vec<UndoOverwrite>, IpcError> {
+    Ok(overwrites_of(core.journal.as_ref(), applied)
         .map_err(IpcError::from)?
         .into_iter()
         .map(|found| UndoOverwrite {
@@ -826,7 +859,34 @@ fn undo_preview(core: &AppCore, applied: &[JournalEntry]) -> Result<UndoPreview,
                 _ => ActivitySource::Other,
             },
         })
+        .collect())
+}
+
+/// The refusal for an undo of `applied` that would overwrite a later change the caller did not
+/// acknowledge; `None` when it may go ahead.
+fn unacknowledged(
+    core: &AppCore,
+    applied: &[JournalEntry],
+    acknowledged: &[String],
+) -> Result<Option<UndoResult>, IpcError> {
+    let missing: Vec<UndoOverwrite> = overwrite_items(core, applied)?
+        .into_iter()
+        .filter(|found| !acknowledged.contains(&found.later_entry))
         .collect();
+    if missing.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(UndoResult {
+        status: UndoStatus::NeedsAcknowledgement,
+        restored: 0,
+        failed: 0,
+        failures: Vec::new(),
+        overwrites: missing,
+    }))
+}
+
+fn undo_preview(core: &AppCore, applied: &[JournalEntry]) -> Result<UndoPreview, IpcError> {
+    let overwrites = overwrite_items(core, applied)?;
     let items = applied
         .iter()
         .map(|entry| UndoPreviewItem {
@@ -843,8 +903,23 @@ fn undo_preview(core: &AppCore, applied: &[JournalEntry]) -> Result<UndoPreview,
 pub fn clear_history(core: &AppCore) -> Result<ClearResult, IpcError> {
     let _exclusive = core.exclusive();
     let removed = core.activity.clear().map_err(IpcError::from)?;
+    // What is left is exactly what was kept: records of changes that can still be undone.
+    let mut kept = 0_usize;
+    let mut before = None;
+    loop {
+        let chunk = core
+            .activity
+            .list(EXPORT_CHUNK, before)
+            .map_err(IpcError::from)?;
+        kept += chunk.len();
+        match chunk.last() {
+            Some(last) if chunk.len() == EXPORT_CHUNK => before = Some(last.id),
+            _ => break,
+        }
+    }
     Ok(ClearResult {
         removed: u32::try_from(removed).unwrap_or(u32::MAX),
+        kept: u32::try_from(kept).unwrap_or(u32::MAX),
     })
 }
 
@@ -1220,6 +1295,7 @@ fn undo_result(core: &AppCore, report: &RevertReport) -> UndoResult {
         restored: u32::try_from(restored).unwrap_or(u32::MAX),
         failed: u32::try_from(failures.len()).unwrap_or(u32::MAX),
         failures,
+        overwrites: Vec::new(),
     }
 }
 

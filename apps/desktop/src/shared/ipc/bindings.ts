@@ -147,11 +147,13 @@ async healthReport() : Promise<Result<HealthView, IpcError>> {
 },
 /**
  * Tauri command: undoes one journal entry (the `entry` of an activity line) and reports exactly
- * how it ended (restored, partly restored, failed or nothing to undo).
+ * how it ended (restored, partly restored, failed or nothing to undo). `acknowledged` holds the
+ * `laterEntry` ids of the later changes the user was shown; without them an undo that would
+ * overwrite one is refused with `needsAcknowledgement`.
  */
-async undoEntry(entry: string) : Promise<Result<UndoResult, IpcError>> {
+async undoEntry(entry: string, acknowledged: string[]) : Promise<Result<UndoResult, IpcError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("undo_entry", { entry }) };
+    return { status: "ok", data: await TAURI_INVOKE("undo_entry", { entry, acknowledged }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -161,9 +163,9 @@ async undoEntry(entry: string) : Promise<Result<UndoResult, IpcError>> {
  * Tauri command: undoes every applied entry of a journal batch (the `batch` of an activity
  * line), newest first, and reports exactly how it ended.
  */
-async undoBatch(batch: string) : Promise<Result<UndoResult, IpcError>> {
+async undoBatch(batch: string, acknowledged: string[]) : Promise<Result<UndoResult, IpcError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("undo_batch", { batch }) };
+    return { status: "ok", data: await TAURI_INVOKE("undo_batch", { batch, acknowledged }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -977,7 +979,11 @@ export type ClearResult = {
 /**
  * Records removed from the activity history.
  */
-removed: number }
+removed: number; 
+/**
+ * Records left in the history because their change can still be undone.
+ */
+kept: number }
 /**
  * One reason the score is below 100.
  */
@@ -2305,7 +2311,12 @@ failed: number;
 /**
  * The ones that could not be restored, with the reason.
  */
-failures: UndoFailure[] }
+failures: UndoFailure[]; 
+/**
+ * The later changes the undo would overwrite that were not acknowledged; filled only when
+ * `status` is `needsAcknowledgement`.
+ */
+overwrites: UndoOverwrite[] }
 /**
  * How an undo ended.
  */
@@ -2325,7 +2336,12 @@ export type UndoStatus =
 /**
  * The journal holds nothing to undo here: it was already undone, or never was a change.
  */
-"nothingToUndo"
+"nothingToUndo" | 
+/**
+ * Nothing was changed: the undo would replace a later change the caller has not
+ * acknowledged. `overwrites` lists them; call again with their `laterEntry` ids to go ahead.
+ */
+"needsAcknowledgement"
 
 /** tauri-specta globals **/
 
