@@ -10,6 +10,9 @@
   },
   "scripts": {
     "prepare": "lefthook install",
+    "dev": "pnpm --filter @volt/desktop tauri dev",
+    "tauri": "pnpm --filter @volt/desktop tauri",
+    "check:ui": "pnpm --filter @volt/desktop typecheck && pnpm --filter @volt/desktop test && pnpm --filter @volt/desktop boundaries",
     "check": "pwsh -NoProfile -File scripts/check.ps1",
     "check:arch": "node scripts/check-arch.mjs",
     "lint": "biome check .",

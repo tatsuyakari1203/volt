@@ -3,7 +3,7 @@ id: doc-003
 title: Architecture
 type: specification
 created_date: '2026-11-10T03:01:00Z'
-updated_date: '2026-11-10T03:01:00Z'
+updated_date: '2026-11-10T03:19:00Z'
 ---
 Volt follows a ports-and-adapters layout so that the rules about *what* to change on a system are
 separate from the code that *does* it. That separation is what makes a system-modifying tool
@@ -93,12 +93,13 @@ highest privileges to avoid a UAC prompt at every login.
 The alternative, an unelevated UI talking to an elevated helper over a named pipe, has a smaller
 attack surface but costs an IPC protocol and a second binary. The spike decides.
 
-## Frontend (when scaffolded)
+## Frontend
 
 - `apps/desktop/src`: React + TypeScript + Tailwind.
 - Feature folders (`features/clean`, `features/memory`, ...) on top of `shared/ui` (design system)
   and `shared/ipc` (generated bindings). Features do not import each other; a boundary rule
-  (dependency-cruiser or equivalent) will enforce it, mirroring the crate check.
+  (dependency-cruiser, `apps/desktop/.dependency-cruiser.cjs`, run by `pnpm check`) enforces it and also
+  forbids `shared` importing features, mirroring the crate check.
 - The UI holds no business rules: it renders plans and results produced by the core.
 - IPC types are generated from Rust so a breaking change fails the TypeScript build.
 

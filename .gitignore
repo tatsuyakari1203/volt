@@ -2,6 +2,8 @@
 target/
 dist/
 node_modules/
+# Tauri generated schemas and capability manifests
+**/src-tauri/gen/
 
 # Local tool state (rebuilt on demand)
 .codegraph/

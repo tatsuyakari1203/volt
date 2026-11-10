@@ -3,7 +3,7 @@ id: doc-005
 title: Resources
 type: other
 created_date: '2026-11-10T03:01:00Z'
-updated_date: '2026-11-10T03:01:00Z'
+updated_date: '2026-11-10T03:19:00Z'
 ---
 References, prior art and research notes for the whole project. Add to this document whenever a
 task turns up a source worth keeping. Mark anything unverified as such.
@@ -23,10 +23,11 @@ VRAM features.
 | Biome | 2.6.6 | Also formats Markdown |
 | lefthook | 2.2.2 | |
 | commitlint | 21.2.4 | |
-| Rust toolchain | 1.88.0 | Pinned in `rust-toolchain.toml`; raise it if a dependency needs a newer compiler |
-| Tauri CLI / API (npm) | 2.12.4 | Not installed yet. crates.io also lists a 3.0 alpha: stay on 2.x |
+| Rust toolchain | 1.88.0 | Pinned in `rust-toolchain.toml`; raise it if a dependency needs a newer compiler. TASK-003: Tauri 2.11.6 builds on 1.88, so no raise was needed |
+| Tauri CLI (npm) / API (npm) / `tauri` crate / `tauri-build` crate | 2.11.5 / 2.11.1 / 2.11.6 / 2.6.3 | Pinned exactly (scaffolded in TASK-003). 2.12.x of `tauri` and `tauri-build` 2.7.x need Rust 1.90, so we stay on the newest releases that build on 1.88. crates.io also lists a 3.0 alpha: stay on 2.x |
 | tauri-specta | 2.0.0-rc.26 | Still a release candidate; pin exactly if adopted |
-| React / Vite / Tailwind / TypeScript / Vitest | 19.3 / 8.3 / 4.3 / 7.0 / 5.1 | npm latest; not installed yet |
+| React / Vite / Tailwind / TypeScript / Vitest | 19.3.1 / 8.3.7 / 4.3.5 / 6.0.3 / 5.1.0 | Pinned exactly in apps/desktop (TASK-003). TypeScript stays on 6.x because dependency-cruiser 18.7.2 does not support 7.x yet |
+| dependency-cruiser / jsdom / Testing Library (React) / @vitejs/plugin-react | 18.7.2 / 31.0.0 / 16.3.3 / 6.3.0 | Frontend boundary rule, Vitest DOM environment and component tests |
 | `windows` crate | 0.62.2 | |
 | cargo-deny / cargo-nextest / typos / git-cliff | 0.20.2 / 0.9.151 / 1.52.1 / 2.14.2 | Not installed locally; CI runs cargo-deny and typos |
 

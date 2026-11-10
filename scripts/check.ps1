@@ -11,6 +11,9 @@ $steps = [ordered]@{
     'tests'        = { cargo test --workspace --locked }
     'architecture' = { node scripts/check-arch.mjs }
     'biome'        = { pnpm exec biome check . }
+    'typecheck'    = { pnpm --filter '@volt/desktop' typecheck }
+    'vitest'       = { pnpm --filter '@volt/desktop' test }
+    'ui-boundaries' = { pnpm --filter '@volt/desktop' boundaries }
 }
 
 if (Get-Command cargo-deny -ErrorAction SilentlyContinue) {
