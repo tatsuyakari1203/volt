@@ -1,10 +1,10 @@
 ---
 id: TASK-005
 title: Core domain model and port traits
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-11-10T03:01:00Z'
-updated_date: '2026-11-10T03:16:00Z'
+updated_date: '2026-11-10T03:22:00Z'
 labels:
   - core
   - safety
@@ -35,7 +35,7 @@ Everything Volt does is a system change that must be previewed, applied and reve
 - [x] #1 `pnpm check` passes locally (fmt, clippy, tests, architecture rules, Biome)
 - [x] #2 New behaviour is covered by tests; OS-touching logic is tested through fakes of the port traits
 - [x] #3 Anything that modifies the system supports dry-run and is recorded in the undo journal
-- [ ] #4 Feature matrix, docs and decision records are updated when behaviour or a decision changed
+- [x] #4 Feature matrix, docs and decision records are updated when behaviour or a decision changed
 <!-- DOD:END -->
 
 ## Implementation Plan

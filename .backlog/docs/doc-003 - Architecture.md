@@ -42,23 +42,46 @@ apps/desktop (crate volt-desktop: Tauri shell + React UI)      crates/volt-cli (
 `pnpm check` and in CI. A workspace crate with no rule fails the check: adding a crate is an
 architecture decision and needs a decision record.
 
-## Core concepts (to be built in M0)
+## Core concepts
 
-- **Operation:** the unit of change. It has `detect` (read-only: what is the current state?),
-  `apply` and `revert`. Use cases produce a **plan** (a list of operations with a preview), the
-  user confirms, then the plan is applied.
-- **Ports:** traits such as registry, file system, services, processes, memory and journal. The
-  core only sees these traits.
-- **Undo journal:** before an operation is applied, its previous state is persisted. Revert reads
-  the journal, so it works after a restart and for batches.
+What `volt-core` contains today:
+
+- **Operation:** the unit of change, a declarative `#[non_exhaustive]` enum: set registry value,
+  delete registry value, set service start type. It is data, not behaviour. Its apply and revert
+  are crate-private and reachable only through the Executor, so no caller can change the system
+  without going through the journal.
+- **Executor and write-ahead journaling:** for every operation the Executor detects the prior
+  state, writes a pending journal entry holding that state, applies the change, then marks the
+  entry applied. A failed journal write blocks the change: nothing is mutated without a durable
+  record. Revert restores the recorded prior state, including "the value did not exist".
+- **Plan and Preview:** a Plan is a list of operations, each with a Preview, a Risk and an
+  Evidence label. Building a plan only reads the system, so building a plan is the dry run. The
+  user confirms, then the Executor applies it.
+- **Ports:** the `Ports` bundle holds the registry, file system, services, processes and memory
+  traits that operations and use cases may touch. The core only sees these traits; composition
+  roots build the bundle from real adapters, tests build it from fakes.
+- **Journal port:** the persistent undo journal. It allocates batch ids (one batch per applied
+  plan), stores entries with states (pending, applied, reverted, failed) and takes time from an
+  injected `Clock`, so it is deterministic in tests. Revert reads the journal, so it works after a
+  restart and for whole batches.
+- **Risk and evidence labels:** `Safe`, `Caution`, `Advanced`; `Measured` or `Anecdotal`. The UI
+  shows both.
+- **`fakes` cargo feature:** in-memory fakes of every port (`FakeSystem` wires them together
+  with a shared `EventLog` that records side effects in order, so a test can prove the journal
+  entry was written before the registry changed). Compiled for the crate's own tests and for
+  other crates that enable the feature.
+- **Not Operations:** file deletion and memory purges are deliberately not Operations, because
+  they cannot be undone. They only have ports (`FileSystem`, `Memory`); cleaning shows a preview
+  and prefers the Recycle Bin.
+
+Still to be built:
+
 - **Tweak definition:** data, not code. Each tweak has an id, title, category, risk level,
   evidence level, a reboot flag, and detect/apply/revert steps expressed as registry, service or
   command operations. The engine interprets definitions; adding a tweak should not need new Rust
   code in most cases.
 - **Cleaning rule:** data as well: a root, include and exclude patterns, safety constraints (never
   follow junctions or symlinks outside the root) and a category.
-- **Risk and evidence labels:** `Safe`, `Caution`, `Advanced`; `Measured` or `Anecdotal`. The UI
-  shows both.
 
 ## Process and elevation model
 
