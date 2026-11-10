@@ -15,12 +15,13 @@
 //!   and a note is appended to the text. Console text is decoded without ever failing (UTF-8,
 //!   UTF-16 with a byte order mark, or the OEM code page, with replacement characters as the last
 //!   resort).
-//! - **Timeout and process tree.** The child is put in a job object that kills its members when
-//!   the job closes. When the timeout expires the whole job is terminated and the call fails with
-//!   [`CommandError::TimedOut`]. When the program exits on its own, any process it left behind is
-//!   killed too, so nothing outlives a command. There is a short window between creating the
-//!   process and adding it to the job in which a grandchild could escape; the program is
-//!   trusted catalogue content, so this is accepted.
+//! - **Timeout and process tree.** The child is created suspended, added to a job object that
+//!   kills its members when the job closes, and only then resumed, so it cannot start a
+//!   grandchild before it is in the job and no descendant can escape. When the timeout expires the
+//!   whole job is terminated and the call fails with [`PortError::TimedOut`]. When the program
+//!   exits on its own, any process it left behind is killed too, so nothing outlives a command.
+//!   The timeout is the adapter's, or the command's own `timeout_secs` capped at
+//!   [`MAX_TIMEOUT_SECS`].
 //!
 //! Redaction: only the program's file name and the exit code are logged, never arguments or
 //! output.
@@ -35,16 +36,21 @@ use std::process::Stdio;
 use std::thread;
 use std::time::Duration;
 
-use volt_core::{Command, CommandOutput, Commands, PortError};
+use volt_core::{Command, CommandOutput, Commands, MAX_TIMEOUT_SECS, PortError};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
 use windows::Win32::Globalization::MultiByteToWideChar;
+use windows::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+};
 use windows::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
     SetInformationJobObject, TerminateJobObject,
 };
 use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
-use windows::Win32::System::Threading::WaitForSingleObject;
+use windows::Win32::System::Threading::{
+    OpenThread, ResumeThread, THREAD_SUSPEND_RESUME, WaitForSingleObject,
+};
 use windows::core::PCWSTR;
 
 use crate::error::from_io;
@@ -56,45 +62,11 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 pub const DEFAULT_MAX_OUTPUT: usize = 64 * 1024;
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+const CREATE_SUSPENDED: u32 = 0x0000_0004;
 /// Exit code the job gives to processes it terminates.
 const KILLED_EXIT_CODE: u32 = 1;
 /// How long to wait for the output pipe to close once the process tree is gone.
 const READER_GRACE: Duration = Duration::from_secs(5);
-
-/// Why a command could not be run to completion. Mapped onto [`PortError`] for the port.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum CommandError {
-    /// The command did not finish in time. The process tree was killed.
-    TimedOut {
-        /// The program's file name.
-        program: String,
-        /// The limit that was exceeded.
-        timeout: Duration,
-    },
-    /// The command was rejected or failed for another reason, already typed.
-    Port(PortError),
-}
-
-impl From<PortError> for CommandError {
-    fn from(error: PortError) -> Self {
-        Self::Port(error)
-    }
-}
-
-impl From<CommandError> for PortError {
-    /// `PortError` has no timeout variant, so a timeout becomes [`PortError::Other`] with a
-    /// message that says so.
-    fn from(error: CommandError) -> Self {
-        match error {
-            CommandError::TimedOut { program, timeout } => Self::Other(format!(
-                "{program} did not finish within {} s and was stopped",
-                timeout.as_secs_f32()
-            )),
-            CommandError::Port(error) => error,
-        }
-    }
-}
 
 /// The commands port backed by `CreateProcess`.
 #[derive(Debug, Clone, Copy)]
@@ -128,17 +100,25 @@ impl WinCommands {
         }
     }
 
+    /// The time `command` may run: its own limit, capped at [`MAX_TIMEOUT_SECS`], or the
+    /// adapter's.
+    fn timeout_for(&self, command: &Command) -> Duration {
+        command.timeout_secs.map_or(self.timeout, |secs| {
+            Duration::from_secs(u64::from(secs.min(MAX_TIMEOUT_SECS)))
+        })
+    }
+
     /// Runs `command`, calling `on_spawn` with the process id right after the process started.
     fn run_inner(
         &self,
         command: &Command,
         on_spawn: impl FnOnce(u32),
-    ) -> Result<CommandOutput, CommandError> {
+    ) -> Result<CommandOutput, PortError> {
         let path = resolve_program(&command.program)?;
         if command.args.iter().any(|arg| arg.contains('\0')) {
-            return Err(
-                PortError::InvalidInput("an argument contains a NUL character".into()).into(),
-            );
+            return Err(PortError::InvalidInput(
+                "an argument contains a NUL character".into(),
+            ));
         }
         let name = file_name(&path);
         let context = format!("program {name}");
@@ -157,22 +137,23 @@ impl WinCommands {
             .stdin(Stdio::null())
             .stdout(writer)
             .stderr(writer_err)
-            .creation_flags(CREATE_NO_WINDOW);
+            .creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
         let spawned = process.spawn();
         // The command object owns the parent's copies of the pipe's write ends. They must be
         // closed here, or the reader would never see the end of the output.
         drop(process);
         let mut child = spawned.map_err(|e| from_io(&e, &context))?;
-        on_spawn(child.id());
 
-        if let Err(error) = job.assign(child.as_raw_handle()) {
-            // A process that already exited cannot be assigned; that is not a failure.
-            if !matches!(child.try_wait(), Ok(Some(_))) {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(error.into());
-            }
+        // The child cannot run yet: put it in the job first, then let it start.
+        let started = job
+            .assign(child.as_raw_handle())
+            .and_then(|()| resume_process(child.id()));
+        if let Err(error) = started {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
         }
+        on_spawn(child.id());
 
         let max = self.max_output;
         let (sender, receiver) = std::sync::mpsc::channel();
@@ -184,7 +165,7 @@ impl WinCommands {
         let waited = unsafe {
             WaitForSingleObject(
                 HANDLE(child.as_raw_handle()),
-                u32::try_from(self.timeout.as_millis()).unwrap_or(u32::MAX - 1),
+                u32::try_from(self.timeout_for(command).as_millis()).unwrap_or(u32::MAX - 1),
             )
         };
         let timed_out = waited != WAIT_OBJECT_0;
@@ -204,10 +185,10 @@ impl WinCommands {
 
         if timed_out {
             log::debug!("program {name} timed out");
-            return Err(CommandError::TimedOut {
-                program: name,
-                timeout: self.timeout,
-            });
+            return Err(PortError::TimedOut(format!(
+                "{name} did not finish within {} s and was stopped",
+                self.timeout_for(command).as_secs_f32()
+            )));
         }
         let exit_code = status.code().unwrap_or(-1);
         log::debug!("program {name} exited with code {exit_code}");
@@ -221,7 +202,7 @@ impl WinCommands {
 
 impl Commands for WinCommands {
     fn run(&self, command: &Command) -> Result<CommandOutput, PortError> {
-        self.run_inner(command, |_| {}).map_err(PortError::from)
+        self.run_inner(command, |_| {})
     }
 }
 
@@ -307,6 +288,48 @@ fn system_directory() -> Result<PathBuf, PortError> {
             return Ok(PathBuf::from(String::from_utf16_lossy(&buffer[..len])));
         }
         buffer.resize(len + 1, 0);
+    }
+}
+
+/// Resumes the one thread of a process that was created suspended.
+fn resume_process(pid: u32) -> Result<(), PortError> {
+    let fail =
+        |e: windows::core::Error| PortError::Other(format!("could not start the process: {e}"));
+    // SAFETY: a plain snapshot of the system's threads; the handle is closed below.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) }.map_err(fail)?;
+    let mut entry = THREADENTRY32 {
+        dwSize: u32::try_from(size_of::<THREADENTRY32>()).unwrap_or(0),
+        ..THREADENTRY32::default()
+    };
+    let mut resumed = false;
+    // SAFETY: `snapshot` is live and `entry.dwSize` is set, as the API requires.
+    let mut more = unsafe { Thread32First(snapshot, &raw mut entry) }.is_ok();
+    while more {
+        if entry.th32OwnerProcessID == pid {
+            // SAFETY: opens a thread by id; the handle is closed right after use.
+            let opened = unsafe { OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID) };
+            if let Ok(thread) = opened {
+                // SAFETY: `thread` is a live handle with the resume right.
+                resumed |= unsafe { ResumeThread(thread) } != u32::MAX;
+                // SAFETY: `thread` came from OpenThread and is closed once.
+                unsafe {
+                    let _ = CloseHandle(thread);
+                }
+            }
+        }
+        // SAFETY: as for `Thread32First`.
+        more = unsafe { Thread32Next(snapshot, &raw mut entry) }.is_ok();
+    }
+    // SAFETY: `snapshot` came from CreateToolhelp32Snapshot and is closed once.
+    unsafe {
+        let _ = CloseHandle(snapshot);
+    }
+    if resumed {
+        Ok(())
+    } else {
+        Err(PortError::Other(
+            "could not start the process: its thread was not found".into(),
+        ))
     }
 }
 
@@ -485,6 +508,24 @@ mod tests {
 
     #[test]
     #[ignore = "helper process, started by the tests below"]
+    // The grandchild is left running on purpose: the test is about the job killing it.
+    #[allow(clippy::zombie_processes)]
+    fn helper_orphan() {
+        // Starts a grandchild at once and exits shortly after, leaving it behind.
+        let file = helper_args()[0].clone();
+        let exe = std::env::current_exe().expect("exe");
+        let grandchild = std::process::Command::new(exe)
+            .args(["--ignored", "--exact", "command::tests::helper_sleep"])
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("spawn grandchild");
+        std::fs::write(file, grandchild.id().to_string()).expect("write pid");
+        // Long enough for the test to open the grandchild, short next to its 120 s sleep.
+        thread::sleep(Duration::from_millis(1500));
+    }
+
+    #[test]
+    #[ignore = "helper process, started by the tests below"]
     fn helper_tree() {
         let file = helper_args()[0].clone();
         let exe = std::env::current_exe().expect("exe");
@@ -655,24 +696,61 @@ mod tests {
             tx.send(open_for_wait(pid)).expect("send");
         });
         assert!(started.elapsed() < Duration::from_secs(30));
-        let Err(CommandError::TimedOut { timeout, .. }) = &result else {
+        let Err(PortError::TimedOut(text)) = &result else {
             panic!("expected a timeout, got {result:?}");
         };
-        assert_eq!(*timeout, Duration::from_millis(1500));
+        assert!(text.contains("did not finish"), "{text}");
         let handle = rx.recv().expect("pid").expect("open process");
         assert!(is_gone(handle), "the child is still running");
-        // At the port the timeout is a plain error with a message.
-        let PortError::Other(text) = PortError::from(result.expect_err("timeout")) else {
-            panic!("expected Other");
-        };
-        assert!(text.contains("did not finish"), "{text}");
     }
 
     #[test]
-    fn timeout_kills_grandchildren_too() {
+    fn a_command_states_its_own_timeout_and_the_bound_caps_it() {
+        let adapter = adapter();
+        let plain = Command::new("cmd", ["/c", "exit"]);
+        assert_eq!(adapter.timeout_for(&plain), Duration::from_secs(60));
+        assert_eq!(
+            adapter.timeout_for(&plain.clone().with_timeout_secs(5)),
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            adapter.timeout_for(&plain.with_timeout_secs(u32::MAX)),
+            Duration::from_secs(u64::from(MAX_TIMEOUT_SECS))
+        );
+
+        // The command's own limit stops it, not the adapter's 60 s.
+        let started = std::time::Instant::now();
+        let result = adapter.run(&helper("helper_sleep", &[]).with_timeout_secs(1));
+        assert!(matches!(result, Err(PortError::TimedOut(_))), "{result:?}");
+        assert!(started.elapsed() < Duration::from_secs(30));
+    }
+
+    #[test]
+    fn harmless_system_programs_run_and_a_slow_one_times_out() {
+        let out = adapter()
+            .run(&Command::new("cmd", ["/c", "exit", "3"]))
+            .expect("cmd runs");
+        assert_eq!(out.exit_code, 3);
+        let out = adapter()
+            .run(&Command::new("ping", ["-n", "1", "127.0.0.1"]))
+            .expect("ping runs");
+        assert_eq!(out.exit_code, 0, "{}", out.output);
+        // `ping -n 30` to loopback takes about half a minute; the limit stops it after one
+        // second.
+        let slow = Command::new("ping", ["-n", "30", "127.0.0.1"]).with_timeout_secs(1);
+        let result = adapter().run(&slow);
+        assert!(matches!(result, Err(PortError::TimedOut(_))), "{result:?}");
+    }
+
+    /// Runs `helper_name` with a pid file, polls for the grandchild it records and returns the
+    /// result plus a handle to the grandchild.
+    fn run_with_grandchild(
+        helper_name: &str,
+        timeout: Duration,
+    ) -> (Result<CommandOutput, PortError>, usize) {
         let dir = tempfile::tempdir().expect("tempdir");
         let file = dir.path().join("pid.txt");
-        let short = WinCommands::with_limits(Duration::from_secs(6), DEFAULT_MAX_OUTPUT);
+        let short = WinCommands::with_limits(timeout, DEFAULT_MAX_OUTPUT);
 
         let pid_path = file.clone();
         let poller = thread::spawn(move || {
@@ -689,16 +767,32 @@ mod tests {
         });
 
         let started = std::time::Instant::now();
-        let result = short.run_inner(&helper("helper_tree", &[&file.to_string_lossy()]), |_| {});
+        let result = short.run_inner(&helper(helper_name, &[&file.to_string_lossy()]), |_| {});
         // The grandchild sleeps for 120 s: finishing early means the tree was killed, not waited
         // out.
         assert!(started.elapsed() < Duration::from_secs(30));
-        assert!(
-            matches!(result, Err(CommandError::TimedOut { .. })),
-            "{result:?}"
-        );
         let grandchild = poller.join().expect("poller").expect("grandchild started");
+        (result, grandchild)
+    }
+
+    #[test]
+    fn timeout_kills_grandchildren_too() {
+        let (result, grandchild) = run_with_grandchild("helper_tree", Duration::from_secs(6));
+        assert!(matches!(result, Err(PortError::TimedOut(_))), "{result:?}");
         assert!(is_gone(grandchild), "the grandchild is still running");
+    }
+
+    #[test]
+    fn a_grandchild_started_at_once_never_escapes_the_job() {
+        // The child starts a grandchild as its very first act and exits. Created suspended and
+        // resumed only after it joined the job, the grandchild is always in the job too and dies
+        // with it. Repeating the run makes a race show up.
+        for _ in 0..5 {
+            let (result, grandchild) =
+                run_with_grandchild("helper_orphan", Duration::from_secs(60));
+            assert!(result.is_ok(), "{result:?}");
+            assert!(is_gone(grandchild), "a grandchild escaped the job");
+        }
     }
 
     #[test]

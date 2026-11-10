@@ -243,6 +243,39 @@ fn tweak_with(header_overrides: &[(&str, &str)], steps: &str) -> String {
 
 const GOOD_STEP: &str = "[[tweak.steps]]\nkind = \"registry_delete\"\nhive = \"HKCU\"\nsubkey = 'Software\\X'\nname = \"v\"\n";
 
+fn command_step_with_timeout(value: &str) -> String {
+    tweak_with(
+        &[],
+        &format!(
+            "[[tweak.steps]]
+kind = \"command\"
+             detect = {{ program = \"p\", args = [] }}
+             apply = {{ program = \"p\", args = [\"on\"], timeout_secs = {value} }}
+             revert = {{ program = \"p\", args = [\"off\"] }}
+"
+        ),
+    )
+}
+
+#[test]
+fn a_command_may_state_its_own_timeout_up_to_the_fixed_bound() {
+    for ok in [1, 120, crate::MAX_TIMEOUT_SECS] {
+        let catalogue =
+            Catalogue::from_toml(&command_step_with_timeout(&ok.to_string())).expect("loads");
+        let step = &catalogue.get("t").expect("tweak").steps[0];
+        let TweakStep::Command { detect, apply, .. } = step else {
+            panic!("a command step");
+        };
+        assert_eq!(apply.timeout_secs, Some(ok));
+        assert_eq!(detect.timeout_secs, None);
+    }
+    for bad in ["0", "-5", "601", "99999999999", "\"soon\""] {
+        let issue = first_issue(&command_step_with_timeout(bad));
+        assert_eq!(issue.field, "steps[0].apply.timeout_secs", "{bad}");
+        assert!(matches!(issue.kind, IssueKind::Invalid(_)), "{bad}");
+    }
+}
+
 #[test]
 fn a_command_step_without_revert_is_rejected_naming_tweak_and_field() {
     let toml = tweak_with(

@@ -19,7 +19,14 @@ pub struct Command {
     /// The arguments, one list element each. They are passed as they are.
     #[serde(default)]
     pub args: Vec<String>,
+    /// How long the command may run, in seconds, when it needs a different limit than the
+    /// adapter's default. The adapter never allows more than [`MAX_TIMEOUT_SECS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u32>,
 }
+
+/// The longest time, in seconds, a command may ask for with [`Command::timeout_secs`].
+pub const MAX_TIMEOUT_SECS: u32 = 600;
 
 impl Command {
     /// A command with the given program and arguments.
@@ -32,7 +39,16 @@ impl Command {
         Self {
             program: program.into(),
             args: args.into_iter().map(Into::into).collect(),
+            timeout_secs: None,
         }
+    }
+
+    /// The same command with its own time limit in seconds (capped at [`MAX_TIMEOUT_SECS`] by
+    /// the adapter).
+    #[must_use]
+    pub const fn with_timeout_secs(mut self, secs: u32) -> Self {
+        self.timeout_secs = Some(secs);
+        self
     }
 }
 
