@@ -3,6 +3,7 @@
 
 pub mod api;
 mod autostart;
+pub mod boost;
 pub mod catalogue;
 pub mod cleaner;
 mod commands;
@@ -24,9 +25,9 @@ use tauri::WindowEvent;
 use tauri::webview::PageLoadEvent;
 use tauri_specta::Event as _;
 
+pub use boost::BoostFinished;
 pub use ipc::{AppReady, IpcError, bindings_builder, export_bindings};
 pub use metrics::MetricsUpdated;
-pub use tray::TrayBoostRequested;
 
 /// Product name shown in the UI.
 const APP_NAME: &str = "Volt";
@@ -106,7 +107,6 @@ pub fn run() {
                 // A failed emit only means the UI misses a notification; it can still ask via
                 // the `app_info` command, so there is nothing to recover.
                 let _ = AppReady(AppInfo::current()).emit(webview);
-                tray::flush_pending_boost(webview.app_handle());
             }
         })
         .build(tauri::generate_context!());

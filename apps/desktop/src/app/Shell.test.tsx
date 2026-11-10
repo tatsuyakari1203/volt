@@ -8,7 +8,7 @@ import { Shell } from './Shell';
 // A plain browser has no Tauri bridge: the calls fail. The screens must absorb that. The tray
 // Boost event is the exception: the test captures its handler to fire it by hand.
 const { boostListeners, tweakReads } = vi.hoisted(() => ({
-  boostListeners: [] as Array<() => void>,
+  boostListeners: [] as Array<(report: unknown) => void>,
   tweakReads: { count: 0 },
 }));
 vi.mock('../shared/ipc', async (importOriginal) => ({
@@ -25,7 +25,7 @@ vi.mock('../shared/ipc', async (importOriginal) => ({
   listStartupEntries: () => Promise.reject(new Error('no tauri bridge')),
   getAutostartEnabled: () => Promise.reject(new Error('no tauri bridge')),
   setAutostartEnabled: () => Promise.reject(new Error('no tauri bridge')),
-  onTrayBoostRequested: (handler: () => void) => {
+  onBoostFinished: (handler: (report: unknown) => void) => {
     boostListeners.push(handler);
     return Promise.resolve(() => {
       boostListeners.splice(boostListeners.indexOf(handler), 1);
@@ -109,16 +109,16 @@ it('changing the theme in Settings applies and persists it', async () => {
   expect(document.documentElement.dataset.theme).toBe('light');
 });
 
-it('shows the real Home, without the sample marker or a Boost button, and explains it cannot load here', async () => {
+it('shows the real Home, without the sample marker, and explains it cannot load here', async () => {
   renderShell();
   expect(screen.getByRole('heading', { level: 1, name: 'Home' })).toBeTruthy();
   expect(await screen.findByText('Your PC could not be checked')).toBeTruthy();
   expect(await screen.findByText('Live numbers are not available')).toBeTruthy();
   expect(screen.queryByText(/sample data/i)).toBeNull();
-  expect(screen.queryByRole('button', { name: 'Boost' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Boost' })).toBeTruthy();
 });
 
-it('the tray Boost event brings an open window back to Home', async () => {
+it('the tray Boost report brings an open window back to Home and shows it', async () => {
   const user = userEvent.setup();
   renderShell();
   await user.click(screen.getByRole('button', { name: 'Tweaks' }));
@@ -126,9 +126,22 @@ it('the tray Boost event brings an open window back to Home', async () => {
 
   await vi.waitFor(() => expect(boostListeners).toHaveLength(1));
   act(() => {
-    for (const listener of boostListeners) listener();
+    for (const listener of boostListeners) {
+      listener({
+        memoryBefore: null,
+        memoryAfter: null,
+        availableBefore: 4 * 1024 ** 3,
+        availableAfter: 5 * 1024 ** 3,
+        areas: [],
+        skipped: [],
+        junk: null,
+        movedToBin: null,
+        recorded: true,
+      });
+    }
   });
   expect(screen.getByRole('heading', { level: 1, name: 'Home' })).toBeTruthy();
+  expect(screen.getByRole('region', { name: 'Boost report' })).toBeTruthy();
 });
 
 it('stops listening for the tray Boost event when the shell unmounts', async () => {

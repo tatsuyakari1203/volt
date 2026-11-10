@@ -322,6 +322,39 @@ async cleanMemory(areas: MemoryAreaView[]) : Promise<Result<MemoryCleanResult, I
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Tauri command: runs Boost as saved and returns the before and after report.
+ */
+async boost() : Promise<Result<BoostResult, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("boost") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: what Boost includes.
+ */
+async boostConfig() : Promise<Result<BoostConfigView, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("boost_config") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: saves what Boost includes and returns what is stored.
+ */
+async setBoostConfig(config: BoostConfigView) : Promise<Result<BoostConfigView, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_boost_config", { config }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -330,14 +363,14 @@ async cleanMemory(areas: MemoryAreaView[]) : Promise<Result<MemoryCleanResult, I
 
 export const events = __makeEvents__<{
 appReady: AppReady,
+boostFinished: BoostFinished,
 cleanScanProgress: CleanScanProgress,
-metricsUpdated: MetricsUpdated,
-trayBoostRequested: TrayBoostRequested
+metricsUpdated: MetricsUpdated
 }>({
 appReady: "app-ready",
+boostFinished: "boost-finished",
 cleanScanProgress: "clean-scan-progress",
-metricsUpdated: "metrics-updated",
-trayBoostRequested: "tray-boost-requested"
+metricsUpdated: "metrics-updated"
 })
 
 /** user-defined constants **/
@@ -569,6 +602,64 @@ export type AreaStatus =
  * It failed; `detail` says how.
  */
 "failed"
+/**
+ * What Boost includes.
+ */
+export type BoostConfigView = { 
+/**
+ * The memory operations that run.
+ */
+areas: MemoryAreaView[]; 
+/**
+ * Also move the user temp files to the Recycle Bin, without a preview.
+ */
+moveTempToRecycleBin: boolean }
+/**
+ * Sent to every window when Boost was started from the tray, with the report. A window that is
+ * open shows it on Home; with no window the report is only in the activity history and the tray
+ * tooltip.
+ */
+export type BoostFinished = BoostResult
+/**
+ * The report of one Boost. There is no "freed" figure.
+ */
+export type BoostResult = { 
+/**
+ * Memory by list before the memory operations, or `null` when none ran or it was unreadable.
+ */
+memoryBefore: MemoryListsView | null; 
+/**
+ * Memory by list after them.
+ */
+memoryAfter: MemoryListsView | null; 
+/**
+ * Available memory (free plus standby) before, in bytes.
+ */
+availableBefore: number | null; 
+/**
+ * Available memory after, in bytes.
+ */
+availableAfter: number | null; 
+/**
+ * The memory operations that ran, in order, each with how it ended.
+ */
+areas: AreaResult[]; 
+/**
+ * Selected operations that were not run (administrator rights, unsupported), with the reason.
+ */
+skipped: SkippedOperationView[]; 
+/**
+ * What could be cleaned, or `null` when the cleaner is not available.
+ */
+junk: JunkView | null; 
+/**
+ * What was moved to the Recycle Bin, or `null` when cleaning did not run.
+ */
+movedToBin: MovedToBinView | null; 
+/**
+ * Whether every change was written to the activity history.
+ */
+recorded: boolean }
 /**
  * Where an activity line stands with respect to undo. The Undo page shows it on every row.
  */
@@ -961,6 +1052,22 @@ export type IpcError =
  */
 { kind: "other"; message: string }
 /**
+ * What the read-only junk scan found.
+ */
+export type JunkView = { 
+/**
+ * Files the Safe cleaning rules could move to the Recycle Bin.
+ */
+files: number; 
+/**
+ * Their size in bytes.
+ */
+bytes: number; 
+/**
+ * Whether the figures are a lower bound (a rule stopped at its item cap).
+ */
+truncated: boolean }
+/**
  * One memory cleaning operation. Mirrors [`volt_core::MemoryArea`].
  */
 export type MemoryAreaView = 
@@ -1111,6 +1218,22 @@ disks: DiskView[];
  * The primary GPU, or `null` on a machine without a (readable) GPU, which is normal.
  */
 gpu: GpuView | null }
+/**
+ * What the opt-in temp cleaning moved.
+ */
+export type MovedToBinView = { 
+/**
+ * Files moved to the Recycle Bin.
+ */
+files: number; 
+/**
+ * Their size in bytes. They still use disk space until the Recycle Bin is emptied.
+ */
+bytes: number; 
+/**
+ * Items left in place.
+ */
+skipped: number }
 /**
  * Whether an operation can run now.
  */
@@ -1295,6 +1418,22 @@ reason: string;
  */
 count: number }
 /**
+ * A selected operation Boost did not run, and why.
+ */
+export type SkippedOperationView = { 
+/**
+ * Which operation.
+ */
+area: MemoryAreaView; 
+/**
+ * Why it could not run.
+ */
+state: OperationState; 
+/**
+ * One sentence saying why.
+ */
+reason: string }
+/**
  * Precise result of [`set_startup_entry_enabled`].
  */
 export type StartupChangeResult = { 
@@ -1418,15 +1557,6 @@ export type StartupSource =
  * A source this version of the UI does not know.
  */
 "other"
-/**
- * Event emitted when the user picks Boost in the tray menu, after the window is open on Home.
- * 
- * Boost has no engine yet; a later task listens to this event and starts the real work. When
- * the window had to be created, the event is sent once its page has loaded, so a listener
- * registered at start-up sees it, but registration is asynchronous: treat it as best effort
- * until a pull command exists.
- */
-export type TrayBoostRequested = null
 /**
  * The group a tweak is listed under.
  */

@@ -29,11 +29,27 @@ fn generated_bindings_describe_the_sample_command_event_and_error() {
 }
 
 #[test]
-fn generated_bindings_describe_the_autostart_commands_and_the_tray_boost_event() {
+fn generated_bindings_describe_the_autostart_commands() {
     let text = generated_bindings();
     assert!(text.contains("autostartEnabled"), "{text}");
     assert!(text.contains("setAutostart"), "{text}");
-    assert!(text.contains("trayBoostRequested"), "{text}");
+}
+
+#[test]
+fn generated_bindings_describe_boost_its_settings_and_the_tray_report_event() {
+    let text = generated_bindings();
+    for name in [
+        "boostConfig",
+        "setBoostConfig",
+        "boostFinished",
+        "export type BoostResult",
+        "export type BoostConfigView",
+        "movedToBin",
+    ] {
+        assert!(text.contains(name), "{name} missing in {text}");
+    }
+    // The tray no longer sends a request event: it runs Boost itself.
+    assert!(!text.contains("trayBoostRequested"), "{text}");
 }
 
 #[test]

@@ -7,16 +7,19 @@ import {
   exportActivityText,
   getAppInfo,
   getAutostartEnabled,
+  getBoostConfig,
   IpcCommandError,
   type IpcError,
   IpcUnavailableError,
   listActivity,
   listTweaks,
   onAppReady,
-  onTrayBoostRequested,
+  onBoostFinished,
   previewUndoBatch,
   revertTweak,
+  runBoost,
   setAutostartEnabled,
+  setBoostConfig,
   undoBatch,
   undoEntry,
 } from './index';
@@ -116,18 +119,33 @@ describe('autostart commands', () => {
   });
 });
 
-describe('tray boost event', () => {
-  it('subscribes to the generated event name and calls the handler', async () => {
+describe('boost', () => {
+  it('subscribes to the generated event name and passes the report to the handler', async () => {
     const unlisten = vi.fn();
     listen.mockResolvedValue(unlisten);
     const handler = vi.fn();
 
-    const stop = await onTrayBoostRequested(handler);
-    expect(listen).toHaveBeenCalledWith('tray-boost-requested', expect.any(Function));
+    const stop = await onBoostFinished(handler);
+    expect(listen).toHaveBeenCalledWith('boost-finished', expect.any(Function));
     const callback = listen.mock.calls[0]?.[1] as (event: { payload: unknown }) => void;
-    callback({ payload: null });
-    expect(handler).toHaveBeenCalledTimes(1);
+    callback({ payload: { recorded: true } });
+    expect(handler).toHaveBeenCalledWith({ recorded: true });
     expect(stop).toBe(unlisten);
+  });
+
+  it('runs and configures Boost through the generated bindings', async () => {
+    invoke.mockResolvedValueOnce({ recorded: true });
+    await expect(runBoost()).resolves.toEqual({ recorded: true });
+    expect(invoke).toHaveBeenLastCalledWith('boost');
+
+    const config = { areas: ['workingSets' as const], moveTempToRecycleBin: false };
+    invoke.mockResolvedValueOnce(config);
+    await expect(getBoostConfig()).resolves.toEqual(config);
+    expect(invoke).toHaveBeenLastCalledWith('boost_config');
+
+    invoke.mockResolvedValueOnce(config);
+    await expect(setBoostConfig(config)).resolves.toEqual(config);
+    expect(invoke).toHaveBeenLastCalledWith('set_boost_config', { config });
   });
 });
 

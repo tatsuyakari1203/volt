@@ -49,6 +49,7 @@
 #![forbid(unsafe_code)]
 
 pub mod activity;
+pub mod boost;
 pub mod clean;
 pub mod command;
 pub mod error;
@@ -73,6 +74,10 @@ pub mod fakes;
 
 pub use activity::{
     ActivityId, ActivityLog, ActivityOutcome, ActivityRecord, NewActivity, render_text,
+};
+pub use boost::{
+    BOOST_SETTINGS_KEY, BOOST_TEMP_RULE_ID, BoostConfig, BoostReport, JunkFound, SkippedOperation,
+    run_boost,
 };
 pub use clean::{
     CleanCategory, CleanEngine, CleanItem, CleanPlan, CleanReport, CleanSkip, CleanSkipReason,

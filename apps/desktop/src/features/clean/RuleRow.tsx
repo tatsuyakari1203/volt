@@ -1,7 +1,7 @@
 import { Lock } from 'lucide-react';
 import type { CleaningRuleInfo, RuleScanView } from '../../shared/ipc';
+import { countOf } from '../../shared/text/size';
 import { Badge, Switch } from '../../shared/ui';
-import { countOf } from './format';
 import { findingsLine } from './messages';
 
 interface RuleRowProps {

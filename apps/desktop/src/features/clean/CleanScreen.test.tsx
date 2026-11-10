@@ -10,9 +10,9 @@ import type {
   RuleScanView,
 } from '../../shared/ipc';
 import { IpcCommandError } from '../../shared/ipc';
+import { formatSize } from '../../shared/text/size';
 import { ToastProvider } from '../../shared/ui';
 import { CleanScreen } from './CleanScreen';
-import { formatSize } from './format';
 import { selectionOf, tickedByDefault } from './messages';
 
 const ipc = vi.hoisted(() => ({
