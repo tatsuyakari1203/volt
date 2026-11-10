@@ -8,7 +8,8 @@
 //! Dependency rule (enforced by `scripts/check-arch.mjs`): depends on
 //! `volt-core` only; must not pull in `tauri` or `rusqlite`.
 //!
-//! Adapters in this crate: [`WinRegistry`], [`WinServices`], [`WinFileSystem`].
+//! Adapters in this crate: [`WinRegistry`], [`WinServices`], [`WinFileSystem`],
+//! [`WinKnownFolders`].
 //! The crate is empty on non-Windows targets.
 
 // The workspace denies unsafe code; FFI lives here by design.
@@ -17,10 +18,12 @@
 
 mod error;
 mod files;
+mod folders;
 mod registry;
 mod services;
 mod wide;
 
 pub use files::WinFileSystem;
+pub use folders::WinKnownFolders;
 pub use registry::WinRegistry;
 pub use services::WinServices;

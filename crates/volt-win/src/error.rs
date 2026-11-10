@@ -5,6 +5,8 @@ use volt_core::PortError;
 const ERROR_FILE_NOT_FOUND: u32 = 2;
 const ERROR_PATH_NOT_FOUND: u32 = 3;
 const ERROR_ACCESS_DENIED: u32 = 5;
+const ERROR_SHARING_VIOLATION: u32 = 32;
+const ERROR_LOCK_VIOLATION: u32 = 33;
 const ERROR_INVALID_NAME: u32 = 123;
 const ERROR_PRIVILEGE_NOT_HELD: u32 = 1314;
 const ERROR_SERVICE_DOES_NOT_EXIST: u32 = 1060;
@@ -13,14 +15,21 @@ const ERROR_INVALID_SERVICE_ACCOUNT: u32 = 1057;
 /// Maps a Win32 error code to a typed error. `context` names what was being
 /// done (for example the value or service), so the message is useful on its own.
 ///
-/// Access denied and missing privilege become [`PortError::AccessDenied`],
-/// not-found codes become [`PortError::NotFound`], everything else keeps the OS
+/// Access denied, missing privilege and a file held open by another program
+/// (sharing and lock violations) become [`PortError::AccessDenied`], not-found
+/// codes become [`PortError::NotFound`], everything else keeps the OS
 /// code and message in [`PortError::Other`].
 pub(crate) fn from_win32(code: u32, context: &str) -> PortError {
     match code {
         ERROR_ACCESS_DENIED | ERROR_PRIVILEGE_NOT_HELD => {
             PortError::AccessDenied(format!("{context}: {}", os_message(code)))
         }
+        // A file another program holds open: reported like a denied access, so
+        // a cleaner can skip it and say it is locked.
+        ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION => PortError::AccessDenied(format!(
+            "{context}: in use by another process ({})",
+            os_message(code)
+        )),
         ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND | ERROR_SERVICE_DOES_NOT_EXIST => {
             PortError::NotFound(context.to_owned())
         }
@@ -77,11 +86,24 @@ mod tests {
 
     #[test]
     fn other_codes_keep_code_and_message() {
-        let PortError::Other(text) = from_win32(32, "file") else {
+        let PortError::Other(text) = from_win32(1, "file") else {
             panic!("expected Other");
         };
         assert!(text.starts_with("file: "));
-        assert!(text.contains("os error 32"), "{text}");
+        assert!(text.contains("os error 1"), "{text}");
+    }
+
+    #[test]
+    fn a_file_held_open_by_another_program_is_access_denied() {
+        for code in [32, 33] {
+            let PortError::AccessDenied(text) = from_win32(code, "file") else {
+                panic!("expected AccessDenied");
+            };
+            assert!(
+                text.starts_with("file: in use by another process"),
+                "{text}"
+            );
+        }
     }
 
     #[test]

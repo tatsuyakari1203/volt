@@ -1,0 +1,1228 @@
+//! Tests of the cleaning engine against in-memory fakes. Nothing here touches
+//! the real file system.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use super::fakes::FakeKnownFolders;
+use super::*;
+use crate::activity::ActivityOutcome;
+use crate::error::PortError;
+use crate::fakes::{FakeActivityLog, FakeFileSystem, ManualClock};
+use crate::journal::Source;
+use crate::label::Risk;
+use crate::ports::FileSystem;
+use crate::time::Timestamp;
+
+const NOW: i64 = 1_800_000_000_000;
+const DAY: i64 = 86_400_000;
+
+fn abs(rest: &str) -> PathBuf {
+    let base = if cfg!(windows) { "C:\\" } else { "/" };
+    Path::new(base).join(rest)
+}
+
+fn ago(days: i64) -> Timestamp {
+    Timestamp::from_unix_millis(NOW - days * DAY)
+}
+
+fn temp() -> PathBuf {
+    abs("Users/tester/AppData/Local/Temp")
+}
+
+struct Fixture {
+    fs: Arc<FakeFileSystem>,
+    folders: Arc<FakeKnownFolders>,
+    activity: Arc<FakeActivityLog>,
+    clock: Arc<ManualClock>,
+}
+
+impl Fixture {
+    fn new() -> Self {
+        let folders = Arc::new(FakeKnownFolders::new());
+        folders.set(Location::UserTemp, temp());
+        folders.set(Location::LocalAppData, abs("Users/tester/AppData/Local"));
+        folders.protect(abs("Users/tester"));
+        folders.protect(abs("Windows"));
+        folders.protect(abs("Users/tester/Documents"));
+        Self {
+            fs: Arc::new(FakeFileSystem::new()),
+            folders,
+            activity: Arc::new(FakeActivityLog::new()),
+            clock: Arc::new(ManualClock::new(NOW)),
+        }
+    }
+
+    fn engine(&self, toml: &str) -> CleanEngine {
+        CleanEngine::new(
+            CleaningRules::from_toml(toml).expect("valid rules"),
+            self.folders.clone(),
+            self.fs.clone(),
+            self.clock.clone(),
+        )
+    }
+
+    fn logged_engine(&self, toml: &str) -> CleanEngine {
+        self.engine(toml).with_activity_log(self.activity.clone())
+    }
+}
+
+/// A rule over the temp folder with the given constraints and patterns.
+fn temp_rule(id: &str, include: &str, exclude: &str, constraints: &str) -> String {
+    format!(
+        r#"
+[[rule]]
+id = "{id}"
+title = "Temp files"
+description = "Disposable files in the temp folder."
+category = "temporary_files"
+risk = "safe"
+include = {include}
+exclude = {exclude}
+
+[rule.root]
+location = "user_temp"
+
+[rule.constraints]
+{constraints}
+"#
+    )
+}
+
+fn default_rule() -> String {
+    temp_rule(
+        "temp-files",
+        r#"["**"]"#,
+        r#"["keep/**", "**/*.lock"]"#,
+        "min_age_days = 1\nmax_depth = 3\nremove_empty_dirs = false",
+    )
+}
+
+fn only(plan: &CleanPlan) -> &RuleScan {
+    assert_eq!(plan.rules.len(), 1);
+    &plan.rules[0]
+}
+
+fn paths(scan: &RuleScan) -> Vec<PathBuf> {
+    scan.items.iter().map(|item| item.path.clone()).collect()
+}
+
+// ---- loading rules ---------------------------------------------------------------------------
+
+#[test]
+fn a_valid_rule_loads_with_every_field() {
+    let rules = CleaningRules::from_toml(
+        r#"
+[[rule]]
+id = "browser-cache"
+title = "Browser cache"
+description = "Cached pages."
+category = "browser_cache"
+risk = "caution"
+include = ["**/*.cache", "data_*"]
+exclude = ["profile/**"]
+root = { location = "local_app_data", path = "Vendor/Browser/Cache" }
+constraints = { min_age_days = 7, max_depth = 5, remove_empty_dirs = true }
+"#,
+    )
+    .expect("loads");
+    let rule = rules.get("browser-cache").expect("rule");
+    assert_eq!(rule.category, CleanCategory::BrowserCache);
+    assert_eq!(rule.risk, Risk::Caution);
+    assert_eq!(rule.root.location(), Location::LocalAppData);
+    assert_eq!(rule.root.relative(), ["Vendor", "Browser", "Cache"]);
+    assert_eq!(rule.root.to_string(), "local_app_data/Vendor/Browser/Cache");
+    assert_eq!(rule.include.len(), 2);
+    assert_eq!(rule.exclude[0].as_str(), "profile/**");
+    assert_eq!(
+        rule.constraints,
+        Constraints {
+            min_age_days: 7,
+            max_depth: 5,
+            remove_empty_dirs: true
+        }
+    );
+    assert_eq!(rules.len(), 1);
+}
+
+#[test]
+fn the_temp_folder_itself_is_a_valid_root_and_empty_dirs_default_to_kept() {
+    let rules = CleaningRules::from_toml(&temp_rule(
+        "t",
+        r#"["**"]"#,
+        "[]",
+        "min_age_days = 0\nmax_depth = 0",
+    ))
+    .expect("loads");
+    let rule = rules.get("t").expect("rule");
+    assert!(rule.root.relative().is_empty());
+    assert!(!rule.constraints.remove_empty_dirs);
+}
+
+fn issues_of(toml: &str) -> Vec<(Option<String>, String, RuleIssueKind)> {
+    CleaningRules::from_toml(toml)
+        .expect_err("must be rejected")
+        .issues
+        .into_iter()
+        .map(|i| (i.rule, i.field, i.kind))
+        .collect()
+}
+
+fn one_rule(root: &str, include: &str, constraints: &str) -> String {
+    format!(
+        r#"
+[[rule]]
+id = "r"
+title = "t"
+description = "d"
+category = "logs"
+risk = "safe"
+include = {include}
+root = {root}
+constraints = {constraints}
+"#
+    )
+}
+
+const OK_CONSTRAINTS: &str = "{ min_age_days = 1, max_depth = 2 }";
+
+#[test]
+fn dangerous_roots_are_rejected_at_load() {
+    let local = |path: &str| format!(r#"{{ location = "local_app_data", path = '{path}' }}"#);
+    for (path, why) in [
+        ("C:/Windows", "drive"),
+        ("C:", "drive"),
+        ("/Windows", "absolute"),
+        ("\\Windows", "backslash"),
+        ("Cache/../../Documents", "parent"),
+        ("..", "parent"),
+        ("", "whole location"),
+        ("Cache/", "trailing slash"),
+        ("Cache//x", "doubled slash"),
+        ("./Cache", "dot"),
+        ("Cache.", "trailing dot"),
+        ("Ca*che", "wildcard"),
+        ("a\\b", "backslash"),
+    ] {
+        let issues = issues_of(&one_rule(&local(path), r#"["**"]"#, OK_CONSTRAINTS));
+        assert_eq!(issues.len(), 1, "{path:?} ({why}): {issues:?}");
+        assert_eq!(issues[0].1, "root.path", "{path:?}");
+        assert_eq!(issues[0].0.as_deref(), Some("r"));
+    }
+    // The classes of refusal are distinguished.
+    let kind = |path: &str| {
+        issues_of(&one_rule(&local(path), r#"["**"]"#, OK_CONSTRAINTS))
+            .remove(0)
+            .2
+    };
+    assert!(matches!(kind("C:/Windows"), RuleIssueKind::UnsafeRoot(_)));
+    assert!(matches!(kind("/x"), RuleIssueKind::UnsafeRoot(_)));
+    assert!(matches!(kind("a/../b"), RuleIssueKind::UnsafeRoot(_)));
+    assert!(matches!(kind(""), RuleIssueKind::UnsafeRoot(_)));
+    assert!(matches!(kind("a//b"), RuleIssueKind::Malformed(_)));
+}
+
+#[test]
+fn every_problem_of_a_file_is_reported_with_rule_id_and_field() {
+    let issues = issues_of(
+        r#"
+extra = 1
+
+[[rule]]
+id = "Bad_Id"
+title = " "
+description = "d"
+category = "nonsense"
+risk = "safe"
+include = []
+root = { location = "nowhere", path = "x" }
+constraints = { min_age_days = -1, max_depth = 99, unknown = 1 }
+colour = "red"
+
+[[rule]]
+id = "dup"
+title = "t"
+description = "d"
+category = "logs"
+risk = "safe"
+include = ["../x", "[a]", 5]
+root = { location = "user_temp" }
+constraints = { min_age_days = 1, max_depth = 1 }
+
+[[rule]]
+id = "dup"
+title = "t"
+description = "d"
+category = "logs"
+risk = "safe"
+include = ["**"]
+root = { location = "user_temp" }
+"#,
+    );
+    let has = |rule: Option<&str>, field: &str| {
+        issues
+            .iter()
+            .any(|(r, f, _)| r.as_deref() == rule && f == field)
+    };
+    assert!(has(None, "extra"), "{issues:?}");
+    assert!(has(Some("Bad_Id"), "id"));
+    assert!(has(Some("Bad_Id"), "title"));
+    assert!(has(Some("Bad_Id"), "category"));
+    assert!(has(Some("Bad_Id"), "include"));
+    assert!(has(Some("Bad_Id"), "root.location"));
+    assert!(has(Some("Bad_Id"), "constraints.min_age_days"));
+    assert!(has(Some("Bad_Id"), "constraints.max_depth"));
+    assert!(has(Some("Bad_Id"), "constraints.unknown"));
+    assert!(has(Some("Bad_Id"), "colour"));
+    assert!(has(Some("dup"), "include[0]"));
+    assert!(has(Some("dup"), "include[1]"));
+    assert!(has(Some("dup"), "include[2]"));
+    // The second `dup` has no constraints and repeats the id.
+    assert!(has(Some("dup"), "constraints"));
+    assert!(issues.iter().any(
+        |(_, f, k)| f == "id" && matches!(k, RuleIssueKind::DuplicateId { first_position: 2 })
+    ));
+    assert!(
+        issues
+            .iter()
+            .any(|(_, f, k)| f == "include[0]" && matches!(k, RuleIssueKind::UnsafePattern(_)))
+    );
+    assert!(
+        issues
+            .iter()
+            .any(|(_, f, k)| f == "include[1]" && matches!(k, RuleIssueKind::Malformed(_)))
+    );
+}
+
+#[test]
+fn a_rule_without_constraints_or_with_an_empty_include_is_rejected() {
+    let missing = issues_of(
+        r#"
+[[rule]]
+id = "r"
+title = "t"
+description = "d"
+category = "logs"
+risk = "safe"
+include = ["**"]
+root = { location = "user_temp" }
+"#,
+    );
+    assert!(
+        missing
+            .iter()
+            .any(|(_, f, k)| f == "constraints" && *k == RuleIssueKind::MissingField)
+    );
+    let partial = issues_of(&one_rule(
+        r#"{ location = "user_temp" }"#,
+        "[]",
+        "{ min_age_days = 1 }",
+    ));
+    assert!(
+        partial
+            .iter()
+            .any(|(_, f, k)| f == "include" && *k == RuleIssueKind::Empty)
+    );
+    assert!(
+        partial
+            .iter()
+            .any(|(_, f, k)| f == "constraints.max_depth" && *k == RuleIssueKind::MissingField)
+    );
+}
+
+#[test]
+fn invalid_toml_is_one_syntax_issue() {
+    let error = CleaningRules::from_toml("[[rule]\nid =").expect_err("syntax");
+    assert_eq!(error.issues.len(), 1);
+    assert!(matches!(error.issues[0].kind, RuleIssueKind::Syntax { .. }));
+    assert!(error.to_string().contains("1 problem"));
+}
+
+// ---- scanning --------------------------------------------------------------------------------
+
+#[test]
+fn a_scan_lists_files_with_sizes_and_totals_and_changes_nothing() {
+    let fx = Fixture::new();
+    fx.fs.add_file_at(temp().join("a.tmp"), 100, ago(3));
+    fx.fs.add_file_at(temp().join("sub/b.tmp"), 250, ago(5));
+    fx.fs
+        .add_file_at(temp().join("sub/deeper/c.tmp"), 7, ago(2));
+    let engine = fx.logged_engine(&default_rule());
+
+    let plan = engine.scan(&["temp-files"]).expect("scan");
+    let scan = only(&plan);
+
+    assert_eq!(scan.failure, None);
+    assert!(scan.root_exists);
+    assert_eq!(scan.root.as_deref(), Some(temp().as_path()));
+    assert_eq!(scan.file_count(), 3);
+    assert_eq!(scan.total_bytes(), 357);
+    assert_eq!(plan.total_files(), 3);
+    assert_eq!(plan.total_bytes(), 357);
+    assert!(!plan.is_empty());
+    assert_eq!(scan.rule_id, "temp-files");
+    assert_eq!(scan.risk, Risk::Safe);
+    assert_eq!(scan.category, CleanCategory::TemporaryFiles);
+    let a = &scan.items[0];
+    assert_eq!(
+        (a.kind, a.size_bytes, a.modified),
+        (ItemKind::File, 100, Some(ago(3)))
+    );
+    // Read-only: no file was moved, no record was written.
+    assert!(fx.fs.trashed().is_empty());
+    assert!(fx.activity.records().is_empty());
+    assert!(fx.fs.exists(&temp().join("a.tmp")));
+}
+
+#[test]
+fn a_scan_is_deterministic_and_sorted() {
+    let fx = Fixture::new();
+    for name in ["c.tmp", "a.tmp", "b.tmp"] {
+        fx.fs.add_file_at(temp().join(name), 1, ago(2));
+    }
+    let engine = fx.engine(&default_rule());
+    let first = paths(only(&engine.scan(&["temp-files"]).expect("scan")));
+    let second = paths(only(&engine.scan_all()));
+    assert_eq!(first, second);
+    assert_eq!(
+        first,
+        [
+            temp().join("a.tmp"),
+            temp().join("b.tmp"),
+            temp().join("c.tmp")
+        ]
+    );
+}
+
+#[test]
+fn exclude_patterns_keep_files_and_folders_out_and_folders_are_not_entered() {
+    let fx = Fixture::new();
+    fx.fs.add_file_at(temp().join("a.tmp"), 1, ago(2));
+    fx.fs.add_file_at(temp().join("a.lock"), 1, ago(2));
+    fx.fs
+        .add_file_at(temp().join("keep/precious.dat"), 1, ago(9));
+    fx.fs.add_file_at(temp().join("other/x.LOCK"), 1, ago(2));
+    let engine = fx.engine(&default_rule());
+    let plan = engine.scan(&["temp-files"]).expect("scan");
+    let scan = only(&plan);
+    assert_eq!(paths(scan), [temp().join("a.tmp")]);
+    // `keep` and the two lock files (matching ignores case).
+    assert_eq!(scan.counts.excluded, 3);
+    assert!(
+        !fx.fs.read_dir_calls().contains(&temp().join("keep")),
+        "an excluded folder must not be entered"
+    );
+}
+
+#[test]
+fn include_patterns_decide_what_is_taken() {
+    let fx = Fixture::new();
+    fx.fs.add_file_at(temp().join("a.tmp"), 1, ago(2));
+    fx.fs.add_file_at(temp().join("a.txt"), 1, ago(2));
+    fx.fs.add_file_at(temp().join("sub/b.tmp"), 1, ago(2));
+    let engine = fx.engine(&temp_rule(
+        "only-tmp",
+        r#"["*.tmp"]"#,
+        "[]",
+        "min_age_days = 0\nmax_depth = 3",
+    ));
+    let plan = engine.scan(&["only-tmp"]).expect("scan");
+    let scan = only(&plan);
+    assert_eq!(paths(scan), [temp().join("a.tmp")]);
+    assert_eq!(scan.counts.not_matching, 2);
+}
+
+#[test]
+fn files_newer_than_the_minimum_age_or_without_a_time_are_skipped_with_a_reason() {
+    let fx = Fixture::new();
+    fx.fs.add_file_at(temp().join("old.tmp"), 1, ago(2));
+    fx.fs.add_file_at(
+        temp().join("new.tmp"),
+        1,
+        Timestamp::from_unix_millis(NOW - DAY / 2),
+    );
+    fx.fs.add_file_at(
+        temp().join("future.tmp"),
+        1,
+        Timestamp::from_unix_millis(NOW + DAY),
+    );
+    fx.fs.add_file(temp().join("unknown.tmp"), 1);
+    let engine = fx.engine(&default_rule());
+    let plan = engine.scan(&["temp-files"]).expect("scan");
+    let scan = only(&plan);
+    assert_eq!(paths(scan), [temp().join("old.tmp")]);
+    let reason_of = |name: &str| {
+        scan.skipped
+            .iter()
+            .find(|s| s.path == temp().join(name))
+            .map(|s| s.reason)
+    };
+    assert_eq!(reason_of("new.tmp"), Some(SkipReason::TooNew));
+    assert_eq!(reason_of("future.tmp"), Some(SkipReason::TooNew));
+    assert_eq!(reason_of("unknown.tmp"), Some(SkipReason::AgeUnknown));
+    assert_eq!(scan.counts.too_new, 2);
+    assert_eq!(scan.counts.age_unknown, 1);
+}
+
+#[test]
+fn a_file_exactly_as_old_as_the_minimum_is_taken() {
+    let fx = Fixture::new();
+    fx.fs.add_file_at(temp().join("edge.tmp"), 1, ago(1));
+    let engine = fx.engine(&default_rule());
+    let plan = engine.scan(&["temp-files"]).expect("scan");
+    assert_eq!(paths(only(&plan)), [temp().join("edge.tmp")]);
+}
+
+#[test]
+fn max_depth_limits_how_deep_a_scan_goes() {
+    let fx = Fixture::new();
+    fx.fs.add_file_at(temp().join("a.tmp"), 1, ago(2));
+    fx.fs.add_file_at(temp().join("d1/b.tmp"), 1, ago(2));
+    fx.fs.add_file_at(temp().join("d1/d2/c.tmp"), 1, ago(2));
+    fx.fs.add_file_at(temp().join("d1/d2/d3/d.tmp"), 1, ago(2));
+    let at = |depth: u32| {
+        let engine = fx.engine(&temp_rule(
+            "r",
+            r#"["**"]"#,
+            "[]",
+            &format!("min_age_days = 0\nmax_depth = {depth}"),
+        ));
+        let plan = engine.scan(&["r"]).expect("scan");
+        let scan = only(&plan);
+        (
+            scan.file_count(),
+            scan.counts.beyond_max_depth,
+            scan.skipped.clone(),
+        )
+    };
+    assert_eq!(at(0).0, 1);
+    assert_eq!(at(0).1, 1);
+    assert_eq!(at(1).0, 2);
+    assert_eq!(at(2).0, 3);
+    let (files, beyond, skipped) = at(2);
+    assert_eq!((files, beyond), (3, 1));
+    assert_eq!(skipped[0].path, temp().join("d1/d2/d3"));
+    assert_eq!(skipped[0].reason, SkipReason::BeyondMaxDepth);
+    assert_eq!(at(3).0, 4);
+}
+
+#[test]
+fn a_scan_never_follows_a_link_and_never_yields_anything_outside_the_root() {
+    let fx = Fixture::new();
+    fx.fs.add_file_at(temp().join("a.tmp"), 1, ago(2));
+    // A junction inside the root pointing at precious data elsewhere: the fake
+    // shows the target's files below the link, as a real junction would.
+    let precious = abs("Users/tester/Documents");
+    fx.fs.add_file_at(precious.join("thesis.docx"), 9, ago(900));
+    fx.fs
+        .add_file_at(temp().join("link/thesis.docx"), 9, ago(900));
+    fx.fs.add_link(temp().join("link"));
+    // A sibling folder outside the root.
+    fx.fs
+        .add_file_at(abs("Users/tester/AppData/Local/Other/x.tmp"), 5, ago(9));
+
+    let engine = fx.engine(&default_rule());
+    let plan = engine.scan(&["temp-files"]).expect("scan");
+    let scan = only(&plan);
+
+    assert_eq!(paths(scan), [temp().join("a.tmp")]);
+    assert_eq!(scan.counts.links, 1);
+    assert_eq!(scan.skipped.len(), 1);
+    assert_eq!(scan.skipped[0].path, temp().join("link"));
+    assert_eq!(scan.skipped[0].reason, SkipReason::Link);
+    assert!(
+        fx.fs
+            .read_dir_calls()
+            .iter()
+            .all(|dir| dir.starts_with(temp()) && !dir.starts_with(temp().join("link"))),
+        "only folders of the root were listed, never the link: {:?}",
+        fx.fs.read_dir_calls()
+    );
+    // Everything planned lies inside the root.
+    assert!(scan.items.iter().all(|i| i.path.starts_with(temp())));
+}
+
+#[test]
+fn a_link_is_never_taken_even_if_it_matches_the_rule() {
+    let fx = Fixture::new();
+    fx.fs.add_link(temp().join("cache.tmp"));
+    let engine = fx.engine(&default_rule());
+    let plan = engine.scan(&["temp-files"]).expect("scan");
+    assert!(only(&plan).items.is_empty());
+    assert_eq!(only(&plan).counts.links, 1);
+}
+
+#[test]
+fn a_root_that_is_a_link_or_a_file_is_refused_and_a_missing_root_is_just_empty() {
+    let fx = Fixture::new();
+    let engine = fx.engine(&default_rule());
+
+    let plan = engine.scan(&["temp-files"]).expect("scan");
+    assert!(!only(&plan).root_exists);
+    assert_eq!(only(&plan).failure, None);
+    assert!(plan.is_empty());
+
+    fx.fs.add_file_at(temp().join("a.tmp"), 1, ago(2));
+    fx.fs.add_link(temp());
+    let plan = engine.scan(&["temp-files"]).expect("scan");
+    assert_eq!(only(&plan).failure, Some(ScanFailure::RootIsLink));
+    assert!(only(&plan).items.is_empty());
+
+    let fx = Fixture::new();
+    fx.fs.add_file(temp(), 3);
+    let plan = fx
+        .engine(&default_rule())
+        .scan(&["temp-files"])
+        .expect("scan");
+    assert_eq!(only(&plan).failure, Some(ScanFailure::RootNotDirectory));
+}
+
+#[test]
+fn roots_that_resolve_to_broad_or_protected_folders_are_refused_at_scan() {
+    let engine_with = |temp_dir: PathBuf| {
+        let fx = Fixture::new();
+        fx.folders.set(Location::UserTemp, temp_dir.clone());
+        fx.fs.add_file_at(temp_dir.join("a.tmp"), 1, ago(9));
+        let plan = fx
+            .engine(&default_rule())
+            .scan(&["temp-files"])
+            .expect("scan");
+        (only(&plan).failure.clone(), only(&plan).items.len())
+    };
+    // The drive root and a top-level folder.
+    for broad in [abs(""), abs("Windows"), abs("Temp"), abs("Users")] {
+        assert_eq!(
+            engine_with(broad.clone()),
+            (Some(ScanFailure::Root(RootError::TooBroad)), 0),
+            "{broad:?}"
+        );
+    }
+    // The profile directory and a protected folder inside it; case does not
+    // matter. (A folder above the profile is a top-level folder, refused above.)
+    for protected in [
+        abs("Users/tester"),
+        abs("USERS/Tester"),
+        abs("Users/tester/documents"),
+    ] {
+        let (failure, items) = engine_with(protected.clone());
+        assert!(
+            matches!(failure, Some(ScanFailure::Root(RootError::Protected(_)))),
+            "{protected:?}: {failure:?}"
+        );
+        assert_eq!(items, 0);
+    }
+    // A folder below a protected one is fine (the real temp folder is).
+    assert_eq!(engine_with(temp()), (None, 1));
+}
+
+#[test]
+fn an_unresolvable_relative_or_failing_location_is_refused() {
+    let fx = Fixture::new();
+    let engine = fx.engine(&default_rule());
+
+    fx.folders.set(Location::UserTemp, "relative/temp");
+    assert_eq!(
+        only(&engine.scan(&["temp-files"]).expect("scan")).failure,
+        Some(ScanFailure::Root(RootError::NotAbsolute))
+    );
+
+    fx.folders.set(Location::UserTemp, temp().join("a/../.."));
+    assert_eq!(
+        only(&engine.scan(&["temp-files"]).expect("scan")).failure,
+        Some(ScanFailure::Root(RootError::TooBroad))
+    );
+
+    let fx = Fixture::new();
+    fx.folders
+        .fail_protected_with(Some(PortError::Other("boom".to_owned())));
+    assert_eq!(
+        only(
+            &fx.engine(&default_rule())
+                .scan(&["temp-files"])
+                .expect("scan")
+        )
+        .failure,
+        Some(ScanFailure::Root(RootError::Unavailable("error")))
+    );
+
+    let engine = Fixture::new().engine(
+        r#"
+[[rule]]
+id = "r"
+title = "t"
+description = "d"
+category = "logs"
+risk = "safe"
+include = ["**"]
+root = { location = "program_data", path = "Vendor/Logs" }
+constraints = { min_age_days = 0, max_depth = 1 }
+"#,
+    );
+    assert_eq!(
+        only(&engine.scan(&["r"]).expect("scan")).failure,
+        Some(ScanFailure::Root(RootError::Unavailable("not found")))
+    );
+}
+
+#[test]
+fn a_rule_with_a_relative_path_resolves_below_its_location() {
+    let fx = Fixture::new();
+    let cache = abs("Users/tester/AppData/Local/Vendor/Cache");
+    fx.fs.add_file_at(cache.join("x.bin"), 4, ago(3));
+    let engine = fx.engine(
+        r#"
+[[rule]]
+id = "vendor-cache"
+title = "t"
+description = "d"
+category = "application_cache"
+risk = "safe"
+include = ["*.bin"]
+root = { location = "local_app_data", path = "Vendor/Cache" }
+constraints = { min_age_days = 1, max_depth = 0 }
+"#,
+    );
+    let plan = engine.scan_all();
+    assert_eq!(only(&plan).root.as_deref(), Some(cache.as_path()));
+    assert_eq!(only(&plan).total_bytes(), 4);
+}
+
+#[test]
+fn empty_folders_are_planned_children_first_and_only_when_nothing_is_left_in_them() {
+    let fx = Fixture::new();
+    // `gone/inner` holds only a file that will be taken: both folders empty out.
+    fx.fs
+        .add_file_at(temp().join("gone/inner/x.tmp"), 1, ago(3));
+    // `stays` holds a file that is too new: the folder must stay.
+    fx.fs.add_file_at(
+        temp().join("stays/new.tmp"),
+        1,
+        Timestamp::from_unix_millis(NOW - 1000),
+    );
+    // `empty` is empty already.
+    fx.fs.add_dir(temp().join("empty"), Some(ago(4)));
+    // `fresh` is empty but too new.
+    fx.fs.add_dir(temp().join("fresh"), Some(ago(0)));
+    // `with-link` holds only a link.
+    fx.fs.add_link(temp().join("with-link/l"));
+    // `keep` is excluded, even though empty.
+    fx.fs.add_dir(temp().join("keep"), Some(ago(9)));
+    // Folders carry a modification time that is old enough.
+    fx.fs.add_dir(temp().join("gone"), Some(ago(3)));
+    fx.fs.add_dir(temp().join("gone/inner"), Some(ago(3)));
+    fx.fs.add_dir(temp().join("stays"), Some(ago(3)));
+    fx.fs.add_dir(temp().join("with-link"), Some(ago(3)));
+
+    let engine = fx.engine(&temp_rule(
+        "r",
+        r#"["**"]"#,
+        r#"["keep"]"#,
+        "min_age_days = 1\nmax_depth = 4\nremove_empty_dirs = true",
+    ));
+    let plan = engine.scan(&["r"]).expect("scan");
+    let scan = only(&plan);
+    assert_eq!(
+        paths(scan),
+        [
+            temp().join("empty"),
+            temp().join("gone/inner/x.tmp"),
+            temp().join("gone/inner"),
+            temp().join("gone"),
+        ]
+    );
+    assert_eq!(scan.file_count(), 1);
+    assert_eq!(scan.directory_count(), 3);
+    assert_eq!(scan.items[0].kind, ItemKind::EmptyDirectory);
+    assert_eq!(scan.total_bytes(), 1);
+}
+
+#[test]
+fn folders_are_never_planned_when_the_rule_keeps_them() {
+    let fx = Fixture::new();
+    fx.fs.add_dir(temp().join("empty"), Some(ago(4)));
+    let engine = fx.engine(&default_rule());
+    assert!(
+        only(&engine.scan(&["temp-files"]).expect("scan"))
+            .items
+            .is_empty()
+    );
+}
+
+#[test]
+fn an_unreadable_folder_is_reported_and_does_not_stop_the_scan() {
+    let fx = Fixture::new();
+    fx.fs.add_file_at(temp().join("a.tmp"), 1, ago(2));
+    fx.fs.add_file_at(temp().join("locked/b.tmp"), 1, ago(2));
+    fx.fs.add_file_at(temp().join("ok/c.tmp"), 1, ago(2));
+    fx.fs.fail_read_dir_of(
+        temp().join("locked"),
+        PortError::AccessDenied("x".to_owned()),
+    );
+    let engine = fx.engine(&default_rule());
+    let plan = engine.scan(&["temp-files"]).expect("scan");
+    let scan = only(&plan);
+    assert_eq!(paths(scan), [temp().join("a.tmp"), temp().join("ok/c.tmp")]);
+    assert_eq!(scan.counts.unreadable, 1);
+    assert_eq!(
+        scan.skipped[0],
+        SkippedEntry {
+            path: temp().join("locked"),
+            reason: SkipReason::Unreadable("access denied"),
+        }
+    );
+}
+
+#[test]
+fn skipped_details_are_capped_but_the_counts_stay_exact() {
+    let fx = Fixture::new();
+    let total = MAX_SKIPPED_DETAILS + 100;
+    for i in 0..total {
+        fx.fs
+            .add_file_at(temp().join(format!("new{i}.tmp")), 1, ago(0));
+    }
+    let engine = fx.engine(&default_rule());
+    let plan = engine.scan(&["temp-files"]).expect("scan");
+    let scan = only(&plan);
+    assert_eq!(scan.skipped.len(), MAX_SKIPPED_DETAILS);
+    assert_eq!(scan.counts.too_new, total);
+    assert!(scan.items.is_empty());
+}
+
+#[test]
+fn scanning_an_unknown_rule_is_an_error_and_an_empty_selection_is_an_empty_plan() {
+    let fx = Fixture::new();
+    let engine = fx.engine(&default_rule());
+    assert_eq!(
+        engine.scan(&["temp-files", "nope"]).expect_err("unknown"),
+        UnknownRule("nope".to_owned())
+    );
+    let none: [&str; 0] = [];
+    assert!(engine.scan(&none).expect("scan").rules.is_empty());
+}
+
+// ---- cleaning --------------------------------------------------------------------------------
+
+fn engine_and_plan(fx: &Fixture, toml: &str) -> (CleanEngine, CleanPlan) {
+    let engine = fx.logged_engine(toml);
+    let plan = engine.scan_all();
+    (engine, plan)
+}
+
+#[test]
+fn cleaning_moves_exactly_the_planned_files_to_the_recycle_bin_and_reports_honestly() {
+    let fx = Fixture::new();
+    fx.fs.add_file_at(temp().join("a.tmp"), 1000, ago(3));
+    fx.fs.add_file_at(temp().join("sub/b.tmp"), 24, ago(3));
+    fx.fs.add_file_at(temp().join("a.lock"), 5, ago(3));
+    let (engine, plan) = engine_and_plan(&fx, &default_rule());
+    // A file that appears after the scan is not in the plan and must stay.
+    fx.fs.add_file_at(temp().join("late.tmp"), 1, ago(5));
+
+    let report = engine.clean(&plan.confirm(), Source::Manual);
+
+    assert_eq!(report.moved_files(), 2);
+    assert_eq!(report.moved_directories(), 0);
+    assert_eq!(report.moved_bytes(), 1024);
+    assert_eq!(report.skipped_count(), 0);
+    assert_eq!(
+        fx.fs.trashed(),
+        [temp().join("a.tmp"), temp().join("sub/b.tmp")]
+    );
+    assert!(fx.fs.exists(&temp().join("late.tmp")));
+    assert!(fx.fs.exists(&temp().join("a.lock")));
+    // The text names the figure honestly: moved, not freed.
+    let text = report.describe();
+    assert!(
+        text.contains("Moved 2 files to the Recycle Bin (1.0 KB)"),
+        "{text}"
+    );
+    assert!(text.contains("until the Recycle Bin is emptied"), "{text}");
+    assert!(!text.to_lowercase().contains("freed."), "{text}");
+}
+
+#[test]
+fn an_item_that_changed_since_the_scan_is_skipped_and_left_alone() {
+    let fx = Fixture::new();
+    for name in ["same", "size", "time", "gone", "link", "dir"] {
+        fx.fs
+            .add_file_at(temp().join(format!("{name}.tmp")), 10, ago(3));
+    }
+    let (engine, plan) = engine_and_plan(&fx, &default_rule());
+
+    fx.fs.add_file_at(temp().join("size.tmp"), 11, ago(3));
+    fx.fs.add_file_at(temp().join("time.tmp"), 10, ago(1));
+    fx.fs
+        .move_to_trash(&temp(), &temp().join("gone.tmp"))
+        .expect("trash");
+    fx.fs.add_link(temp().join("link.tmp"));
+    fx.fs.add_dir(temp().join("dir.tmp"), Some(ago(3)));
+
+    let report = engine.clean(&plan.confirm(), Source::Manual);
+    let rule = &report.rules[0];
+    let reason_of = |name: &str| {
+        rule.skipped
+            .iter()
+            .find(|s| s.path == temp().join(format!("{name}.tmp")))
+            .map(|s| s.reason)
+    };
+    assert_eq!(reason_of("size"), Some(CleanSkipReason::Changed));
+    assert_eq!(reason_of("time"), Some(CleanSkipReason::Changed));
+    assert_eq!(reason_of("gone"), Some(CleanSkipReason::Gone));
+    assert_eq!(reason_of("link"), Some(CleanSkipReason::Link));
+    assert_eq!(reason_of("dir"), Some(CleanSkipReason::Changed));
+    assert_eq!(reason_of("same"), None);
+    assert_eq!(rule.moved.len(), 1);
+    assert_eq!(rule.moved[0].path, temp().join("same.tmp"));
+    // `gone.tmp` was trashed by the test itself, nothing else was moved.
+    assert_eq!(
+        fx.fs.trashed(),
+        [temp().join("gone.tmp"), temp().join("same.tmp")]
+    );
+    for name in ["size", "time", "link", "dir"] {
+        assert!(fx.fs.exists(&temp().join(format!("{name}.tmp"))));
+    }
+}
+
+#[test]
+fn a_folder_that_became_a_link_after_the_scan_is_not_followed_by_the_clean() {
+    let fx = Fixture::new();
+    fx.fs.add_file_at(temp().join("sub/a.tmp"), 10, ago(3));
+    fx.fs.add_file_at(temp().join("sub/b.tmp"), 10, ago(3));
+    let (engine, plan) = engine_and_plan(&fx, &default_rule());
+    assert_eq!(only(&plan).file_count(), 2);
+
+    // Swapped for a junction after the scan; the target's files show below it.
+    fx.fs.add_link(temp().join("sub"));
+
+    let report = engine.clean(&plan.confirm(), Source::Manual);
+    assert_eq!(report.moved_files(), 0);
+    assert!(
+        report.rules[0]
+            .skipped
+            .iter()
+            .all(|s| s.reason == CleanSkipReason::Link)
+    );
+    assert_eq!(report.rules[0].skipped.len(), 2);
+    assert!(fx.fs.trashed().is_empty());
+    assert!(fx.fs.exists(&temp().join("sub/a.tmp")));
+}
+
+#[test]
+fn a_locked_file_is_skipped_reported_and_tried_exactly_once() {
+    let fx = Fixture::new();
+    fx.fs.add_file_at(temp().join("a.tmp"), 1, ago(3));
+    fx.fs.add_file_at(temp().join("locked.tmp"), 1, ago(3));
+    fx.fs.add_file_at(temp().join("z.tmp"), 1, ago(3));
+    let (engine, plan) = engine_and_plan(&fx, &default_rule());
+    fx.fs.fail_trash_of(
+        temp().join("locked.tmp"),
+        PortError::AccessDenied("in use".to_owned()),
+    );
+
+    let report = engine.clean(&plan.confirm(), Source::Manual);
+
+    assert_eq!(report.moved_files(), 2);
+    assert_eq!(
+        report.rules[0].skipped,
+        [CleanSkip {
+            path: temp().join("locked.tmp"),
+            reason: CleanSkipReason::LockedOrDenied
+        }]
+    );
+    assert_eq!(
+        fx.fs
+            .trash_attempts()
+            .iter()
+            .filter(|p| **p == temp().join("locked.tmp"))
+            .count(),
+        1,
+        "no retry loop"
+    );
+    assert!(fx.fs.exists(&temp().join("locked.tmp")));
+    assert!(report.describe().contains("1 item left in place"));
+}
+
+#[test]
+fn other_port_failures_are_classified_without_their_text() {
+    let fx = Fixture::new();
+    fx.fs.add_file_at(temp().join("a.tmp"), 1, ago(3));
+    fx.fs.add_file_at(temp().join("b.tmp"), 1, ago(3));
+    let (engine, plan) = engine_and_plan(&fx, &default_rule());
+    fx.fs.fail_trash_of(
+        temp().join("a.tmp"),
+        PortError::Other("secret detail".to_owned()),
+    );
+    fx.fs.fail_trash_of(
+        temp().join("b.tmp"),
+        PortError::InvalidInput("outside".to_owned()),
+    );
+    let report = engine.clean(&plan.confirm(), Source::Manual);
+    assert_eq!(
+        report.rules[0]
+            .skipped
+            .iter()
+            .map(|s| s.reason)
+            .collect::<Vec<_>>(),
+        [CleanSkipReason::Failed("error"), CleanSkipReason::Refused]
+    );
+    assert!(!format!("{report:?}").contains("secret detail"));
+}
+
+#[test]
+fn empty_folders_are_moved_after_their_files_and_only_while_still_empty() {
+    let fx = Fixture::new();
+    fx.fs.add_dir(temp().join("a"), Some(ago(3)));
+    fx.fs.add_dir(temp().join("b"), Some(ago(3)));
+    fx.fs.add_file_at(temp().join("a/x.tmp"), 8, ago(3));
+    fx.fs.add_file_at(temp().join("b/y.tmp"), 8, ago(3));
+    let toml = temp_rule(
+        "r",
+        r#"["**"]"#,
+        "[]",
+        "min_age_days = 1\nmax_depth = 2\nremove_empty_dirs = true",
+    );
+    let (engine, plan) = engine_and_plan(&fx, &toml);
+    assert_eq!(only(&plan).items.len(), 4);
+    // Something new appears in `b` after the scan.
+    fx.fs.add_file_at(temp().join("b/new.dat"), 1, ago(0));
+
+    let report = engine.clean(&plan.confirm(), Source::Manual);
+
+    assert_eq!(report.moved_files(), 2);
+    assert_eq!(report.moved_directories(), 1);
+    assert_eq!(
+        fx.fs.trashed(),
+        [
+            temp().join("a/x.tmp"),
+            temp().join("a"),
+            temp().join("b/y.tmp")
+        ]
+    );
+    let skipped = &report.rules[0].skipped;
+    assert_eq!(skipped.len(), 1);
+    assert_eq!(skipped[0].path, temp().join("b"));
+    assert_eq!(skipped[0].reason, CleanSkipReason::NotEmpty);
+    assert!(fx.fs.exists(&temp().join("b/new.dat")));
+    assert!(report.describe().contains("2 files and 1 empty folder"));
+}
+
+#[test]
+fn confirming_a_subset_cleans_only_those_rules() {
+    let fx = Fixture::new();
+    fx.fs.add_file_at(temp().join("a.tmp"), 1, ago(3));
+    fx.fs.add_file_at(temp().join("b.log"), 1, ago(3));
+    let toml = format!(
+        "{}{}",
+        temp_rule(
+            "tmp",
+            r#"["*.tmp"]"#,
+            "[]",
+            "min_age_days = 0\nmax_depth = 0"
+        ),
+        temp_rule(
+            "logs",
+            r#"["*.log"]"#,
+            "[]",
+            "min_age_days = 0\nmax_depth = 0"
+        ),
+    );
+    let (engine, plan) = engine_and_plan(&fx, &toml);
+    assert_eq!(plan.rules.len(), 2);
+
+    let confirmed = plan.confirm_rules(&["logs", "unknown"]);
+    assert_eq!(confirmed.rules().len(), 1);
+    let report = engine.clean(&confirmed, Source::Manual);
+
+    assert_eq!(fx.fs.trashed(), [temp().join("b.log")]);
+    assert!(fx.fs.exists(&temp().join("a.tmp")));
+    assert_eq!(report.rules.len(), 1);
+    assert_eq!(report.rules[0].rule_id, "logs");
+}
+
+#[test]
+fn a_root_that_moved_or_became_protected_since_the_scan_stops_the_clean() {
+    for change in 0..2 {
+        let fx = Fixture::new();
+        fx.fs.add_file_at(temp().join("a.tmp"), 1, ago(3));
+        let (engine, plan) = engine_and_plan(&fx, &default_rule());
+        if change == 0 {
+            // The location now points somewhere else.
+            let other = abs("Users/tester/AppData/Local/Other");
+            fx.fs.add_file_at(other.join("a.tmp"), 1, ago(3));
+            fx.folders.set(Location::UserTemp, other);
+        } else {
+            // The same folder is now protected.
+            fx.folders.protect(temp());
+        }
+        let report = engine.clean(&plan.confirm(), Source::Manual);
+        assert_eq!(report.moved_files(), 0, "change {change}");
+        assert_eq!(
+            report.rules[0].skipped[0].reason,
+            CleanSkipReason::RootChanged
+        );
+        assert!(fx.fs.trashed().is_empty());
+    }
+}
+
+#[test]
+fn a_root_that_became_a_link_stops_the_clean() {
+    let fx = Fixture::new();
+    fx.fs.add_file_at(temp().join("a.tmp"), 1, ago(3));
+    let (engine, plan) = engine_and_plan(&fx, &default_rule());
+    fx.fs.add_link(temp());
+    let report = engine.clean(&plan.confirm(), Source::Manual);
+    assert_eq!(report.moved_files(), 0);
+    assert_eq!(
+        report.rules[0].skipped[0].reason,
+        CleanSkipReason::RootChanged
+    );
+}
+
+#[test]
+fn a_plan_is_only_cleaned_by_an_engine_that_still_allows_it() {
+    let fx = Fixture::new();
+    fx.fs.add_file_at(temp().join("a.tmp"), 1, ago(3));
+    fx.fs.add_file_at(temp().join("b.log"), 1, ago(3));
+    let broad = temp_rule("r", r#"["**"]"#, "[]", "min_age_days = 0\nmax_depth = 1");
+    let (_, plan) = engine_and_plan(&fx, &broad);
+    assert_eq!(only(&plan).items.len(), 2);
+
+    // The same rule id, but its include list now covers only `.log` files.
+    let narrow = fx.engine(&temp_rule(
+        "r",
+        r#"["*.log"]"#,
+        "[]",
+        "min_age_days = 0\nmax_depth = 1",
+    ));
+    let report = narrow.clean(&plan.confirm(), Source::Manual);
+    assert_eq!(fx.fs.trashed(), [temp().join("b.log")]);
+    assert_eq!(
+        report.rules[0].skipped[0].reason,
+        CleanSkipReason::NotAllowedByRule
+    );
+
+    // A rule the engine does not have at all.
+    let fx2 = Fixture::new();
+    let stranger = fx2.engine(&temp_rule(
+        "other",
+        r#"["**"]"#,
+        "[]",
+        "min_age_days = 0\nmax_depth = 1",
+    ));
+    let report = stranger.clean(&plan.confirm(), Source::Manual);
+    assert_eq!(report.moved_files(), 0);
+    assert_eq!(report.rules[0].skipped.len(), 2);
+    assert_eq!(
+        report.rules[0].skipped[0].reason,
+        CleanSkipReason::RuleUnknown
+    );
+}
+
+#[test]
+fn an_empty_confirmed_plan_does_nothing_and_writes_nothing() {
+    let fx = Fixture::new();
+    let (engine, plan) = engine_and_plan(&fx, &default_rule());
+    let report = engine.clean(&plan.confirm(), Source::Manual);
+    assert_eq!(report.moved_files(), 0);
+    assert_eq!(report.skipped_count(), 0);
+    assert!(fx.activity.records().is_empty());
+    assert!(fx.fs.trashed().is_empty());
+}
+
+// ---- activity ----------------------------------------------------------------------------------
+
+#[test]
+fn a_clean_writes_one_redacted_record_per_rule() {
+    let fx = Fixture::new();
+    fx.fs
+        .add_file_at(temp().join("secret-token-4711.tmp"), 2048, ago(3));
+    fx.fs.add_file_at(temp().join("locked.tmp"), 1, ago(3));
+    let (engine, plan) = engine_and_plan(&fx, &default_rule());
+    fx.fs.fail_trash_of(
+        temp().join("locked.tmp"),
+        PortError::AccessDenied("password=hunter2".to_owned()),
+    );
+
+    let report = engine.clean(&plan.confirm(), Source::Automation);
+
+    assert_eq!(report.activity_write_failures, 0);
+    let records = fx.activity.records();
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert_eq!(record.outcome, ActivityOutcome::Applied);
+    assert_eq!(record.source, Source::Automation);
+    assert_eq!(record.label.as_deref(), Some("temp-files"));
+    assert_eq!(record.batch, None);
+    assert!(record.summary.contains("temp-files"), "{}", record.summary);
+    assert!(record.summary.contains("1 file"), "{}", record.summary);
+    assert!(record.summary.contains("2.0 KB"), "{}", record.summary);
+    assert!(
+        record.summary.contains("1 item in place"),
+        "{}",
+        record.summary
+    );
+    for forbidden in [
+        "secret-token",
+        "4711",
+        "tester",
+        "hunter2",
+        "locked.tmp",
+        "Temp",
+    ] {
+        assert!(
+            !record.summary.contains(forbidden),
+            "{forbidden} leaked into: {}",
+            record.summary
+        );
+    }
+    assert!(record.summary.contains("Recycle Bin is emptied"));
+}
+
+#[test]
+fn a_clean_that_moved_nothing_is_recorded_as_failed() {
+    let fx = Fixture::new();
+    fx.fs.add_file_at(temp().join("a.tmp"), 1, ago(3));
+    let (engine, plan) = engine_and_plan(&fx, &default_rule());
+    fx.fs.fail_trash_of(
+        temp().join("a.tmp"),
+        PortError::AccessDenied("x".to_owned()),
+    );
+    let report = engine.clean(&plan.confirm(), Source::Manual);
+    assert_eq!(report.moved_files(), 0);
+    assert_eq!(fx.activity.records()[0].outcome, ActivityOutcome::Failed);
+}
+
+#[test]
+fn a_failing_activity_log_never_blocks_the_clean() {
+    let fx = Fixture::new();
+    fx.fs.add_file_at(temp().join("a.tmp"), 1, ago(3));
+    let (engine, plan) = engine_and_plan(&fx, &default_rule());
+    fx.activity
+        .fail_records_with(Some(PortError::Other("disk full".to_owned())));
+    let report = engine.clean(&plan.confirm(), Source::Manual);
+    assert_eq!(report.moved_files(), 1);
+    assert_eq!(report.activity_write_failures, 1);
+    assert_eq!(fx.fs.trashed().len(), 1);
+}
+
+#[test]
+fn without_an_activity_log_nothing_is_recorded_and_nothing_fails() {
+    let fx = Fixture::new();
+    fx.fs.add_file_at(temp().join("a.tmp"), 1, ago(3));
+    let engine = fx.engine(&default_rule());
+    let report = engine.clean(&engine.scan_all().confirm(), Source::Manual);
+    assert_eq!(report.moved_files(), 1);
+    assert_eq!(report.activity_write_failures, 0);
+    assert!(fx.activity.records().is_empty());
+}
+
+#[test]
+fn sizes_are_shown_in_human_units() {
+    use super::apply::human_bytes;
+    assert_eq!(human_bytes(0), "0 B");
+    assert_eq!(human_bytes(1023), "1023 B");
+    assert_eq!(human_bytes(1024), "1.0 KB");
+    assert_eq!(human_bytes(1536), "1.5 KB");
+    assert_eq!(human_bytes(5 * 1024 * 1024), "5.0 MB");
+    assert_eq!(human_bytes(u64::MAX), "16777216.0 TB");
+}
