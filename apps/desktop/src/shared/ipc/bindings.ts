@@ -758,6 +758,14 @@ export type CleanCategoryView =
  */
 "browserCache" | 
 /**
+ * Shader caches of Windows and graphics drivers.
+ */
+"shaderCache" | 
+/**
+ * Caches of chat applications.
+ */
+"chatAppCache" | 
+/**
  * Log files.
  */
 "logs" | 

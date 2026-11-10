@@ -163,7 +163,7 @@ impl CleaningRules {
     /// title = "Temporary files"
     /// description = "Files programs left in the temp folder and no longer use."
     /// category = "temporary_files"      # temporary_files, application_cache, browser_cache,
-    ///                                   # logs, crash_reports, windows_update
+    ///                                   # shader_cache, chat_app_cache, logs, crash_reports, windows_update
     /// risk = "safe"                     # safe, caution, advanced
     /// include = ["**"]                  # files to take, relative to the root, `/` separated
     /// exclude = ["*.lock", "keep/**"]   # optional: left alone (a matching folder is not entered)

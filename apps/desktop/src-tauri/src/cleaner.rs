@@ -57,6 +57,10 @@ pub enum CleanCategoryView {
     ApplicationCache,
     /// Caches of web browsers.
     BrowserCache,
+    /// Shader caches of Windows and graphics drivers.
+    ShaderCache,
+    /// Caches of chat applications.
+    ChatAppCache,
     /// Log files.
     Logs,
     /// Crash dumps and error reports.
@@ -72,6 +76,8 @@ fn category_view(category: CleanCategory) -> CleanCategoryView {
         CleanCategory::TemporaryFiles => CleanCategoryView::TemporaryFiles,
         CleanCategory::ApplicationCache => CleanCategoryView::ApplicationCache,
         CleanCategory::BrowserCache => CleanCategoryView::BrowserCache,
+        CleanCategory::ShaderCache => CleanCategoryView::ShaderCache,
+        CleanCategory::ChatAppCache => CleanCategoryView::ChatAppCache,
         CleanCategory::Logs => CleanCategoryView::Logs,
         CleanCategory::CrashReports => CleanCategoryView::CrashReports,
         CleanCategory::WindowsUpdate => CleanCategoryView::WindowsUpdate,
