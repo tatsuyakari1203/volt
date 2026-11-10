@@ -72,6 +72,9 @@ pub fn run() {
         // Must come first: a second launch is handled before anything else starts.
         .plugin(window::single_instance_plugin())
         .plugin(autostart::plugin())
+        // Only the Rust side opens the save dialog (export_activity); no capability grants it,
+        // or any file system access, to the UI.
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(bindings.invoke_handler())
         .setup(move |app| {
             logging::install(app.handle());

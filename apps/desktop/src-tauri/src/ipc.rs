@@ -171,11 +171,16 @@ pub fn bindings_builder() -> Builder<tauri::Wry> {
             crate::commands::revert_tweak,
             crate::commands::list_activity,
             crate::metrics::latest_metrics,
+            crate::commands::undo_entry,
+            crate::commands::undo_batch,
+            crate::commands::preview_undo_batch,
+            crate::commands::export_activity,
+            crate::commands::export_activity_text,
         ])
         .events(collect_events![
             AppReady,
             crate::TrayBoostRequested,
-            crate::MetricsUpdated
+            crate::MetricsUpdated,
         ])
         .typ::<IpcError>()
 }

@@ -7,11 +7,17 @@ import { Shell } from './Shell';
 
 // A plain browser has no Tauri bridge: the calls fail. The screens must absorb that. The tray
 // Boost event is the exception: the test captures its handler to fire it by hand.
-const { boostListeners } = vi.hoisted(() => ({ boostListeners: [] as Array<() => void> }));
+const { boostListeners, tweakReads } = vi.hoisted(() => ({
+  boostListeners: [] as Array<() => void>,
+  tweakReads: { count: 0 },
+}));
 vi.mock('../shared/ipc', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../shared/ipc')>()),
   getAppInfo: () => Promise.reject(new Error('no tauri bridge')),
-  listTweaks: () => Promise.reject(new Error('no tauri bridge')),
+  listTweaks: () => {
+    tweakReads.count += 1;
+    return Promise.reject(new Error('no tauri bridge'));
+  },
   listActivity: () => Promise.reject(new Error('no tauri bridge')),
   getAutostartEnabled: () => Promise.reject(new Error('no tauri bridge')),
   setAutostartEnabled: () => Promise.reject(new Error('no tauri bridge')),
@@ -152,4 +158,20 @@ it('shows the activity history on the Undo screen instead of a placeholder', asy
   expect(screen.getByRole('heading', { level: 1, name: 'Undo' })).toBeTruthy();
   expect(await screen.findByText('The history could not be loaded')).toBeTruthy();
   expect(screen.queryByText('Coming soon')).toBeNull();
+});
+
+it('reads the tweak states again when Tweaks is opened after the Undo screen', async () => {
+  // Undoing a change on the Undo screen changes what Tweaks must show, and the screens are
+  // mounted only while they are the current section, so opening Tweaks always reads live state.
+  const user = userEvent.setup();
+  renderShell();
+  tweakReads.count = 0;
+  await user.click(screen.getByRole('button', { name: 'Tweaks' }));
+  await screen.findByText('Tweaks could not be loaded');
+  expect(tweakReads.count).toBe(1);
+  await user.click(screen.getByRole('button', { name: 'Undo' }));
+  await screen.findByText('The history could not be loaded');
+  await user.click(screen.getByRole('button', { name: 'Tweaks' }));
+  await screen.findByText('Tweaks could not be loaded');
+  expect(tweakReads.count).toBe(2);
 });

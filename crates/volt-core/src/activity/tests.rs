@@ -307,6 +307,80 @@ fn reverting_records_the_restore_and_a_failed_revert_is_recorded_as_failed() {
 }
 
 #[test]
+fn a_single_entry_or_batch_revert_carries_the_label_the_batch_was_applied_with() {
+    let system = FakeSystem::new();
+    let executor = system.executor_with_activity();
+    let plan = plan_of(&system, vec![set_dword("One", 1), set_dword("Two", 2)])
+        .with_label("tweak.example");
+    let report = executor.apply(&plan, Source::Manual).expect("apply");
+    let first = report.applied().next().map(|o| match o.status {
+        ItemStatus::Applied { entry } => entry,
+        _ => unreachable!("filtered to applied"),
+    });
+
+    // One entry, then the rest of the batch: neither call is told the label.
+    executor
+        .revert_entry(first.expect("entry"))
+        .expect("revert");
+    let batch = executor.revert_batch(report.batch).expect("revert batch");
+    assert!(batch.is_complete());
+    assert_eq!(
+        batch.outcomes.len(),
+        1,
+        "the first entry was already reverted"
+    );
+
+    let reverts: Vec<_> = system
+        .activity
+        .records()
+        .into_iter()
+        .filter(|r| r.outcome == ActivityOutcome::Reverted)
+        .map(|r| r.label)
+        .collect();
+    assert_eq!(reverts.len(), 2);
+    assert!(
+        reverts
+            .iter()
+            .all(|label| label.as_deref() == Some("tweak.example")),
+        "{reverts:?}"
+    );
+}
+
+#[test]
+fn a_batch_without_a_label_and_an_unknown_batch_have_no_label() {
+    let system = FakeSystem::new();
+    let plain = system.journal.new_batch(None).expect("batch");
+    let named = system.journal.new_batch(Some("tweak.x")).expect("batch");
+    assert_eq!(system.journal.batch_label(plain), Ok(None));
+    assert_eq!(
+        system.journal.batch_label(named),
+        Ok(Some("tweak.x".to_owned()))
+    );
+    assert_eq!(system.journal.batch_label(BatchId(99)), Ok(None));
+}
+
+#[test]
+fn restore_words_follow_the_redaction_rule() {
+    use crate::registry::RegistryValue as V;
+    let words = |prior| restore_words(&prior);
+    assert_eq!(
+        words(PriorState::RegistryValue(Some(V::Dword(5)))),
+        "set back to REG_DWORD 5"
+    );
+    assert_eq!(
+        words(PriorState::RegistryValue(None)),
+        "removed (it did not exist before)"
+    );
+    let text = words(PriorState::RegistryValue(Some(V::Sz(SECRET.to_owned()))));
+    assert!(!text.contains(SECRET), "{text}");
+    assert!(text.contains("REG_SZ"), "{text}");
+    assert_eq!(
+        words(PriorState::ServiceStartType(ServiceStartType::Manual)),
+        format!("set back to {}", ServiceStartType::Manual)
+    );
+}
+
+#[test]
 fn reconcile_pending_records_what_it_decided() {
     let system = FakeSystem::new();
     let operation = set_dword("Flag", 1);

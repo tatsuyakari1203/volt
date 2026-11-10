@@ -8,12 +8,16 @@
 //! UI contract by accident. 64-bit values never cross as numbers: record ids are decimal
 //! strings and times are ISO 8601 strings (UTC), so nothing can lose precision in JavaScript.
 
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use volt_core::activity::{exec_reason, revert_reason};
+use volt_core::activity::{exec_reason, restore_words, revert_reason, subject};
 use volt_core::{
-    ActivityId, ActivityOutcome, ActivityRecord, ApplyOutcome, Category, Evidence, ItemStatus,
-    RestartRequirement, Risk, Source, TweakApplyReport, TweakError, TweakRevertReport, TweakState,
+    ActivityId, ActivityOutcome, ActivityRecord, ApplyOutcome, BatchId, Category, Clock, EntryId,
+    EntryState, Evidence, ItemStatus, JournalEntry, RestartRequirement, RevertError, RevertOutcome,
+    RevertReport, Risk, Source, SystemClock, Timestamp, TweakApplyReport, TweakError,
+    TweakRevertReport, TweakState, activity, render_text,
 };
 
 use crate::IpcError;
@@ -21,6 +25,9 @@ use crate::wiring::AppCore;
 
 /// Most records one [`list_activity`] call returns, whatever the caller asks for.
 pub const MAX_ACTIVITY_PAGE: u32 = 200;
+
+/// Records read per round trip when the whole activity log is exported.
+const EXPORT_CHUNK: usize = 500;
 
 /// How risky a tweak is. Mirrors [`volt_core::Risk`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -206,6 +213,22 @@ pub enum ActivityStatus {
     Other,
 }
 
+/// Where an activity line stands with respect to undo. The Undo page shows it on every row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ChangeState {
+    /// The change was made and its earlier value is in the undo journal: it can be undone.
+    CanUndo,
+    /// The change was made and has since been undone.
+    Undone,
+    /// The attempt failed (or was interrupted), so there is nothing to undo.
+    Failed,
+    /// This line has no usable undo record; `reason` says why.
+    CannotUndo,
+    /// This line itself records an undo (a revert or an automatic rollback).
+    Restored,
+}
+
 /// One line of the activity history.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -222,6 +245,19 @@ pub struct ActivityItem {
     pub summary: String,
     /// The tweak id or plan label, when known.
     pub label: Option<String>,
+    /// The tweak's title when the label is a catalogue tweak.
+    pub title: Option<String>,
+    /// The journal batch (the changes made together) as a decimal string, when there is one.
+    pub batch: Option<String>,
+    /// The journal entry as a decimal string, when there is one. Pass it to [`undo_entry`].
+    pub entry: Option<String>,
+    /// The value before the change, redacted: numbers and service start types are shown, string
+    /// and binary data only as kind and length. Only set for a change that was made.
+    pub previous: Option<String>,
+    /// Whether this line can be undone, was undone, failed and so on.
+    pub state: ChangeState,
+    /// One line saying why the change cannot be undone, when `state` is `cannotUndo`.
+    pub reason: Option<String>,
 }
 
 /// A page of the activity history, newest first.
@@ -232,6 +268,94 @@ pub struct ActivityPage {
     pub items: Vec<ActivityItem>,
     /// Pass this as the cursor to get the next (older) page; `None` on the last page.
     pub next_cursor: Option<String>,
+}
+
+/// How an undo ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum UndoStatus {
+    /// Everything that was attempted was restored.
+    Restored,
+    /// Some changes were restored and some were not; `failures` says which.
+    Partial,
+    /// Nothing was restored; `failures` says why.
+    Failed,
+    /// The journal holds nothing to undo here: it was already undone, or never was a change.
+    NothingToUndo,
+}
+
+/// One change an undo could not restore.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct UndoFailure {
+    /// The journal entry, as a decimal string.
+    pub entry: String,
+    /// What it touches, in words, without any data.
+    pub what: String,
+    /// Why it could not be restored, in words. Never contains command output or data.
+    pub reason: String,
+}
+
+/// Precise result of [`undo_entry`] and [`undo_batch`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct UndoResult {
+    /// How it ended.
+    pub status: UndoStatus,
+    /// How many changes were restored.
+    pub restored: u32,
+    /// How many could not be restored.
+    pub failed: u32,
+    /// The ones that could not be restored, with the reason.
+    pub failures: Vec<UndoFailure>,
+}
+
+/// One change an undo of a batch would restore.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct UndoPreviewItem {
+    /// The journal entry, as a decimal string.
+    pub entry: String,
+    /// What it touches, in words, without any data.
+    pub what: String,
+    /// What undoing does to it, redacted: `set back to REG_DWORD 1`, `removed (it did not exist
+    /// before)`.
+    pub restore: String,
+}
+
+/// What [`undo_batch`] would restore right now. Reads only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct UndoPreview {
+    /// The changes that are still applied, newest first: the order they are undone in.
+    pub items: Vec<UndoPreviewItem>,
+}
+
+/// The activity log rendered as text, ready to save or copy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityExport {
+    /// A suggested file name, `volt-activity-<date>.txt`.
+    pub file_name: String,
+    /// The text: one line per record, newest first. Follows the redaction rule.
+    pub text: String,
+    /// How many records it holds.
+    pub records: u32,
+}
+
+/// How [`export_activity`] ended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ExportResult {
+    /// The file was written.
+    Saved {
+        /// Where it was written.
+        path: String,
+        /// How many records it holds.
+        records: u32,
+    },
+    /// The user closed the save dialog without choosing a file. Nothing was written.
+    Cancelled,
 }
 
 // ---- the functions behind the commands -----------------------------------------------------
@@ -346,8 +470,117 @@ pub fn list_activity(
         None
     };
     Ok(ActivityPage {
-        items: records.iter().map(activity_item).collect(),
+        items: records
+            .iter()
+            .map(|record| activity_item(core, record))
+            .collect(),
         next_cursor,
+    })
+}
+
+/// Undoes one journal entry: puts back the value the journal recorded before the change. Reports
+/// precisely how it ended. An entry that is not applied (already undone, failed) is "nothing to
+/// undo", not an error; an unknown entry is `notFound`.
+pub fn undo_entry(core: &AppCore, entry: &str) -> Result<UndoResult, IpcError> {
+    let id = EntryId(parse_id(entry, "journal entry")?);
+    let _exclusive = core.exclusive();
+    let found = core
+        .journal
+        .entry(id)
+        .map_err(IpcError::from)?
+        .ok_or_else(|| IpcError::NotFound {
+            message: format!("there is no journal entry {id}"),
+        })?;
+    if found.state != EntryState::Applied {
+        return Ok(undo_result(core, &RevertReport::default()));
+    }
+    let failures_before = core.engine.activity_write_failures();
+    let result = core.engine.executor().revert_entry(id);
+    warn_if_history_incomplete(core, failures_before, "undoing a change");
+    let report = RevertReport {
+        outcomes: vec![RevertOutcome { entry: id, result }],
+    };
+    Ok(undo_result(core, &report))
+}
+
+/// Undoes every applied entry of a journal batch, newest first, and carries on past a failure so
+/// as much as possible is restored. Reports precisely how it ended; a batch with nothing applied
+/// is "nothing to undo".
+pub fn undo_batch(core: &AppCore, batch: &str) -> Result<UndoResult, IpcError> {
+    let batch = BatchId(parse_id(batch, "batch")?);
+    let _exclusive = core.exclusive();
+    let entries = core.journal.batch_entries(batch).map_err(IpcError::from)?;
+    if !entries
+        .iter()
+        .any(|entry| entry.state == EntryState::Applied)
+    {
+        return Ok(undo_result(core, &RevertReport::default()));
+    }
+    let failures_before = core.engine.activity_write_failures();
+    let report = core.engine.executor().revert_batch(batch);
+    warn_if_history_incomplete(core, failures_before, "undoing a batch");
+    Ok(undo_result(core, &report.map_err(revert_ipc_error)?))
+}
+
+/// What [`undo_batch`] would restore right now, newest first. Reads the journal only, so the
+/// confirmation dialog can say exactly what will be put back.
+pub fn preview_undo_batch(core: &AppCore, batch: &str) -> Result<UndoPreview, IpcError> {
+    let batch = BatchId(parse_id(batch, "batch")?);
+    let entries = core.journal.batch_entries(batch).map_err(IpcError::from)?;
+    let items = entries
+        .iter()
+        .rev()
+        .filter(|entry| entry.state == EntryState::Applied)
+        .map(|entry| UndoPreviewItem {
+            entry: entry.id.0.to_string(),
+            what: capitalised(&subject(&entry.operation)),
+            restore: restore_words(&entry.prior),
+        })
+        .collect();
+    Ok(UndoPreview { items })
+}
+
+/// Renders the whole activity log as text, newest first, for saving or copying. The text holds
+/// only what the records hold, so it follows their redaction rule.
+pub fn export_activity_text(core: &AppCore) -> Result<ActivityExport, IpcError> {
+    let mut records = Vec::new();
+    let mut before = None;
+    loop {
+        let chunk = core
+            .activity
+            .list(EXPORT_CHUNK, before)
+            .map_err(IpcError::from)?;
+        let last = chunk.last().map(|record| record.id);
+        let complete = chunk.len() < EXPORT_CHUNK;
+        records.extend(chunk);
+        match last {
+            Some(id) if !complete => before = Some(id),
+            _ => break,
+        }
+    }
+    Ok(ActivityExport {
+        file_name: export_file_name(SystemClock.now()),
+        text: render_text(&records),
+        records: u32::try_from(records.len()).unwrap_or(u32::MAX),
+    })
+}
+
+/// The suggested file name of an export made at `now`: `volt-activity-2026-11-10.txt`.
+#[must_use]
+pub fn export_file_name(now: Timestamp) -> String {
+    let iso = now.to_iso8601();
+    format!("volt-activity-{}.txt", iso.get(..10).unwrap_or("export"))
+}
+
+/// Writes an export to the path the user chose in the save dialog.
+pub fn write_export(path: &Path, text: &str) -> Result<(), IpcError> {
+    std::fs::write(path, text).map_err(|error| {
+        let message = format!("could not write {}: {error}", path.display());
+        match error.kind() {
+            std::io::ErrorKind::PermissionDenied => IpcError::AccessDenied { message },
+            std::io::ErrorKind::NotFound => IpcError::NotFound { message },
+            _ => IpcError::Other { message },
+        }
     })
 }
 
@@ -400,7 +633,79 @@ fn state_view(state: Result<TweakState, TweakError>) -> TweakStateView {
     }
 }
 
-fn activity_item(record: &ActivityRecord) -> ActivityItem {
+/// What the journal says about the entry an activity line links to.
+enum EntryLookup {
+    /// The line has no link to a journal entry (cleaning and memory actions will be like this).
+    NoLink,
+    /// The line links to an entry the journal does not hold.
+    Missing,
+    /// The journal could not be read just now.
+    Unreadable,
+    /// The entry.
+    Found(Box<JournalEntry>),
+}
+
+const REASON_NO_RECORD: &str =
+    "Volt saved no earlier value for this action, so it cannot restore it.";
+const REASON_RECORD_GONE: &str =
+    "Its undo record is no longer in the journal, so Volt cannot restore it.";
+const REASON_UNREADABLE: &str =
+    "The undo journal could not be read just now. Reload the list to try again.";
+const REASON_UNCONFIRMED: &str = "Volt has not confirmed that this change happened.";
+
+fn lookup_entry(core: &AppCore, record: &ActivityRecord) -> EntryLookup {
+    let Some(id) = record.entry else {
+        return EntryLookup::NoLink;
+    };
+    match core.journal.entry(id) {
+        Ok(Some(entry)) => EntryLookup::Found(Box::new(entry)),
+        Ok(None) => EntryLookup::Missing,
+        Err(error) => {
+            log::warn!(
+                "the undo journal could not be read for {id}: {}",
+                activity::error_class(&error)
+            );
+            EntryLookup::Unreadable
+        }
+    }
+}
+
+/// The state of an activity line and, for `cannotUndo`, the one line saying why. A pure function
+/// of the record's outcome and what the journal says about its entry.
+fn change_state(
+    outcome: ActivityOutcome,
+    lookup: &EntryLookup,
+) -> (ChangeState, Option<&'static str>) {
+    match outcome {
+        ActivityOutcome::Failed => (ChangeState::Failed, None),
+        ActivityOutcome::Reverted | ActivityOutcome::RolledBack => (ChangeState::Restored, None),
+        // `Applied`, and (the enum is non-exhaustive) any outcome this shell does not know yet,
+        // which is judged by the journal like an applied change.
+        _ => match lookup {
+            EntryLookup::NoLink => (ChangeState::CannotUndo, Some(REASON_NO_RECORD)),
+            EntryLookup::Missing => (ChangeState::CannotUndo, Some(REASON_RECORD_GONE)),
+            EntryLookup::Unreadable => (ChangeState::CannotUndo, Some(REASON_UNREADABLE)),
+            EntryLookup::Found(entry) => match entry.state {
+                EntryState::Applied => (ChangeState::CanUndo, None),
+                EntryState::Reverted => (ChangeState::Undone, None),
+                EntryState::Failed => (ChangeState::Failed, None),
+                // Not something Volt will offer to undo until startup has resolved it.
+                EntryState::Pending => (ChangeState::CannotUndo, Some(REASON_UNCONFIRMED)),
+            },
+        },
+    }
+}
+
+fn activity_item(core: &AppCore, record: &ActivityRecord) -> ActivityItem {
+    let lookup = lookup_entry(core, record);
+    let (state, reason) = change_state(record.outcome, &lookup);
+    // The value before the change belongs to a change that was made.
+    let previous = match (&lookup, record.outcome) {
+        (EntryLookup::Found(entry), ActivityOutcome::Applied) => {
+            Some(activity::redacted_prior(&entry.prior))
+        }
+        _ => None,
+    };
     ActivityItem {
         id: record.id.0.to_string(),
         time: record.timestamp.to_iso8601(),
@@ -417,7 +722,78 @@ fn activity_item(record: &ActivityRecord) -> ActivityItem {
             _ => ActivityStatus::Other,
         },
         summary: record.summary.clone(),
+        title: record
+            .label
+            .as_deref()
+            .and_then(|label| core.engine.catalogue().get(label))
+            .map(|tweak| tweak.title.clone()),
         label: record.label.clone(),
+        batch: record.batch.map(|batch| batch.0.to_string()),
+        entry: record.entry.map(|entry| entry.0.to_string()),
+        previous,
+        state,
+        reason: reason.map(str::to_owned),
+    }
+}
+
+/// Parses the decimal-string id the UI sends back.
+fn parse_id(text: &str, what: &str) -> Result<u64, IpcError> {
+    text.parse::<u64>().map_err(|_| IpcError::InvalidInput {
+        message: format!("`{text}` is not a {what} id"),
+    })
+}
+
+/// `registry value X` becomes `Registry value X`.
+fn capitalised(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
+}
+
+/// The error of a revert that could not even start (the journal could not be read).
+fn revert_ipc_error(error: RevertError) -> IpcError {
+    match error {
+        RevertError::Journal(port) | RevertError::Port(port) | RevertError::MarkReverted(port) => {
+            IpcError::from(port)
+        }
+        other => IpcError::Other {
+            message: revert_reason(&other),
+        },
+    }
+}
+
+/// Counts what a revert did and names what it could not restore.
+fn undo_result(core: &AppCore, report: &RevertReport) -> UndoResult {
+    let mut restored = 0_usize;
+    let mut failures = Vec::new();
+    for outcome in &report.outcomes {
+        match &outcome.result {
+            Ok(()) => restored += 1,
+            Err(error) => {
+                let what = match core.journal.entry(outcome.entry) {
+                    Ok(Some(entry)) => capitalised(&subject(&entry.operation)),
+                    _ => "A change".to_owned(),
+                };
+                failures.push(UndoFailure {
+                    entry: outcome.entry.0.to_string(),
+                    what,
+                    reason: revert_reason(error),
+                });
+            }
+        }
+    }
+    let status = match (restored, failures.len()) {
+        (0, 0) => UndoStatus::NothingToUndo,
+        (_, 0) => UndoStatus::Restored,
+        (0, _) => UndoStatus::Failed,
+        _ => UndoStatus::Partial,
+    };
+    UndoResult {
+        status,
+        restored: u32::try_from(restored).unwrap_or(u32::MAX),
+        failed: u32::try_from(failures.len()).unwrap_or(u32::MAX),
+        failures,
     }
 }
 
@@ -486,5 +862,87 @@ fn warn_if_history_incomplete(core: &AppCore, failures_before: u64, action: &str
             "{failures} activity record(s) could not be written while {action}; the change and \
              its undo journal entry are safe, but the history on the Undo page is incomplete"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use volt_core::{Operation, PriorState, RegistryHive, RegistryValue, RegistryValueRef};
+
+    fn entry(state: EntryState) -> EntryLookup {
+        EntryLookup::Found(Box::new(JournalEntry {
+            id: EntryId(1),
+            batch: BatchId(1),
+            timestamp: Timestamp::from_unix_millis(1),
+            source: Source::Manual,
+            state,
+            operation: Operation::SetRegistryValue {
+                target: RegistryValueRef::new(RegistryHive::CurrentUser, r"Software\VoltTest", "X"),
+                value: RegistryValue::Dword(1),
+            },
+            prior: PriorState::RegistryValue(None),
+            error: None,
+        }))
+    }
+
+    #[test]
+    fn an_applied_record_takes_its_state_from_the_journal_entry() {
+        let state = |lookup| change_state(ActivityOutcome::Applied, &lookup);
+        assert_eq!(
+            state(entry(EntryState::Applied)),
+            (ChangeState::CanUndo, None)
+        );
+        assert_eq!(
+            state(entry(EntryState::Reverted)),
+            (ChangeState::Undone, None)
+        );
+        assert_eq!(
+            state(entry(EntryState::Failed)),
+            (ChangeState::Failed, None)
+        );
+        assert_eq!(
+            state(entry(EntryState::Pending)),
+            (ChangeState::CannotUndo, Some(REASON_UNCONFIRMED))
+        );
+        assert_eq!(
+            state(EntryLookup::NoLink),
+            (ChangeState::CannotUndo, Some(REASON_NO_RECORD))
+        );
+        assert_eq!(
+            state(EntryLookup::Missing),
+            (ChangeState::CannotUndo, Some(REASON_RECORD_GONE))
+        );
+        assert_eq!(
+            state(EntryLookup::Unreadable),
+            (ChangeState::CannotUndo, Some(REASON_UNREADABLE))
+        );
+    }
+
+    #[test]
+    fn failures_and_undo_records_never_offer_an_undo_whatever_the_journal_says() {
+        for lookup in [entry(EntryState::Applied), EntryLookup::NoLink] {
+            assert_eq!(
+                change_state(ActivityOutcome::Failed, &lookup),
+                (ChangeState::Failed, None)
+            );
+            assert_eq!(
+                change_state(ActivityOutcome::Reverted, &lookup),
+                (ChangeState::Restored, None)
+            );
+            assert_eq!(
+                change_state(ActivityOutcome::RolledBack, &lookup),
+                (ChangeState::Restored, None)
+            );
+        }
+    }
+
+    #[test]
+    fn ids_must_be_decimal_strings_and_text_starts_with_a_capital() {
+        assert_eq!(parse_id("42", "batch").ok(), Some(42));
+        assert!(parse_id("-1", "batch").is_err());
+        assert!(parse_id("0x2a", "batch").is_err());
+        assert_eq!(capitalised("registry value X"), "Registry value X");
+        assert_eq!(capitalised(""), "");
     }
 }

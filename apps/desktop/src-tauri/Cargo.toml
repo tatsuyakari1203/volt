@@ -24,6 +24,9 @@ tauri = { version = "=2.11.6", features = ["tray-icon", "image-png"] }
 # Shell plugins, pinned exactly. Driven from Rust only: the UI gets no plugin permission.
 tauri-plugin-single-instance = "=2.4.5"
 tauri-plugin-autostart = "=2.5.1"
+# Native save dialog for the activity export. Driven from Rust only: no capability grants the
+# dialog, fs or any other plugin command to the UI. Newer 2.8.x needs tauri 2.12 and Rust 1.90.
+tauri-plugin-dialog = "=2.7.3"
 serde = { version = "1", features = ["derive"] }
 # Typed IPC: pinned exactly because tauri-specta is still a release candidate. The three move
 # together (tauri-specta requires the matching specta rc and specta-typescript 0.0.13).

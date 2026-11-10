@@ -198,6 +198,14 @@ impl TweakEngine {
         self.executor.activity_write_failures()
     }
 
+    /// The executor this engine applies and reverts through. It is a handle on the same journal,
+    /// activity log and failure counter, so a caller that has to undo one entry or one batch (the
+    /// Undo page) goes through the same write-ahead path as the engine itself.
+    #[must_use]
+    pub fn executor(&self) -> &Executor {
+        &self.executor
+    }
+
     /// The catalogue this engine works on.
     #[must_use]
     pub fn catalogue(&self) -> &Catalogue {

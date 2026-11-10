@@ -3,20 +3,25 @@
 // transfer type or call `invoke` directly. This file adds ergonomics on top of the generated
 // module and nothing else.
 import {
+  type ActivityExport,
   type ActivityPage,
   type AppInfo,
   type ApplyResult,
   type AppReady,
   commands,
+  type ExportResult,
   events,
   type IpcError,
   type MetricsView,
   type Result,
   type RevertResult,
   type TweakInfo,
+  type UndoPreview,
+  type UndoResult,
 } from './bindings';
 
 export type {
+  ActivityExport,
   ActivityItem,
   ActivityPage,
   ActivitySource,
@@ -25,8 +30,10 @@ export type {
   ApplyResult,
   ApplyStatus,
   AppReady,
+  ChangeState,
   DiskView,
   EvidenceLevel,
+  ExportResult,
   GpuView,
   IpcError,
   MemoryView,
@@ -38,6 +45,11 @@ export type {
   TweakCategory,
   TweakInfo,
   TweakStateView,
+  UndoFailure,
+  UndoPreview,
+  UndoPreviewItem,
+  UndoResult,
+  UndoStatus,
 } from './bindings';
 
 /** Thrown by the wrappers below when a command returns an error; carries the typed value. */
@@ -181,4 +193,38 @@ export function onMetricsUpdated(handler: (metrics: MetricsView) => void): Promi
  */
 export async function getLatestMetrics(): Promise<MetricsView | null> {
   return call(() => commands.latestMetrics());
+}
+
+/**
+ * Undoes one change: `entry` is the `entry` of an activity row. Resolves with how it ended
+ * (restored, failed or nothing to undo); a failed restore is a result, not a rejection.
+ */
+export async function undoEntry(entry: string): Promise<UndoResult> {
+  return call(() => commands.undoEntry(entry));
+}
+
+/**
+ * Undoes every change of a batch (the `batch` of an activity row) that is still applied. Resolves
+ * with how it ended (restored, partly restored with what failed, failed or nothing to undo).
+ */
+export async function undoBatch(batch: string): Promise<UndoResult> {
+  return call(() => commands.undoBatch(batch));
+}
+
+/** What undoing a batch would restore right now, newest first. Reads only. */
+export async function previewUndoBatch(batch: string): Promise<UndoPreview> {
+  return call(() => commands.previewUndoBatch(batch));
+}
+
+/**
+ * Asks the user where to save the activity log (a native save dialog opened by the Rust side) and
+ * writes it as a text file. Resolves with `cancelled` when the dialog was closed.
+ */
+export async function exportActivity(): Promise<ExportResult> {
+  return call(() => commands.exportActivity());
+}
+
+/** The whole activity log as text, for the copy-to-clipboard fallback. */
+export async function exportActivityText(): Promise<ActivityExport> {
+  return call(() => commands.exportActivityText());
 }

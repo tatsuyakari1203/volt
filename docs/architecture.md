@@ -65,7 +65,10 @@ What `volt-core` contains today:
   plan), stores entries with states (pending, applied, reverted, failed) and takes time from an
   injected `Clock`, so it is deterministic in tests. Revert reads the journal, so it works after a
   restart and for whole batches. A batch can carry a label (a plan's `label`, which the tweak
-  engine sets to the tweak id), and `batches_with_label` finds a label's batches again.
+  engine sets to the tweak id), `batches_with_label` finds a label's batches again and
+  `batch_label` reads the label of one batch. A revert that is not told the label (one entry or one
+  batch picked from the Undo page) asks the journal, so its activity records carry the tweak id
+  like the apply did.
 - **Activity log:** the history written for people, and the data the future Undo page reads.
   `ActivityLog` is a port (`volt_core::activity`) that appends records and lists them newest first
   with a limit and a cursor (the id of the last record seen). A record has a time from the injected
@@ -84,8 +87,8 @@ What `volt-core` contains today:
     written to the diagnostic log (a warning) and counted: `Executor::activity_write_failures` is
     the number since the executor was created (clones share it), so the shell can tell the user
     that the history is incomplete.
-  - **What the Undo page shows today:** the newest records, read through `list_activity`: time,
-    outcome and summary, read-only. Per-row revert and export come in a later task.
+  - **What the Undo page shows:** the records read through `list_activity`, newest first, each
+    joined to its journal entry. See Undo page below.
   - **Source of a revert:** a rollback keeps the source of its plan; a revert requested through
     `revert_entry` or `revert_batch` is recorded as manual, because those calls do not take a
     source.
@@ -456,10 +459,8 @@ the WebView2 processes. The diagnostic log was read to confirm the sampler start
   back or needs-attention apply, an incomplete revert, "nothing to undo" and a failed command are
   explained in a persistent notice in plain words, and a partly applied tweak gets an Undo button.
   The screen carries no Sample data marker; Home still does.
-- `features/undo` is the Undo screen for now: a read-only list of recent activity (time, outcome
-  and the redacted one-line summary) read from the activity log, newest first, with a Show older
-  button that follows the cursor. Undoing a single line and exporting the list come later; a tweak
-  is undone from the Tweaks screen. Features do not import each other.
+- `features/undo` is the Undo and activity page, described under Undo page below. A tweak can
+  still be undone from the Tweaks screen. Features do not import each other.
 - Outside the Volt window (a plain browser) the generated bindings fail with a `TypeError` because
   the Tauri bridge is missing. The wrapper turns that into `IpcUnavailableError`, and screens say
   "not available outside the Volt app" instead of showing the raw error.
@@ -486,7 +487,9 @@ the WebView2 processes. The diagnostic log was read to confirm the sampler start
   - **Commands.** Besides `app_info` and the two autostart commands, the shell exposes
     `list_tweaks` (every catalogue tweak with its state read live; a tweak whose state cannot be
     read is listed as `unreadable` and does not fail the list), `apply_tweak(id)`,
-    `revert_tweak(id)` and `list_activity(limit, cursor)`. They are async and run their work on the
+    `revert_tweak(id)`, `list_activity(limit, cursor)` and the five Undo page commands
+    (`undo_entry`, `undo_batch`, `preview_undo_batch`, `export_activity` and
+    `export_activity_text`, see Undo page). They are async and run their work on the
     blocking thread pool, never on the main thread, because they touch the registry and `SQLite`.
     The commands are thin: the logic is in `src-tauri/src/api.rs`, which the integration tests call.
     Apply reports precisely how it ended: `applied`, `alreadyApplied`, `rolledBack` (a step failed
@@ -540,15 +543,71 @@ the WebView2 processes. The diagnostic log was read to confirm the sampler start
   icon rail with tooltips; at 760 px and wider it shows labels.
 - Design review screenshots are kept in `docs/design`.
 
+### Undo page
+
+`features/undo` over the functions in `src-tauri/src/api.rs`. Reversibility is only trusted when it
+is visible, so every record Volt writes is listed and says whether it can be taken back.
+
+- **What a row shows.** The time, who started it (You, Automation), the redacted one-line summary
+  of what changed, the previous value and a state. The previous value is the journal entry's prior
+  state under the redaction rule: numbers and service start types are shown, string and binary
+  data only as kind and length (`REG_SZ (3 chars)`), and a value that did not exist is
+  `(not set)`. It is shown for a change that was made.
+- **Row states** (`ChangeState`, derived by the shell from the record's outcome and its journal
+  entry, never guessed by the UI): `canUndo` (applied, entry still applied: has an Undo button),
+  `undone` (the entry was reverted), `failed` (the attempt failed or was interrupted),
+  `cannotUndo` (a change record with no journal entry, whose entry is gone or unreadable, or not
+  confirmed yet: one line, `reason`, says why; cleaning and memory actions will produce these) and
+  `restored` (the line itself records an undo or an automatic rollback; no badge, no button).
+- **Batches.** Neighbouring records of one journal batch (what one applied plan did, and the undo
+  of it) are shown as one group named after the tweak (`title`, from the catalogue), with an Undo
+  all button while something in it can be undone. Grouping is done in the UI on the newest-first
+  list, so paging is unchanged; records that are not next to each other are never grouped.
+- **Undoing.** A row's Undo calls `undo_entry(entry)` directly. Undo all asks first: a Dialog fed
+  by `preview_undo_batch(batch)` lists, from the journal, every change still applied in the batch
+  and what will be done to it (`set back to REG_DWORD 5`, `removed (it did not exist before)`),
+  then `undo_batch(batch)` runs. Both go through the same `Executor` as the tweak engine
+  (`TweakEngine::executor`), so they are journaled, recorded in the activity log with the tweak
+  label and serialised with apply and revert by the core's lock. The result is precise:
+  `restored`, `partial` (with the entries that failed, what they touch and why), `failed` or
+  `nothingToUndo` (already undone, or not a change; not an error). Undo continues past a failure,
+  so as much as possible is restored, and an entry that failed stays undoable. An unknown id is
+  `notFound` and a malformed one `invalidInput`.
+- **Freshness.** After every undo, also a failed one, the page reads the list again (keeping about
+  as many records as were shown). The Tweaks screen reads the live state of every tweak whenever it
+  is mounted and the shell mounts only the current section, so opening Tweaks after an undo always
+  shows the state after it.
+- **Known limit: two changes to one value.** An undo restores the value the journal recorded
+  before that change. If a later change to the same target is still applied, undoing the earlier
+  one first overwrites the later one's effect; Volt does not warn about this yet.
+- **Export.** The activity log can be saved as a text file (Export) or put on the clipboard
+  (Copy). `export_activity_text` renders every record with `volt_core::render_text` (UTC time,
+  source, outcome, summary, links: only what the records hold, so the redaction rule holds) and the
+  UI copies it with the web clipboard API. `export_activity` is the save path: the Rust side opens
+  a native save dialog (`tauri-plugin-dialog`, pinned `=2.7.3`; the 2.8 releases need tauri 2.12
+  and Rust 1.90), writes the file to the path the user chose and answers `saved` (path and record
+  count) or `cancelled` (not an error). The plugin is registered and used from Rust only: the
+  capability file still grants no permission, so the UI cannot open dialogs or touch the file
+  system itself. The dialog needs a window and is not covered by an automated test; its parts (the
+  text, the file name `volt-activity-<date>.txt`, writing to a path, the error mapping) are.
+- **IPC surface.** `ActivityItem` carries `batch` and `entry` (decimal strings), `previous`,
+  `state`, `reason` and the tweak `title` besides the earlier fields. New commands, all async on
+  the blocking pool with shell-owned transfer types: `undo_entry(entry) -> UndoResult`,
+  `undo_batch(batch) -> UndoResult`, `preview_undo_batch(batch) -> UndoPreview`,
+  `export_activity() -> ExportResult` and `export_activity_text() -> ActivityExport`.
+- Screenshots with sample data (a mocked IPC) are in `docs/design`: `undo-light-460x700.png` and
+  `undo-dark-460x700.png`, and the confirmation dialog as `undo-confirm-light-460x700.png` and
+  `undo-confirm-dark-460x700.png`.
+
 ## Testing strategy
 
-| Level       | What                                       | How                                                                                                                                                                                                  |
-| ----------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Unit        | Core use cases, tweak engine, clean engine | In-memory fakes of the ports; runs on any OS                                                                                                                                                         |
-| Adapter     | `volt-win`, `volt-store`                   | Real APIs against a throwaway `HKCU\Software\VoltTest` key, a temp directory and a temp database only                                                                                                |
-| Integration | The shell's wiring and commands            | The real `WinRegistry` on a throwaway `HKCU\Software\VoltTest` key and a real store in a temp directory (apply, restart, revert, activity), then the same wiring over fakes for the failure outcomes |
-| UI          | Components and feature state               | Vitest, with the IPC wrapper mocked                                                                                                                                                                  |
-| End to end  | A few flows through the real app           | WebDriver, added once flows exist                                                                                                                                                                    |
+| Level       | What                                       | How                                                                                                                                                                                                                                |
+| ----------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Unit        | Core use cases, tweak engine, clean engine | In-memory fakes of the ports; runs on any OS                                                                                                                                                                                       |
+| Adapter     | `volt-win`, `volt-store`                   | Real APIs against a throwaway `HKCU\Software\VoltTest` key, a temp directory and a temp database only                                                                                                                              |
+| Integration | The shell's wiring and commands            | The real `WinRegistry` on a throwaway `HKCU\Software\VoltTest` key and a real store in a temp directory (apply, restart, revert, activity, undo of one entry or a batch), then the same wiring over fakes for the failure outcomes |
+| UI          | Components and feature state               | Vitest, with the IPC wrapper mocked                                                                                                                                                                                                |
+| End to end  | A few flows through the real app           | WebDriver, added once flows exist                                                                                                                                                                                                  |
 
 Tests never apply a real tweak, clean real user data or purge memory on the machine running them.
 In particular no test applies or reverts the shipped "Show file extensions" tweak: the end to end

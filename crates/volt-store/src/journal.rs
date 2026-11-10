@@ -108,6 +108,19 @@ impl Journal for Store {
         ids.into_iter().map(|id| Ok(BatchId(to_u64(id)?))).collect()
     }
 
+    fn batch_label(&self, batch: BatchId) -> Result<Option<String>, PortError> {
+        let label = self
+            .conn()
+            .query_row(
+                "SELECT label FROM batches WHERE id = ?1",
+                [to_i64(batch.0)?],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map_err(|e| db_error(&e))?;
+        Ok(label.flatten())
+    }
+
     fn record_pending(&self, entry: NewEntry) -> Result<EntryId, PortError> {
         let operation = encode_json(&entry.operation)?;
         let prior = encode_json(&entry.prior)?;

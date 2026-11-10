@@ -506,6 +506,21 @@ fn batches_are_found_by_label_in_id_order_and_labels_survive_a_restart() {
 }
 
 #[test]
+fn the_label_of_a_batch_is_read_back_by_id_after_a_restart() {
+    let dir = TempDir::new().expect("temp dir");
+    let path = db_path(&dir);
+    let store = open(&path);
+    let named = store.new_batch(Some("tweak-a")).expect("batch");
+    let plain = store.new_batch(None).expect("batch");
+    drop(store);
+
+    let store = open(&path);
+    assert_eq!(store.batch_label(named), Ok(Some("tweak-a".to_owned())));
+    assert_eq!(store.batch_label(plain), Ok(None));
+    assert_eq!(store.batch_label(BatchId(999)), Ok(None), "unknown batch");
+}
+
+#[test]
 fn a_fresh_database_gets_the_current_schema_version() {
     let dir = TempDir::new().expect("temp dir");
     let path = db_path(&dir);

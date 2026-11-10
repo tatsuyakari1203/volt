@@ -3,6 +3,8 @@ import { commands } from './bindings';
 import {
   applyTweak,
   describeIpcError,
+  exportActivity,
+  exportActivityText,
   getAppInfo,
   getAutostartEnabled,
   IpcCommandError,
@@ -12,8 +14,11 @@ import {
   listTweaks,
   onAppReady,
   onTrayBoostRequested,
+  previewUndoBatch,
   revertTweak,
   setAutostartEnabled,
+  undoBatch,
+  undoEntry,
 } from './index';
 
 // Mock only the Tauri runtime, so the generated bindings and our wrapper run for real.
@@ -151,6 +156,23 @@ describe('tweak and activity commands', () => {
     expect(invoke).toHaveBeenLastCalledWith('list_activity', { limit: 10, cursor: '42' });
   });
 
+  it('undoes, previews and exports through the generated commands with string ids', async () => {
+    invoke.mockResolvedValue({ status: 'restored', restored: 1, failed: 0, failures: [] });
+    await expect(undoEntry('7')).resolves.toMatchObject({ status: 'restored' });
+    expect(invoke).toHaveBeenLastCalledWith('undo_entry', { entry: '7' });
+    await undoBatch('3');
+    expect(invoke).toHaveBeenLastCalledWith('undo_batch', { batch: '3' });
+    invoke.mockResolvedValue({ items: [] });
+    await previewUndoBatch('3');
+    expect(invoke).toHaveBeenLastCalledWith('preview_undo_batch', { batch: '3' });
+    invoke.mockResolvedValue({ kind: 'cancelled' });
+    await expect(exportActivity()).resolves.toEqual({ kind: 'cancelled' });
+    expect(invoke).toHaveBeenLastCalledWith('export_activity');
+    invoke.mockResolvedValue({ fileName: 'a.txt', text: '', records: 0 });
+    await exportActivityText();
+    expect(invoke).toHaveBeenLastCalledWith('export_activity_text');
+  });
+
   it('turns a typed error into an IpcCommandError', async () => {
     invoke.mockRejectedValue({ kind: 'notFound', message: 'unknown tweak `x`' });
     const failure = await applyTweak('x').catch((e: unknown) => e);
@@ -169,6 +191,10 @@ describe('outside the Volt window', () => {
       () => applyTweak('t'),
       () => revertTweak('t'),
       () => listActivity(10),
+      () => undoEntry('1'),
+      () => undoBatch('1'),
+      () => previewUndoBatch('1'),
+      () => exportActivity(),
       () => getAutostartEnabled(),
     ]) {
       await expect(call()).rejects.toBeInstanceOf(IpcUnavailableError);
