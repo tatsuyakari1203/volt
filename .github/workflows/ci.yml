@@ -18,7 +18,8 @@ env:
 
 jobs:
   check:
-    name: Check (fmt, clippy, tests, architecture, Biome)
+    # Job names are required status checks on main: do not rename without updating branch protection.
+    name: Check
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -41,14 +42,15 @@ jobs:
       - name: Run all gates
         run: pnpm check
 
+      # Dependabot writes "Bump x from a to b", which the subject-case rule rejects.
       - name: Lint PR title (it becomes the squash commit)
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && github.actor != 'dependabot[bot]'
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: $env:PR_TITLE | pnpm exec commitlint
 
   supply-chain:
-    name: Supply chain (cargo-deny, typos)
+    name: Supply chain
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
