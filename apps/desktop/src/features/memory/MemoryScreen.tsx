@@ -11,11 +11,11 @@ import {
 import {
   describeArea,
   describeError,
-  formatBytes,
   formatChange,
   listRows,
   operationText,
 } from '../../shared/text/memory';
+import { formatBytes } from '../../shared/text/size';
 import { Badge, Button, Card, ListGroup, ListRow, PageHeader } from '../../shared/ui';
 
 type Load =

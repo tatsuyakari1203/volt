@@ -52,7 +52,8 @@ against Volt code opening a socket.
 
 The allowlist the check reads (everything empty means Volt has no network reach; plugins are
 listed because every plugin needs a review, and `tauri-plugin-fs` is only a dependency of the
-dialog plugin):
+dialog plugin; `tauri-plugin-notification` shows the local Windows toast after a tray Boost and
+makes no request):
 
 <!-- privacy-allowlist:start -->
 
@@ -64,6 +65,7 @@ dialog plugin):
     "tauri-plugin-autostart",
     "tauri-plugin-dialog",
     "tauri-plugin-fs",
+    "tauri-plugin-notification",
     "tauri-plugin-single-instance"
   ],
   "cspRemoteOrigins": [],

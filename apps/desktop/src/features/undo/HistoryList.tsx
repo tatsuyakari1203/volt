@@ -74,7 +74,7 @@ export function HistoryList({ entries, busy, onUndoEntry, onUndoBatch }: History
     >
       {entries.map((entry) =>
         entry.kind === 'row' ? (
-          <Row key={entry.item.id} item={entry.item} busy={busy} onUndo={onUndoEntry} />
+          <Row key={entry.item.id} item={entry.item} busy={busy} onUndo={onUndoEntry} showTitle />
         ) : (
           <li key={`batch-${entry.batch}-${entry.items[0]?.id}`}>
             <div className="flex items-center gap-3 bg-surface-sunken px-4 py-2.5">
@@ -114,15 +114,22 @@ function Row({
   item,
   busy,
   onUndo,
+  showTitle = false,
 }: {
   item: ActivityItem;
   busy: string | null;
   onUndo: (item: ActivityItem) => void;
+  /** Name what the record is about. A row inside a batch is named by the batch heading. */
+  showTitle?: boolean;
 }) {
   const key = item.entry === null ? null : `entry:${item.entry}`;
   return (
     <ListRow
-      title={statusLabels[item.status]}
+      title={
+        showTitle && item.title !== null
+          ? `${item.title}: ${statusLabels[item.status]}`
+          : statusLabels[item.status]
+      }
       badge={<StateBadge state={item.state} />}
       description={
         <>

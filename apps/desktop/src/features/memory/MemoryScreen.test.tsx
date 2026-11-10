@@ -3,7 +3,8 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MemoryCleanResult, MemoryListsView, MemoryState } from '../../shared/ipc';
 import { IpcCommandError, IpcUnavailableError } from '../../shared/ipc';
-import { describeArea, formatBytes, formatChange } from '../../shared/text/memory';
+import { describeArea, formatChange } from '../../shared/text/memory';
+import { formatBytes } from '../../shared/text/size';
 import { MemoryScreen } from './MemoryScreen';
 
 const ipc = vi.hoisted(() => ({

@@ -1,7 +1,7 @@
 import { CircleCheck, TriangleAlert } from 'lucide-react';
 import type { BoostResult } from '../../shared/ipc';
-import { describeArea, formatBytes, formatChange, operationText } from '../../shared/text/memory';
-import { formatSize } from '../../shared/text/size';
+import { describeArea, formatChange, operationText } from '../../shared/text/memory';
+import { formatBytes, formatSize } from '../../shared/text/size';
 import { Button, Card } from '../../shared/ui';
 
 function filesText(count: number): string {
