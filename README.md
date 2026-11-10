@@ -16,9 +16,32 @@ journaled and reversible.
 </div>
 
 > [!WARNING]
-> Volt is in **pre-alpha**. There is no installable release yet and nothing here should be run
-> on a machine you care about. The foundation (domain core, safety model, desktop shell) is being
+> Volt is in **pre-alpha**. Early installers exist (see [Install](#install)) but nothing here should
+> be run on a machine you care about. The foundation (domain core, safety model, desktop shell) is being
 > built in the open. "Volt" is a working name.
+
+## Install
+
+Download `Volt_<version>_x64-setup.exe` and its `.sha256` file from the
+[Releases page](https://github.com/tatsuyakari1203/volt/releases). The installer is per-user: it
+needs no administrator rights and installs under your own profile.
+
+**The build is not code-signed yet.** Windows SmartScreen will likely show "Windows protected your
+PC" with the publisher "Unknown". That means the file has no signature and no download reputation,
+not that it was found to be malicious. Click **More info**, then **Run anyway**, only if you
+verified the file as below.
+
+Verify the download in PowerShell, from the folder that holds both files, and compare with the
+`.sha256` file:
+
+```powershell
+(Get-FileHash .\Volt_0.1.0_x64-setup.exe -Algorithm SHA256).Hash
+Get-Content .\Volt_0.1.0_x64-setup.exe.sha256
+```
+
+The installer does not download WebView2. Windows 11 includes it; on Windows 10 install the
+[WebView2 runtime](https://developer.microsoft.com/microsoft-edge/webview2/) first. See
+[docs/privacy.md](docs/privacy.md).
 
 ## Why Volt
 

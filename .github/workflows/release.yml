@@ -1,0 +1,94 @@
+name: Release
+
+# A v* tag builds the Windows installer and creates a DRAFT release; nothing is published
+# automatically. Pull requests that touch this file or the bundle configuration build and upload
+# the artifact only, so the pipeline is proven before a tag exists. No signing and no updater yet.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - apps/desktop/src-tauri/tauri.conf.json
+      - apps/desktop/src-tauri/icons/**
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CODEGRAPH_TELEMETRY: "0"
+
+jobs:
+  build:
+    name: Build installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install JS dev tools
+        run: pnpm install --frozen-lockfile
+
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check the tag matches the version
+        if: github.ref_type == 'tag'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if ($env:TAG -ne "v$version") { throw "Tag $env:TAG does not match workspace version $version" }
+
+      - name: Build the NSIS installer
+        run: pnpm --filter @volt/desktop exec tauri build --bundles nsis
+
+      - name: Write the SHA-256 file
+        run: |
+          $dir = "target/release/bundle/nsis"
+          $setup = Get-ChildItem $dir -Filter '*-setup.exe' | Select-Object -First 1
+          if (-not $setup) { throw "No installer found in $dir" }
+          $hash = (Get-FileHash $setup.FullName -Algorithm SHA256).Hash.ToLower()
+          "$hash *$($setup.Name)" | Set-Content "$($setup.FullName).sha256" -Encoding ascii
+          Get-Content "$($setup.FullName).sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: volt-windows-installer
+          path: |
+            target/release/bundle/nsis/*-setup.exe
+            target/release/bundle/nsis/*-setup.exe.sha256
+          if-no-files-found: error
+
+  draft-release:
+    name: Draft release
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: volt-windows-installer
+
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" ./*-setup.exe ./*-setup.exe.sha256 --draft --title "Volt $TAG" --generate-notes
