@@ -259,6 +259,8 @@ pub fn bindings_builder() -> Builder<tauri::Wry> {
             crate::elevation::clean_memory_elevated,
             crate::processes::list_processes,
             crate::processes::end_app,
+            crate::apps::list_apps,
+            crate::apps::uninstall_app,
             crate::boost::boost,
             crate::boost::boost_config,
             crate::boost::set_boost_config,

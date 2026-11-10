@@ -1,0 +1,170 @@
+//! In-memory doubles of the app ports, for tests of the core and of the shell.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+use super::{PackagedApp, PackagedApps, UninstallCommand, Uninstaller};
+use crate::error::PortError;
+use crate::fakes::FakeRegistry;
+use crate::registry::{Registry, RegistryKeyRef};
+use crate::time::Timestamp;
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// A [`Uninstaller`] that starts nothing. It records what it was asked to run and can pretend the
+/// vendor's uninstaller removed the app (by deleting its registry key), exited without removing
+/// it, or could not be started.
+#[derive(Debug, Default)]
+pub struct FakeUninstaller {
+    runs: Mutex<Vec<UninstallCommand>>,
+    removes: Mutex<HashMap<String, (Arc<FakeRegistry>, RegistryKeyRef)>>,
+    failures: Mutex<HashMap<String, PortError>>,
+    exit_codes: Mutex<HashMap<String, i32>>,
+}
+
+impl FakeUninstaller {
+    /// An uninstaller that succeeds without changing anything.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// When `program` is run, deletes `key` from `registry`, as a finished uninstaller does.
+    pub fn removes_key_when_run(
+        &self,
+        program: &str,
+        registry: Arc<FakeRegistry>,
+        key: RegistryKeyRef,
+    ) {
+        lock(&self.removes).insert(program.to_lowercase(), (registry, key));
+    }
+
+    /// Makes running `program` fail with `error` (nothing ran).
+    pub fn fail_on(&self, program: &str, error: PortError) {
+        lock(&self.failures).insert(program.to_lowercase(), error);
+    }
+
+    /// Makes `program` exit with `code`.
+    pub fn exit_with(&self, program: &str, code: i32) {
+        lock(&self.exit_codes).insert(program.to_lowercase(), code);
+    }
+
+    /// Every command that was run, in order.
+    #[must_use]
+    pub fn runs(&self) -> Vec<UninstallCommand> {
+        lock(&self.runs).clone()
+    }
+}
+
+impl Uninstaller for FakeUninstaller {
+    fn run(&self, command: &UninstallCommand) -> Result<Option<i32>, PortError> {
+        let program = command.program().to_lowercase();
+        if let Some(error) = lock(&self.failures).get(&program) {
+            return Err(error.clone());
+        }
+        lock(&self.runs).push(command.clone());
+        if let Some((registry, key)) = lock(&self.removes).get(&program) {
+            let _ = registry.delete_key(key);
+        }
+        Ok(Some(
+            lock(&self.exit_codes).get(&program).copied().unwrap_or(0),
+        ))
+    }
+}
+
+/// A [`PackagedApps`] over a list in memory.
+#[derive(Debug, Default)]
+pub struct FakePackages {
+    packages: Mutex<Vec<PackagedApp>>,
+    removed: Mutex<Vec<String>>,
+    list_failure: Mutex<Option<PortError>>,
+    remove_failures: Mutex<HashMap<String, PortError>>,
+    keep_after_remove: Mutex<Vec<String>>,
+}
+
+impl FakePackages {
+    /// No packages.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds an ordinary packaged app.
+    pub fn add(&self, full_name: &str, name: &str) {
+        self.add_package(PackagedApp {
+            full_name: full_name.to_owned(),
+            name: name.to_owned(),
+            publisher: Some("Contoso".to_owned()),
+            version: Some("1.2.3.4".to_owned()),
+            installed: Some(Timestamp::from_unix_millis(1_700_000_000_000)),
+            size_bytes: None,
+            framework: false,
+            resource: false,
+            system: false,
+        });
+    }
+
+    /// Adds a package exactly as given.
+    pub fn add_package(&self, package: PackagedApp) {
+        lock(&self.packages).push(package);
+    }
+
+    /// Makes every listing fail with `error`.
+    pub fn fail_list(&self, error: PortError) {
+        *lock(&self.list_failure) = Some(error);
+    }
+
+    /// Makes removing `full_name` fail with `error`.
+    pub fn fail_remove(&self, full_name: &str, error: PortError) {
+        lock(&self.remove_failures).insert(full_name.to_owned(), error);
+    }
+
+    /// Removing `full_name` reports success but leaves the package listed.
+    pub fn keep_after_remove(&self, full_name: &str) {
+        lock(&self.keep_after_remove).push(full_name.to_owned());
+    }
+
+    /// The full names that were asked to be removed, in order.
+    #[must_use]
+    pub fn removed(&self) -> Vec<String> {
+        lock(&self.removed).clone()
+    }
+}
+
+impl PackagedApps for FakePackages {
+    fn list(&self) -> Result<Vec<PackagedApp>, PortError> {
+        if let Some(error) = lock(&self.list_failure).clone() {
+            return Err(error);
+        }
+        Ok(lock(&self.packages).clone())
+    }
+
+    fn remove(&self, full_name: &str) -> Result<(), PortError> {
+        if let Some(error) = lock(&self.remove_failures).get(full_name) {
+            return Err(error.clone());
+        }
+        lock(&self.removed).push(full_name.to_owned());
+        if !lock(&self.keep_after_remove)
+            .iter()
+            .any(|kept| kept == full_name)
+        {
+            lock(&self.packages).retain(|package| package.full_name != full_name);
+        }
+        Ok(())
+    }
+}
+
+/// Writes an app entry the way an installer does, into `registry` at `subkey` (the key of the
+/// app, below the Uninstall key of its place). For arranging a test.
+pub fn add_entry(
+    registry: &FakeRegistry,
+    key: &RegistryKeyRef,
+    values: &[(&str, crate::registry::RegistryValue)],
+) {
+    registry.add_key(key.hive, &key.subkey, key.view);
+    for (name, value) in values {
+        registry.set(&key.value(*name), value.clone());
+    }
+}

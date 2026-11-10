@@ -18,15 +18,17 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use tauri::{AppHandle, Manager as _};
 use volt_core::{
-    ActivityLog, Catalogue, CatalogueError, CleanEngine, CleaningRules, Clock, Elevator, Executor,
-    FilePublisher, Journal, KnownFolders, LargeFilesFinder, LogonTasks, MemoryCleaner, PortError,
-    Ports, ProcessMonitor, ReconcileReport, RecycleBinManager, Resolution, RulesError, Settings,
-    ShortcutResolver, StartupManager, StartupSources, SystemClock, TweakEngine,
+    ActivityLog, AppManager, Catalogue, CatalogueError, CleanEngine, CleaningRules, Clock,
+    Elevator, Executor, FilePublisher, Journal, KnownFolders, LargeFilesFinder, LogonTasks,
+    MemoryCleaner, OwnInstall, PortError, Ports, ProcessMonitor, ReconcileReport,
+    RecycleBinManager, Resolution, RulesError, Settings, ShortcutResolver, StartupManager,
+    StartupSources, SystemClock, TweakEngine,
 };
 use volt_store::{CorruptionRecovery, OpenOutcome, Store, StoreError};
 use volt_win::{
     WinCommands, WinElevator, WinFilePublisher, WinFileSystem, WinKnownFolders, WinLogonTasks,
-    WinMemory, WinProcesses, WinRecycleBin, WinRegistry, WinServices, WinShortcuts,
+    WinMemory, WinPackagedApps, WinProcesses, WinRecycleBin, WinRegistry, WinServices,
+    WinShortcuts, WinUninstaller,
 };
 
 use crate::IpcError;
@@ -117,6 +119,7 @@ pub struct AppCore {
     memory_cleaner: Option<MemoryCleaner>,
     process_monitor: Option<ProcessMonitor>,
     elevator: Option<Arc<dyn Elevator>>,
+    apps: Option<AppManager>,
 }
 
 impl fmt::Debug for AppCore {
@@ -157,6 +160,7 @@ impl AppCore {
             memory_cleaner: None,
             process_monitor: None,
             elevator: None,
+            apps: None,
         }
     }
 
@@ -262,6 +266,21 @@ impl AppCore {
             .ok_or_else(|| IpcError::Unsupported {
                 message: "the process list is not available in this build".to_owned(),
             })
+    }
+
+    /// The same core with the installed apps manager attached. The real app does in [`init`];
+    /// [`build_core`] never does, so a test cannot start an uninstaller by accident.
+    #[must_use]
+    pub fn with_apps(mut self, manager: AppManager) -> Self {
+        self.apps = Some(manager);
+        self
+    }
+
+    /// The installed apps manager, or the error the Apps commands return without one.
+    pub fn apps(&self) -> Result<&AppManager, IpcError> {
+        self.apps.as_ref().ok_or_else(|| IpcError::Unsupported {
+            message: "the installed apps list is not available in this build".to_owned(),
+        })
     }
 
     /// The same core with the startup apps manager attached. [`build_core_with`] does this;
@@ -632,8 +651,10 @@ fn build_real_core(app: &AppHandle) -> Result<AppCore, InitError> {
         .app_data_dir()
         .map_err(|error| InitError::DataDir(error.to_string()))?;
     std::fs::create_dir_all(&dir).map_err(|error| InitError::DataDir(error.to_string()))?;
+    let ports = windows_ports();
+    let registry = ports.registry.clone();
     let core = build_core_with(
-        windows_ports(),
+        ports,
         &dir.join(STORE_FILE_NAME),
         EMBEDDED_CATALOGUE,
         StartupWiring::windows(),
@@ -644,5 +665,21 @@ fn build_real_core(app: &AppHandle) -> Result<AppCore, InitError> {
     // The real elevator is attached here only: it starts the helper (through the administrator
     // prompt) the first time a shield action asks, and never before.
     let elevator = Arc::new(WinElevator::new(embedded_hashes()));
-    Ok(core.with_recycle_bin(bin).with_elevator(elevator))
+    // The installed apps manager starts real uninstallers, so it is attached here only. Volt's own
+    // folder is passed so Volt is never offered for removal.
+    let own_folder = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|folder| folder.display().to_string()));
+    let apps = AppManager::new(
+        registry,
+        Arc::new(WinUninstaller::new()),
+        Arc::new(SystemClock),
+    )
+    .with_packages(Arc::new(WinPackagedApps::new()))
+    .with_own_install(OwnInstall::new(own_folder))
+    .with_activity_log(core.activity.clone());
+    Ok(core
+        .with_recycle_bin(bin)
+        .with_elevator(elevator)
+        .with_apps(apps))
 }

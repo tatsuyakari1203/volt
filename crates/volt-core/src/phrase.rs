@@ -395,6 +395,11 @@ pub const ENGLISH: &[(&str, &str)] = &[
     ("summary.process.admin", "; {count} need administrator rights"),
     ("summary.process.gone", "; {count} had already exited"),
     ("summary.process.failed", "; {count} could not be ended"),
+    // Removing an installed app.
+    ("summary.uninstall.removed", "Uninstalled {name} (cannot be undone by Volt)"),
+    ("summary.uninstall.stillInstalled", "Ran the uninstaller for {name}; it is still installed"),
+    ("summary.uninstall.unknown", "Ran the uninstaller for {name}; Volt could not check whether it was removed"),
+    ("summary.uninstall.failed", "Could not uninstall {name}: {reason}"),
     // Health reasons.
     ("health.disk", "{free} of {total} is free on {mount} ({share}%). Windows needs room to install updates and to move memory to disk."),
     ("health.memory", "{percent}% of your memory is in use. When it runs out Windows slows down and may close programs."),

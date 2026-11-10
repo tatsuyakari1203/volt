@@ -16,6 +16,10 @@ workspace = true
 volt-core.workspace = true
 log.workspace = true
 windows = { workspace = true, features = [
+    "ApplicationModel",
+    "Foundation",
+    "Foundation_Collections",
+    "Management_Deployment",
     "Wdk_Graphics_Direct3D",
     "Wdk_System_SystemInformation",
     "Win32_Foundation",

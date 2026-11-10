@@ -2,6 +2,7 @@
 //! holds commands and window wiring, never business rules.
 
 pub mod api;
+pub mod apps;
 mod autostart;
 pub mod boost;
 pub mod catalogue;

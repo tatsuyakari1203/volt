@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { AppsScreen } from '../features/apps/AppsScreen';
 import { CleanScreen } from '../features/clean/CleanScreen';
 import { HomeScreen } from '../features/home/HomeScreen';
 import { MemoryScreen } from '../features/memory/MemoryScreen';
@@ -34,6 +35,8 @@ function Screen({
       return <TweaksScreen />;
     case 'startup':
       return <StartupScreen />;
+    case 'apps':
+      return <AppsScreen />;
     case 'processes':
       return <ProcessesScreen />;
     case 'settings':

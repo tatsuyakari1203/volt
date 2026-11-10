@@ -30,7 +30,7 @@ impl WinFilePublisher {
 /// Replaces `%NAME%` references with the value of the environment variable,
 /// ignoring case. A reference to a variable that is not set is left as
 /// written, and so is a lone `%`.
-fn expand_environment(text: &str, lookup: &dyn Fn(&str) -> Option<String>) -> String {
+pub(crate) fn expand_environment(text: &str, lookup: &dyn Fn(&str) -> Option<String>) -> String {
     let mut expanded = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(start) = rest.find('%') {
