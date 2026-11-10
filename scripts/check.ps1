@@ -9,6 +9,7 @@ $steps = [ordered]@{
     'rustfmt'      = { cargo fmt --all -- --check }
     'clippy'       = { cargo clippy --workspace --all-targets --locked -- -D warnings }
     'tests'        = { cargo test --workspace --locked }
+    'bindings'     = { pwsh -NoProfile -File scripts/bindings.ps1 -Check }
     'architecture' = { node scripts/check-arch.mjs }
     'biome'        = { pnpm exec biome check . }
     'typecheck'    = { pnpm --filter '@volt/desktop' typecheck }

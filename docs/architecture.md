@@ -152,7 +152,31 @@ attack surface but costs an IPC protocol and a second binary.
   rule (dependency-cruiser, `apps/desktop/.dependency-cruiser.cjs`, run by `pnpm check`) enforces
   it and also forbids `shared` importing features, mirroring the crate check.
 - The UI holds no business rules: it renders plans and results produced by the core.
-- IPC types will be generated from Rust so a breaking change fails the TypeScript build.
+- **Typed IPC.** The Rust shell registers every command, event and transfer type in one place
+  (`apps/desktop/src-tauri/src/ipc.rs`, `bindings_builder`). `tauri-specta` generates the invoke
+  handler and `apps/desktop/src/shared/ipc/bindings.ts` from that registry. The generated file is
+  committed and excluded from Biome. The UI imports only from `shared/ipc` (the generated module
+  plus a thin wrapper in `index.ts`); it never calls `invoke` directly or hand-writes a transfer
+  type. `pnpm bindings` regenerates the file; the `bindings` step of `pnpm check` (and CI)
+  regenerates it in memory and fails when the committed file differs, so a changed Rust signature
+  cannot reach the UI unnoticed.
+  - **Pinned versions:** `tauri-specta =2.0.0-rc.21`, `specta =2.0.0-rc.22`,
+    `specta-typescript =0.0.9`. They are release candidates, so they are pinned exactly and move
+    together. Newer candidates (`rc.24` to `rc.26`) were tried and do not compile on the pinned
+    Rust 1.89 (they use `fmt::from_fn` and a const `TypeId::of`, stabilised in later Rust);
+    revisit when the toolchain is bumped.
+  - **Errors.** Every command returns `Result<T, IpcError>`. `IpcError` is a serialisable enum
+    tagged by `kind` (`notFound`, `accessDenied`, `unsupported`, `invalidInput`, `other`), built
+    from `volt_core::PortError`. The UI receives `{ status: "error", error: { kind, message } }`
+    and switches on `kind`; the wrapper throws `IpcCommandError` carrying the typed value.
+  - **Events.** Events are structs deriving `tauri_specta::Event` and registered in
+    `bindings_builder`; the sample is `AppReady(AppInfo)`, listened to as `events.appReady`.
+  - **64-bit integers.** `specta-typescript` refuses to export `u64`/`i64` by default because
+    JavaScript numbers lose precision above 2^53. A type that exposes one fails the export (and
+    so the gate) until it is given an explicit representation, for example a decimal string.
+    Registry QWORD values will need that when commands expose them.
+  - **Transfer types.** Types derive `specta::Type` in the shell for now. `volt-core` stays free
+    of the derive until commands expose its domain model.
 
 ## Testing strategy
 

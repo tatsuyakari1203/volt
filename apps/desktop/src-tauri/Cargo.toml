@@ -21,3 +21,13 @@ tauri-build = { version = "=2.6.3", features = [] }
 [dependencies]
 tauri = { version = "=2.11.6", features = [] }
 serde = { version = "1", features = ["derive"] }
+# Typed IPC: pinned exactly because tauri-specta is still a release candidate. The three move
+# together (tauri-specta requires the matching specta rc and specta-typescript 0.0.13).
+tauri-specta = { version = "=2.0.0-rc.21", features = ["derive", "typescript"] }
+specta = { version = "=2.0.0-rc.22", features = ["derive"] }
+specta-typescript = "=0.0.9"
+volt-core = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tempfile = { workspace = true }
