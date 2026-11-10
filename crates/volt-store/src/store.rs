@@ -77,6 +77,10 @@ impl Store {
             Err(Failure::Fatal(error)) => Err(error),
             Err(Failure::Corrupt(reason)) => {
                 let backup_path = move_aside(path, &clock)?;
+                log::warn!(
+                    "the database was corrupt ({reason}); moved it to {} and started a new one",
+                    backup_path.display()
+                );
                 match try_open(path) {
                     Ok(conn) => Ok(OpenOutcome {
                         store: Self::from_connection(conn, clock),

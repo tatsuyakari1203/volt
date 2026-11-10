@@ -9,9 +9,10 @@ use rusqlite::Connection;
 use tempfile::TempDir;
 use volt_core::fakes::{FakeSystem, ManualClock};
 use volt_core::{
-    BatchId, EntryState, Evidence, Executor, Journal, NewEntry, Operation, OperationRequest, Plan,
+    ActivityId, ActivityLog, ActivityOutcome, ActivityRecord, BatchId, EntryId, EntryState,
+    Evidence, Executor, Journal, NewActivity, NewEntry, Operation, OperationRequest, Plan,
     PortError, PriorState, RegistryHive, RegistryValue, RegistryValueRef, Resolution, Risk,
-    Settings, SettingsExt, Source, Timestamp,
+    Settings, SettingsExt, Source, Timestamp, render_text,
 };
 
 use crate::migrations::{MIGRATIONS, MigrateError, Migration, migrate};
@@ -376,13 +377,13 @@ fn an_entry_left_pending_by_a_crash_is_reconciled_on_the_next_start() {
 // ---- migrations -----------------------------------------------------------------------------
 
 /// A migration after the last real one, to prove upgrades keep data.
-const TEST_V3: Migration = Migration {
-    version: 3,
+const TEST_V4: Migration = Migration {
+    version: 4,
     sql: "ALTER TABLE journal_entries ADD COLUMN note TEXT;",
 };
 
-fn migrations_with_test_v3() -> [Migration; 3] {
-    [MIGRATIONS[0], MIGRATIONS[1], TEST_V3]
+fn migrations_with_test_v4() -> [Migration; 4] {
+    [MIGRATIONS[0], MIGRATIONS[1], MIGRATIONS[2], TEST_V4]
 }
 
 fn user_version(conn: &Connection) -> u32 {
@@ -411,9 +412,9 @@ fn a_database_at_an_older_schema_version_is_upgraded_and_keeps_its_data() {
     }
 
     let mut conn = Connection::open(&path).expect("open raw");
-    assert_eq!(user_version(&conn), 2);
-    migrate(&mut conn, &migrations_with_test_v3()).expect("upgrade");
     assert_eq!(user_version(&conn), 3);
+    migrate(&mut conn, &migrations_with_test_v4()).expect("upgrade");
+    assert_eq!(user_version(&conn), 4);
     let (rows, note): (i64, Option<String>) = conn
         .query_row("SELECT COUNT(*), MAX(note) FROM journal_entries", [], |r| {
             Ok((r.get(0)?, r.get(1)?))
@@ -428,12 +429,12 @@ fn a_database_at_an_older_schema_version_is_upgraded_and_keeps_its_data() {
     assert_eq!(theme, "\"dark\"");
 
     // Migrating again is a no-op.
-    migrate(&mut conn, &migrations_with_test_v3()).expect("idempotent");
-    assert_eq!(user_version(&conn), 3);
+    migrate(&mut conn, &migrations_with_test_v4()).expect("idempotent");
+    assert_eq!(user_version(&conn), 4);
 }
 
 #[test]
-fn a_version_1_database_is_upgraded_to_version_2_and_keeps_its_journal() {
+fn a_version_1_database_is_upgraded_and_keeps_its_journal() {
     let dir = TempDir::new().expect("temp dir");
     let path = db_path(&dir);
     let operation = set_dword("A", 1);
@@ -466,7 +467,7 @@ fn a_version_1_database_is_upgraded_to_version_2_and_keeps_its_journal() {
 
     // The next start of the app opens it and migrates it.
     let store = open(&path);
-    assert_eq!(user_version(&store.conn()), 2);
+    assert_eq!(user_version(&store.conn()), 3);
     let old = store.batch_entries(BatchId(1)).expect("old entries");
     assert_eq!(old.len(), 1);
     assert_eq!(old[0].operation, operation);
@@ -521,12 +522,15 @@ fn a_failing_migration_rolls_back_and_keeps_the_old_version() {
     let mut conn = Connection::open_in_memory().expect("memory db");
     migrate(&mut conn, MIGRATIONS).expect("current schema");
     let broken = Migration {
-        version: 3,
+        version: 4,
         sql: "ALTER TABLE journal_entries ADD COLUMN ok TEXT; ALTER TABLE nope ADD COLUMN x TEXT;",
     };
-    let result = migrate(&mut conn, &[MIGRATIONS[0], MIGRATIONS[1], broken]);
+    let result = migrate(
+        &mut conn,
+        &[MIGRATIONS[0], MIGRATIONS[1], MIGRATIONS[2], broken],
+    );
     assert!(matches!(result, Err(MigrateError::Sql(_))));
-    assert_eq!(user_version(&conn), 2);
+    assert_eq!(user_version(&conn), 3);
     // The half-applied first statement was rolled back with the rest.
     assert!(
         conn.prepare("SELECT ok FROM journal_entries").is_err(),
@@ -549,7 +553,7 @@ fn a_database_from_a_newer_build_is_refused_and_left_alone() {
         error,
         StoreError::SchemaTooNew {
             found: 99,
-            supported: 2
+            supported: 3
         }
     );
     assert_eq!(fs::read(&path).expect("read"), before);
@@ -713,4 +717,188 @@ fn settings_are_stored_as_json_and_survive_a_restart() {
     assert!(store.remove("ui").expect("remove"));
     assert!(!store.remove("ui").expect("remove again"));
     assert_eq!(store.get("ui").expect("get"), None);
+}
+
+// ---- activity log -------------------------------------------------------------------------
+
+fn new_activity(summary: &str, millis: i64) -> NewActivity {
+    NewActivity {
+        timestamp: Timestamp::from_unix_millis(millis),
+        source: Source::Manual,
+        outcome: ActivityOutcome::Applied,
+        summary: summary.to_owned(),
+        batch: None,
+        entry: None,
+        label: None,
+    }
+}
+
+#[test]
+fn a_version_2_database_is_upgraded_to_version_3_and_gains_an_empty_activity_log() {
+    let dir = TempDir::new().expect("temp dir");
+    let path = db_path(&dir);
+    let operation = set_dword("A", 1);
+    {
+        // A database exactly as the second release left it: schema version 2
+        // with a labelled batch, a journal entry and a setting.
+        let mut conn = Connection::open(&path).expect("open raw");
+        migrate(&mut conn, &MIGRATIONS[..2]).expect("v2 schema");
+        assert_eq!(user_version(&conn), 2);
+        assert!(
+            conn.prepare("SELECT * FROM activity").is_err(),
+            "version 2 has no activity table"
+        );
+        conn.execute(
+            "INSERT INTO batches (created_ms, label) VALUES (5, 'tweak-a')",
+            [],
+        )
+        .expect("old batch");
+        conn.execute(
+            "INSERT INTO journal_entries \
+             (batch, timestamp_ms, source, state, operation, prior, error) \
+             VALUES (1, 5, 'Manual', 'Applied', ?1, ?2, NULL)",
+            [
+                serde_json::to_string(&operation).expect("json"),
+                serde_json::to_string(&PriorState::RegistryValue(None)).expect("json"),
+            ],
+        )
+        .expect("old entry");
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('theme', '\"dark\"')",
+            [],
+        )
+        .expect("old setting");
+    }
+
+    let store = open(&path);
+    assert_eq!(user_version(&store.conn()), 3);
+    // Everything from version 2 is intact.
+    assert_eq!(store.batches_with_label("tweak-a"), Ok(vec![BatchId(1)]));
+    let old = store.batch_entries(BatchId(1)).expect("old entries");
+    assert_eq!((old.len(), &old[0].operation), (1, &operation));
+    assert_eq!(
+        store.get("theme").expect("setting"),
+        Some(serde_json::json!("dark"))
+    );
+    // The activity log starts empty and works.
+    assert_eq!(store.list(10, None), Ok(vec![]));
+    let id = store.record(new_activity("first", 1)).expect("record");
+    assert_eq!(id, ActivityId(1));
+}
+
+#[test]
+fn activity_records_survive_a_restart_and_page_newest_first() {
+    let dir = TempDir::new().expect("temp dir");
+    let path = db_path(&dir);
+    let store = open(&path);
+    let mut linked = new_activity("linked", 100);
+    linked.source = Source::Automation;
+    linked.outcome = ActivityOutcome::RolledBack;
+    linked.batch = Some(BatchId(4));
+    linked.entry = Some(EntryId(9));
+    linked.label = Some("tweak-a".to_owned());
+    // Not a journaled operation (a cleaning, say): no links at all.
+    store.record(new_activity("no links", 50)).expect("record");
+    store.record(linked.clone()).expect("record");
+    for n in 3..=5 {
+        store
+            .record(new_activity(&format!("event {n}"), 100 + n))
+            .expect("record");
+    }
+    drop(store);
+
+    let store = open(&path);
+    let page = store.list(2, None).expect("first page");
+    let summaries: Vec<_> = page.iter().map(|r| r.summary.as_str()).collect();
+    assert_eq!(summaries, ["event 5", "event 4"]);
+    let next = store.list(2, page.last().map(|r| r.id)).expect("next page");
+    let summaries: Vec<_> = next.iter().map(|r| r.summary.as_str()).collect();
+    assert_eq!(summaries, ["event 3", "linked"]);
+    // Every field round-trips.
+    assert_eq!(
+        next[1],
+        ActivityRecord {
+            id: ActivityId(2),
+            timestamp: linked.timestamp,
+            source: linked.source,
+            outcome: linked.outcome,
+            summary: linked.summary,
+            batch: linked.batch,
+            entry: linked.entry,
+            label: linked.label,
+        }
+    );
+    let last = store.list(10, Some(ActivityId(2))).expect("last page");
+    assert_eq!(last.len(), 1);
+    assert_eq!(
+        (last[0].batch, last[0].entry, &last[0].label),
+        (None, None, &None)
+    );
+    assert_eq!(store.list(0, None), Ok(vec![]));
+    assert_eq!(store.list(100, None).expect("all").len(), 5);
+}
+
+#[test]
+fn the_executor_writes_activity_into_the_store_and_a_secret_never_reaches_it() {
+    const SECRET: &str = "hunter2-SECRET-9f3a";
+    let dir = TempDir::new().expect("temp dir");
+    let path = db_path(&dir);
+    let system = FakeSystem::new();
+    let store = open(&path);
+    let executor = Executor::new(system.ports(), store.clone(), system.clock.clone())
+        .with_activity_log(store.clone());
+
+    let secret_value = Operation::SetRegistryValue {
+        target: value_ref("Secret"),
+        value: RegistryValue::Sz(SECRET.to_owned()),
+    };
+    let plan = Plan::build(
+        vec![
+            OperationRequest::new(set_dword("A", 1), Risk::Safe, Evidence::Measured),
+            OperationRequest::new(secret_value, Risk::Safe, Evidence::Measured),
+        ],
+        &system.ports(),
+    )
+    .expect("plan")
+    .with_label("tweak-a");
+    let report = executor.apply(&plan, Source::Manual).expect("apply");
+    assert!(report.is_success());
+    executor.revert_batch(report.batch).expect("revert");
+    assert_eq!(executor.activity_write_failures(), 0);
+
+    let records = store.list(10, None).expect("list");
+    let outcomes: Vec<_> = records.iter().map(|r| r.outcome).collect();
+    assert_eq!(
+        outcomes,
+        [
+            ActivityOutcome::Reverted,
+            ActivityOutcome::Reverted,
+            ActivityOutcome::Applied,
+            ActivityOutcome::Applied
+        ],
+        "newest first"
+    );
+    // Applies carry the plan label; a plain revert does not know it.
+    assert!(
+        records
+            .iter()
+            .filter(|r| r.outcome == ActivityOutcome::Applied)
+            .all(|r| r.label.as_deref() == Some("tweak-a"))
+    );
+    assert!(records.iter().all(|r| r.batch == Some(report.batch)));
+    let exported = render_text(&records);
+    assert!(exported.contains("REG_SZ (19 chars)"));
+    assert!(!exported.contains(SECRET));
+
+    // Not even the raw database file holds the secret in the activity table.
+    let conn = Connection::open(&path).expect("open raw");
+    let summaries: Vec<String> = conn
+        .prepare("SELECT summary FROM activity")
+        .expect("prepare")
+        .query_map([], |row| row.get(0))
+        .expect("query")
+        .collect::<Result<_, _>>()
+        .expect("rows");
+    assert_eq!(summaries.len(), 4);
+    assert!(summaries.iter().all(|s| !s.contains(SECRET)));
 }

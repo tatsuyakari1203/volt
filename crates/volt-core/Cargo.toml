@@ -19,4 +19,5 @@ fakes = []
 serde.workspace = true
 thiserror.workspace = true
 serde_json.workspace = true
+log.workspace = true
 toml.workspace = true

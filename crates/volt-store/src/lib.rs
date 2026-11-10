@@ -5,8 +5,8 @@
 //! `volt-core` only; must not pull in `tauri`, `windows` or `windows-sys`.
 //!
 //! [`Store`] is one `SQLite` database that implements the core's
-//! [`Journal`](volt_core::Journal) and [`Settings`](volt_core::Settings)
-//! ports. The caller decides where the file lives; this crate never picks a
+//! [`Journal`](volt_core::Journal), [`Settings`](volt_core::Settings) and
+//! [`ActivityLog`](volt_core::ActivityLog) ports. The caller decides where the file lives; this crate never picks a
 //! location.
 //!
 //! # Durability
@@ -26,6 +26,7 @@
 
 #![forbid(unsafe_code)]
 
+mod activity;
 mod error;
 mod journal;
 mod migrations;

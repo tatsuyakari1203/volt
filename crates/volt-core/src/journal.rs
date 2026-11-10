@@ -41,6 +41,15 @@ pub enum Source {
     Automation,
 }
 
+impl fmt::Display for Source {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Manual => "manual",
+            Self::Automation => "automation",
+        })
+    }
+}
+
 /// Lifecycle of a journal entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EntryState {

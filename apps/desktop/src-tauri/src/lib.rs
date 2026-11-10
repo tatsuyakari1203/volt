@@ -3,6 +3,7 @@
 
 mod autostart;
 mod ipc;
+mod logging;
 mod tray;
 mod window;
 
@@ -64,6 +65,7 @@ pub fn run() {
         .plugin(autostart::plugin())
         .invoke_handler(bindings.invoke_handler())
         .setup(move |app| {
+            logging::install(app.handle());
             bindings.mount_events(app);
             tray::setup(app)?;
             if window::LaunchMode::from_args(std::env::args().skip(1)) == window::LaunchMode::Foreground {
