@@ -1,8 +1,8 @@
 import { Loader2, Trash2, TriangleAlert } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { emptyRecycleBin, getRecycleBinStatus, type RecycleBinView } from '../../shared/ipc';
+import { countOf, formatSize } from '../../shared/text/size';
 import { Button, Card, Dialog, useToast } from '../../shared/ui';
-import { countOf, formatSize } from './format';
 import { describeError } from './messages';
 
 type Load =

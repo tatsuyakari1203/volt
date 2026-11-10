@@ -31,7 +31,7 @@ pub enum MemoryAreaView {
 }
 
 impl MemoryAreaView {
-    fn to_core(self) -> MemoryArea {
+    pub(crate) fn to_core(self) -> MemoryArea {
         match self {
             Self::WorkingSets => MemoryArea::WorkingSets,
             Self::StandbyList => MemoryArea::StandbyList,
@@ -42,7 +42,7 @@ impl MemoryAreaView {
     }
 
     /// `None` for an area this shell does not know (the core enum is non-exhaustive).
-    fn from_core(area: MemoryArea) -> Option<Self> {
+    pub(crate) fn from_core(area: MemoryArea) -> Option<Self> {
         match area {
             MemoryArea::WorkingSets => Some(Self::WorkingSets),
             MemoryArea::StandbyList => Some(Self::StandbyList),
@@ -171,7 +171,7 @@ pub struct MemoryCleanResult {
 }
 
 /// Why an operation cannot run, in a sentence for the page.
-fn reason_for(state: Availability) -> Option<String> {
+pub(crate) fn reason_for(state: Availability) -> Option<String> {
     match state {
         Availability::Available => None,
         Availability::NeedsAdministrator => Some(
@@ -183,7 +183,7 @@ fn reason_for(state: Availability) -> Option<String> {
     }
 }
 
-fn state_for(state: Availability) -> OperationState {
+pub(crate) fn state_for(state: Availability) -> OperationState {
     match state {
         Availability::Available => OperationState::Available,
         Availability::NeedsAdministrator => OperationState::NeedsAdministrator,
@@ -216,7 +216,10 @@ pub fn memory_state_of(core: &AppCore) -> Result<MemoryState, IpcError> {
     })
 }
 
-fn area_result(area: MemoryArea, result: &Result<PurgeOutcome, PortError>) -> Option<AreaResult> {
+pub(crate) fn area_result(
+    area: MemoryArea,
+    result: &Result<PurgeOutcome, PortError>,
+) -> Option<AreaResult> {
     let view = MemoryAreaView::from_core(area)?;
     let (status, outcome, detail) = match result {
         Ok(outcome) => (AreaStatus::Done, *outcome, None),

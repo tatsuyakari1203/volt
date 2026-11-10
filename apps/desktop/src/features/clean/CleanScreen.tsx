@@ -11,8 +11,8 @@ import {
   onCleanScanProgress,
   scanCleaning,
 } from '../../shared/ipc';
+import { countOf, formatSize } from '../../shared/text/size';
 import { Button, Card, Dialog, ListGroup, PageHeader } from '../../shared/ui';
-import { countOf, formatSize } from './format';
 import { describeError, selectionOf, selectionText, tickedByDefault } from './messages';
 import { RecycleBinCard } from './RecycleBinCard';
 import { RuleRow } from './RuleRow';

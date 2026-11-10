@@ -235,10 +235,13 @@ pub fn bindings_builder() -> Builder<tauri::Wry> {
             crate::commands::empty_recycle_bin,
             crate::memory::memory_state,
             crate::memory::clean_memory,
+            crate::boost::boost,
+            crate::boost::boost_config,
+            crate::boost::set_boost_config,
         ])
         .events(collect_events![
             AppReady,
-            crate::TrayBoostRequested,
+            crate::boost::BoostFinished,
             crate::MetricsUpdated,
             crate::cleaner::CleanScanProgress,
         ])

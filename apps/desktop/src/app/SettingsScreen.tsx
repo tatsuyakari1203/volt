@@ -1,5 +1,6 @@
 import { Monitor, Moon, Sun } from 'lucide-react';
 import { AppInfo } from '../features/app-info/AppInfo';
+import { BoostSettings } from '../features/settings/BoostSettings';
 import { StartupSettings } from '../features/settings/StartupSettings';
 import { useTheme } from '../shared/theme';
 import {
@@ -43,6 +44,7 @@ export function SettingsScreen() {
               : 'System follows your Windows setting.'}
           </p>
         </Card>
+        <BoostSettings />
         <StartupSettings />
         <Card as="section" aria-labelledby="settings-about">
           <h2 id="settings-about" className="text-subtitle font-semibold">

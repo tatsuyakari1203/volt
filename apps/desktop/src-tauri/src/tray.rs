@@ -1,70 +1,36 @@
 //! The tray icon and its menu. The tray is what keeps Volt reachable while no window exists.
 //!
-//! Boost has no engine behind it yet: it opens the window and emits [`TrayBoostRequested`] for a
-//! later task to consume. Nothing here purges memory.
+//! Boost runs here, in Rust, through the same use case as the Home button ([`boost::boost_of`]),
+//! so it works with the window closed: the engines record it in the activity history and the
+//! tooltip shows the result. A window that is open also receives [`BoostFinished`] and shows the
+//! report on Home.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use serde::{Deserialize, Serialize};
-use specta::Type;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{App, AppHandle, Manager, Runtime};
 use tauri_specta::Event as _;
 
-use crate::window::{self, Opened};
+use crate::boost::{self, BoostFinished};
+use crate::window;
+use crate::wiring::AppState;
 
 /// Id of the tray icon.
 const TRAY_ID: &str = "main-tray";
 
-/// Event emitted when the user picks Boost in the tray menu, after the window is open on Home.
-///
-/// Boost has no engine yet; a later task listens to this event and starts the real work. When
-/// the window had to be created, the event is sent once its page has loaded, so a listener
-/// registered at start-up sees it, but registration is asynchronous: treat it as best effort
-/// until a pull command exists.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, tauri_specta::Event)]
-pub struct TrayBoostRequested;
-
-/// A Boost request that is waiting for the page of a window that is being built.
-///
-/// The flag is stored *before* the window is built, so the page-load handler cannot run
-/// first and miss it.
+/// Whether a tray Boost is running, so a second click while it runs does nothing.
 #[derive(Debug, Default)]
-struct PendingBoost(AtomicBool);
+struct BoostRunning(AtomicBool);
 
-impl PendingBoost {
-    /// Records a request.
-    fn request(&self) {
-        self.0.store(true, Ordering::SeqCst);
+impl BoostRunning {
+    /// Marks a run as started. `false` when one is already running.
+    fn try_start(&self) -> bool {
+        !self.0.swap(true, Ordering::SeqCst)
     }
 
-    /// Takes the request, if there is one. Whoever takes it announces it, so it is announced
-    /// at most once.
-    fn take(&self) -> bool {
-        self.0.swap(false, Ordering::SeqCst)
-    }
-}
-
-/// What to do with a pending Boost request once the open attempt has finished.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AfterOpen {
-    /// The page exists already: announce now.
-    Announce,
-    /// A window is being built: its page-load handler announces the request.
-    LeaveForPageLoad,
-    /// The window could not be opened: forget the request, so it cannot fire later on an
-    /// unrelated window.
-    Discard,
-}
-
-/// Decides what happens to the pending request after the open attempt.
-#[must_use]
-fn after_open(result: Result<Opened, ()>) -> AfterOpen {
-    match result {
-        Ok(Opened::Focused) => AfterOpen::Announce,
-        Ok(Opened::Created) => AfterOpen::LeaveForPageLoad,
-        Err(()) => AfterOpen::Discard,
+    fn finish(&self) {
+        self.0.store(false, Ordering::SeqCst);
     }
 }
 
@@ -73,7 +39,7 @@ fn after_open(result: Result<Opened, ()>) -> AfterOpen {
 pub(crate) enum TrayAction {
     /// Open or focus the window.
     Open,
-    /// Open the window on Home and announce a boost request.
+    /// Run Boost, with or without a window.
     Boost,
     /// Quit the application, tray icon included.
     Quit,
@@ -126,7 +92,7 @@ pub(crate) fn opens_window(event: &TrayIconEvent) -> bool {
 
 /// Builds the tray icon and its menu. Called once from the app's setup.
 pub(crate) fn setup(app: &App) -> tauri::Result<()> {
-    app.manage(PendingBoost::default());
+    app.manage(BoostRunning::default());
 
     let items = TrayAction::ALL
         .map(|action| MenuItem::with_id(app, action.menu_id(), action.label(), true, None::<&str>));
@@ -159,40 +125,33 @@ pub(crate) fn setup(app: &App) -> tauri::Result<()> {
 fn run<R: Runtime>(app: &AppHandle<R>, action: TrayAction) {
     match action {
         TrayAction::Open => window::open_in_background(app, |_, _| {}),
-        TrayAction::Boost => {
-            // Store the request first: when the window has to be built, its page can finish
-            // loading (and run the page-load handler) before the build call returns.
-            app.state::<PendingBoost>().request();
-            window::open_in_background_checked(app, |app, result| match after_open(result) {
-                AfterOpen::Announce => announce_boost_if_pending(app),
-                AfterOpen::LeaveForPageLoad => {}
-                AfterOpen::Discard => {
-                    app.state::<PendingBoost>().take();
-                }
-            });
-        }
+        TrayAction::Boost => start_boost(app),
         TrayAction::Quit => app.exit(0),
     }
 }
 
-/// Sends the event to every window. A failed emit only means nobody hears it; Boost has no
-/// effect yet, so there is nothing to recover.
-fn announce_boost<R: Runtime>(app: &AppHandle<R>) {
-    let _ = TrayBoostRequested.emit(app);
-}
-
-/// Announces the pending Boost request, if nobody has taken it yet.
-fn announce_boost_if_pending<R: Runtime>(app: &AppHandle<R>) {
-    if let Some(pending) = app.try_state::<PendingBoost>()
-        && pending.take()
-    {
-        announce_boost(app);
+/// Runs Boost on a worker thread (it reads and changes memory, so never on the main thread).
+/// The result goes to the tooltip and, as an event, to a window that is open.
+fn start_boost<R: Runtime>(app: &AppHandle<R>) {
+    if !app.state::<BoostRunning>().try_start() {
+        return;
     }
-}
-
-/// Called when a page finishes loading: delivers a Boost request that was waiting for it.
-pub(crate) fn flush_pending_boost<R: Runtime>(app: &AppHandle<R>) {
-    announce_boost_if_pending(app);
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let outcome = app
+            .state::<AppState>()
+            .core()
+            .and_then(|core| boost::boost_of(&core));
+        if let Some(tray) = app.tray_by_id(TRAY_ID) {
+            // A failed tooltip update changes nothing that matters.
+            let _ = tray.set_tooltip(Some(boost::tooltip_line(&outcome)));
+        }
+        if let Ok(result) = outcome {
+            // A failed emit only means nobody is listening.
+            let _ = BoostFinished(result).emit(&app);
+        }
+        app.state::<BoostRunning>().finish();
+    });
 }
 
 #[cfg(test)]
@@ -250,33 +209,12 @@ mod tests {
     }
 
     #[test]
-    fn a_pending_boost_is_announced_exactly_once() {
-        let pending = PendingBoost::default();
-        assert!(!pending.take(), "nothing requested yet");
-        pending.request();
-        assert!(pending.take(), "the first taker gets it");
-        assert!(!pending.take(), "nobody gets it twice");
-    }
-
-    #[test]
-    fn a_request_stored_before_the_window_exists_is_seen_by_the_page_load() {
-        // The order the tray uses: request first, then build. Whatever the timing of the page
-        // load, it finds the flag; and a later focus finds it already taken.
-        let pending = PendingBoost::default();
-        pending.request();
-        let page_load_saw_it = pending.take();
-        assert!(page_load_saw_it);
-        assert!(
-            !pending.take(),
-            "the open callback must not announce it again"
-        );
-    }
-
-    #[test]
-    fn the_open_result_decides_who_announces_the_request() {
-        assert_eq!(after_open(Ok(Opened::Focused)), AfterOpen::Announce);
-        assert_eq!(after_open(Ok(Opened::Created)), AfterOpen::LeaveForPageLoad);
-        assert_eq!(after_open(Err(())), AfterOpen::Discard);
+    fn a_second_boost_cannot_start_while_one_runs() {
+        let running = BoostRunning::default();
+        assert!(running.try_start());
+        assert!(!running.try_start(), "the second click does nothing");
+        running.finish();
+        assert!(running.try_start(), "it can run again afterwards");
     }
 
     #[test]

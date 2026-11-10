@@ -8,7 +8,6 @@ import {
   type MemoryListsView,
   type MemoryState,
 } from '../../shared/ipc';
-import { Badge, Button, Card, ListGroup, ListRow, PageHeader } from '../../shared/ui';
 import {
   describeArea,
   describeError,
@@ -16,7 +15,8 @@ import {
   formatChange,
   listRows,
   operationText,
-} from './messages';
+} from '../../shared/text/memory';
+import { Badge, Button, Card, ListGroup, ListRow, PageHeader } from '../../shared/ui';
 
 type Load =
   | { status: 'loading' }

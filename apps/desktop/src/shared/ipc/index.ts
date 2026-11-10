@@ -8,6 +8,8 @@ import {
   type AppInfo,
   type ApplyResult,
   type AppReady,
+  type BoostConfigView,
+  type BoostResult,
   type CleaningRuleInfo,
   type CleanRunResult,
   type CleanScanProgress,
@@ -45,6 +47,8 @@ export type {
   AppReady,
   AreaResult,
   AreaStatus,
+  BoostConfigView,
+  BoostResult,
   ChangeState,
   CleanCategoryView,
   CleaningRuleInfo,
@@ -62,6 +66,7 @@ export type {
   HealthLevelView,
   HealthView,
   IpcError,
+  JunkView,
   MemoryAreaView,
   MemoryCleanResult,
   MemoryListsView,
@@ -69,6 +74,7 @@ export type {
   MemoryState,
   MemoryView,
   MetricsView,
+  MovedToBinView,
   OperationState,
   RecycleBinView,
   RestartKind,
@@ -78,6 +84,7 @@ export type {
   RuleCleanView,
   RuleScanView,
   SkipGroup,
+  SkippedOperationView,
   StartupChangeResult,
   StartupChangeStatus,
   StartupEntryView,
@@ -191,12 +198,31 @@ export async function setAutostartEnabled(enabled: boolean): Promise<boolean> {
 }
 
 /**
- * Calls `handler` each time the user picks Boost in the tray menu. Boost has no engine yet, so
- * today the shell only brings the window to Home; a later task starts the real work here.
- * Returns the unlisten function.
+ * Calls `handler` with the report each time Boost was run from the tray menu (the shell ran it
+ * already, window open or not). Returns the unlisten function.
  */
-export function onTrayBoostRequested(handler: () => void): Promise<() => void> {
-  return events.trayBoostRequested.listen(() => handler());
+export function onBoostFinished(handler: (report: BoostResult) => void): Promise<() => void> {
+  return events.boostFinished.listen((event) => handler(event.payload));
+}
+
+/**
+ * Runs Boost as configured and resolves with the before and after report: available memory, the
+ * memory operations that ran or were skipped (with the reason), what the read-only scan found and,
+ * only when the user opted in, what was moved to the Recycle Bin. There is no "freed" figure.
+ * It cannot be undone; the shell records it in the activity history.
+ */
+export async function runBoost(): Promise<BoostResult> {
+  return call(() => commands.boost());
+}
+
+/** What Boost includes (the defaults until the user changes them). */
+export async function getBoostConfig(): Promise<BoostConfigView> {
+  return call(() => commands.boostConfig());
+}
+
+/** Saves what Boost includes and resolves with what is stored. */
+export async function setBoostConfig(config: BoostConfigView): Promise<BoostConfigView> {
+  return call(() => commands.setBoostConfig(config));
 }
 
 /** Every tweak of the catalogue with its state read live from the system. */

@@ -5,7 +5,7 @@ import {
   IpcUnavailableError,
   type RuleScanView,
 } from '../../shared/ipc';
-import { countOf, formatSize } from './format';
+import { countOf, formatSize } from '../../shared/text/size';
 
 /** One sentence for any error that reached the UI. */
 export function describeError(error: unknown): string {

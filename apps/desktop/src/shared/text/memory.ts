@@ -5,7 +5,7 @@ import {
   IpcUnavailableError,
   type MemoryAreaView,
   type MemoryListsView,
-} from '../../shared/ipc';
+} from '../ipc';
 
 function assertNever(value: never): never {
   throw new Error(`Unhandled value: ${JSON.stringify(value)}`);

@@ -39,11 +39,11 @@ const SAMPLES_PER_RULE: usize = 5;
     clippy::cast_precision_loss,
     reason = "exact up to 2^53, which no real disk or file count reaches"
 )]
-fn count64(value: u64) -> f64 {
+pub(crate) fn count64(value: u64) -> f64 {
     value as f64
 }
 
-fn count32(value: usize) -> u32 {
+pub(crate) fn count32(value: usize) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
 }
 

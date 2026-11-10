@@ -5,7 +5,7 @@ import { MemoryScreen } from '../features/memory/MemoryScreen';
 import { StartupScreen } from '../features/startup/StartupScreen';
 import { TweaksScreen } from '../features/tweaks/TweaksScreen';
 import { UndoScreen } from '../features/undo/UndoScreen';
-import { onTrayBoostRequested } from '../shared/ipc';
+import { type BoostResult, onBoostFinished } from '../shared/ipc';
 import { NavRail } from './NavRail';
 import { PlaceholderScreen } from './PlaceholderScreen';
 import { SettingsScreen } from './SettingsScreen';
@@ -13,10 +13,18 @@ import { footerSections, initialSection, mainSections, type SectionId } from './
 
 const allSections = [...mainSections, ...footerSections];
 
-function Screen({ id, onNavigate }: { id: SectionId; onNavigate: (id: SectionId) => void }) {
+function Screen({
+  id,
+  onNavigate,
+  trayReport,
+}: {
+  id: SectionId;
+  onNavigate: (id: SectionId) => void;
+  trayReport: BoostResult | null;
+}) {
   switch (id) {
     case 'home':
-      return <HomeScreen onNavigate={onNavigate} />;
+      return <HomeScreen onNavigate={onNavigate} trayReport={trayReport} />;
     case 'clean':
       return <CleanScreen />;
     case 'memory':
@@ -39,6 +47,7 @@ function Screen({ id, onNavigate }: { id: SectionId; onNavigate: (id: SectionId)
 /** The app frame: a non-scrolling navigation rail beside a scrolling content area. */
 export function Shell() {
   const [current, setCurrent] = useState<SectionId>(() => initialSection(window.location.search));
+  const [trayReport, setTrayReport] = useState<BoostResult | null>(null);
   const mainRef = useRef<HTMLElement>(null);
   const shown = useRef(current);
 
@@ -50,12 +59,16 @@ export function Shell() {
     mainRef.current?.focus({ preventScroll: true });
   }, [current]);
 
-  // The tray's Boost item opens the window on Home, also when it is already open elsewhere.
-  // Outside the Tauri window (a plain browser) there is no bridge and nothing to listen to.
+  // The tray's Boost item runs Boost in the shell, with or without a window. A window that is open
+  // gets the report and shows it on Home. Outside the Tauri window (a plain browser) there is no
+  // bridge and nothing to listen to.
   useEffect(() => {
     let stop: (() => void) | undefined;
     let cancelled = false;
-    onTrayBoostRequested(() => setCurrent('home'))
+    onBoostFinished((report) => {
+      setTrayReport(report);
+      setCurrent('home');
+    })
       .then((unlisten) => {
         if (cancelled) unlisten();
         else stop = unlisten;
@@ -77,7 +90,7 @@ export function Shell() {
         className="min-w-0 flex-1 overflow-y-auto outline-none"
       >
         <div className="mx-auto w-full max-w-3xl px-gutter pt-4 pb-8 wide:px-6 wide:pt-6">
-          <Screen id={current} onNavigate={setCurrent} />
+          <Screen id={current} onNavigate={setCurrent} trayReport={trayReport} />
         </div>
       </main>
     </div>

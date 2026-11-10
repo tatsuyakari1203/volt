@@ -1,7 +1,7 @@
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { HealthView, MetricsView } from '../../shared/ipc';
+import type { BoostResult, HealthView, MetricsView } from '../../shared/ipc';
 import { IpcCommandError, IpcUnavailableError } from '../../shared/ipc';
 import { HomeScreen } from './HomeScreen';
 
@@ -11,6 +11,7 @@ const ipc = vi.hoisted(() => ({
   getHealthReport: vi.fn(),
   getLatestMetrics: vi.fn(),
   onMetricsUpdated: vi.fn(),
+  runBoost: vi.fn(),
 }));
 vi.mock('../../shared/ipc', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../shared/ipc')>()),
@@ -525,11 +526,89 @@ describe('the live cards', () => {
 });
 
 describe('the screen as a whole', () => {
-  it('has no Boost button and no sample marker: it shows real data only', async () => {
+  it('has no sample marker: it shows real data only', async () => {
     renderHome();
     await screen.findByRole('progressbar', { name: 'Health score' });
-    expect(screen.queryByRole('button', { name: /boost/i })).toBeNull();
     expect(screen.queryByText(/sample data/i)).toBeNull();
     expect(screen.getByRole('heading', { level: 1, name: 'Home' })).toBeTruthy();
+  });
+});
+
+function boostResult(over: Partial<BoostResult> = {}): BoostResult {
+  return {
+    memoryBefore: null,
+    memoryAfter: null,
+    availableBefore: 4 * GIB,
+    availableAfter: 5.5 * GIB,
+    areas: [
+      {
+        area: 'workingSets',
+        status: 'done',
+        processesTrimmed: 41,
+        processesSkipped: 3,
+        detail: null,
+      },
+    ],
+    skipped: [
+      {
+        area: 'standbyList',
+        state: 'needsAdministrator',
+        reason: 'Needs administrator rights. Volt is not running with them.',
+      },
+    ],
+    junk: { files: 1200, bytes: 340 * 1024 ** 2, truncated: false },
+    movedToBin: null,
+    recorded: true,
+    ...over,
+  };
+}
+
+describe('Boost', () => {
+  it('runs with one click and reports memory before and after, the skipped operation and the junk found', async () => {
+    const user = userEvent.setup();
+    ipc.runBoost.mockResolvedValue(boostResult());
+    const onNavigate = renderHome();
+    await user.click(screen.getByRole('button', { name: 'Boost' }));
+
+    const boost = await screen.findByRole('region', { name: 'Boost report' });
+    expect(ipc.runBoost).toHaveBeenCalledTimes(1);
+    expect(within(boost).getByText('4 GB')).toBeTruthy();
+    expect(within(boost).getByText('5.5 GB')).toBeTruthy();
+    expect(within(boost).getByText(/41 programs trimmed/)).toBeTruthy();
+    expect(within(boost).getByText(/Skipped\. Needs administrator rights/)).toBeTruthy();
+    expect(within(boost).getByText(/1,200 files \(340\.0 MB\) could be moved/)).toBeTruthy();
+    expect(within(boost).getByText(/Nothing was cleaned/)).toBeTruthy();
+    expect(within(boost).queryByText(/freed/i)).toBeNull();
+    await user.click(within(boost).getByRole('button', { name: 'Open Cleaner' }));
+    expect(onNavigate).toHaveBeenCalledWith('clean');
+  });
+
+  it('says bytes were moved to the Recycle Bin, never that space was freed', async () => {
+    const user = userEvent.setup();
+    ipc.runBoost.mockResolvedValue(
+      boostResult({ movedToBin: { files: 12, bytes: 3.4 * 1024 ** 2, skipped: 2 } }),
+    );
+    renderHome();
+    await user.click(screen.getByRole('button', { name: 'Boost' }));
+    const boost = await screen.findByRole('region', { name: 'Boost report' });
+    expect(within(boost).getByText(/Moved 12 files \(3\.4 MB\).*to the Recycle Bin/)).toBeTruthy();
+    expect(within(boost).getByText(/not freed until the Recycle Bin is emptied/)).toBeTruthy();
+    expect(within(boost).queryByText(/space (was|is) freed/i)).toBeNull();
+  });
+
+  it('shows the error and keeps the button usable when Boost cannot run', async () => {
+    const user = userEvent.setup();
+    ipc.runBoost.mockRejectedValue(new IpcUnavailableError());
+    renderHome();
+    await user.click(screen.getByRole('button', { name: 'Boost' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('only available inside');
+    expect(screen.queryByRole('region', { name: 'Boost report' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Boost' }).hasAttribute('disabled')).toBe(false);
+  });
+
+  it('shows the report of a Boost the tray ran', async () => {
+    render(<HomeScreen onNavigate={vi.fn()} trayReport={boostResult()} />);
+    expect(await screen.findByRole('region', { name: 'Boost report' })).toBeTruthy();
+    expect(ipc.runBoost).not.toHaveBeenCalled();
   });
 });
