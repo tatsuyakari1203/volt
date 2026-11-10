@@ -100,10 +100,16 @@ What `volt-core` contains today:
     entry that is applied or pending (the store reads the journal table in the same database),
     because the Undo page lists undoable changes from the log. Pruning runs at startup, after
     `reconcile_pending`, and on every 100th insert.
-  - **Processes:** `volt_core::process` has a `ProcessMonitor` that groups processes by exe name
-    and computes CPU % from two samples (it needs a clock and the logical CPU count).
-    `end_group` enforces protection in the core: a list of Windows-critical names, Volt and its
-    descendants (through `parent_pid`) and pid 4 or below are refused. Each process gets a result
+  - **Processes:** `volt_core::process` has a `ProcessMonitor` that groups processes by executable
+    path (by name when the path cannot be read) and computes CPU % from two samples (it needs a
+    clock and the logical CPU count). A `ProcessInfo` carries the creation time, the optional
+    executable path and the session id. `end_group` enforces protection in the core: a list of 25
+    Windows-critical names, every session 0 process, Volt and its descendants (through
+    `parent_pid`) and pid 4 or below are refused. `terminate` takes the creation time and the
+    adapter checks it on the opened handle, so a reused pid is never ended (it is reported as
+    already gone). The path costs one `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` per process
+    per list call and is `None` for processes a normal user cannot open; `ProcessGroupView` has an
+    optional `path`. Each process gets a result
     (`Ended`, `NeedsAdministrator`, `AlreadyGone`, `Failed`), and one activity record says it
     cannot be undone; there is no journal entry.
 - **Live metrics:** the `MetricsSource` port (`volt_core::metrics`) reads one _raw sample_: the
@@ -211,12 +217,23 @@ What `volt-core` contains today:
     (the shell does not today). For a `requires_admin` tweak, apply and revert return
     `TweakError::NeedsAdministrator` before any read or write; `state()` and `plan()` are
     read-only and still work.
+  - **Steps.** A step is a registry value, a registry key (`registry_key`, `exists = true` or
+    `false`), a service or a command, each mapped to a journaled Operation. `EnsureRegistryKey`
+    records how many levels of the path were missing; revert removes those levels leaf-first, each
+    only while it holds no values and no subkeys. A value step records the same when its key was
+    missing. `DeleteRegistryKey` records the key's values (at most 64 values and 64 KiB) and is
+    refused for a key with subkeys or unreadable values; revert recreates the key and rewrites the
+    values. The `Registry` port has `list_subkeys`, `create_key` and `delete_key`.
   - **Describe, provenance and reset.** `describe()` lists every step whatever the state.
     `applied_by_volt()` reads the journal, so the UI can tell a tweak set outside Volt from one Volt
-    applied. `reset()` and `reset_plan()` turn off an externally set tweak by removing its registry
-    values (only for tweaks made of registry-set steps). The removal is journaled under the label
-    `<id>:reset`, so `revert()` cannot re-apply it and the Undo page can restore the values.
-  - **The starter catalogue** (`catalogue/tweaks.toml`) holds 33 tweaks. Tests run every tweak
+    applied. Each step may declare `off`, the Windows default. `reset()` and `reset_plan()` turn
+    off an externally set tweak: they write the `off` value, remove the value when a set step has
+    none, delete a key a step made exist, set a service's off start type or run a command's off
+    command. Every step must declare a default or the tweak cannot be reset. Reset runs the steps
+    last to first, is journaled under the label `<id>:reset` (so `revert()` cannot re-apply it and
+    the Undo page can restore the values) and is refused with `TweakError::AppliedByVolt` for a
+    tweak Volt applied itself.
+  - **The starter catalogue** (`catalogue/tweaks.toml`) holds 34 tweaks. Tests run every tweak
     against the fakes (apply, revert, exact previous state), so a new tweak is covered
     automatically. Rules for adding one: documented or widely verified only; nothing that weakens
     security or deletes anything; evidence is Anecdotal unless Volt measured it. Real-machine
@@ -238,7 +255,9 @@ What `volt-core` contains today:
     administrator rights) and `min_age_setting` (the settings key that may override the minimum
     age, see below). The real rule set is `catalogue/cleaning.toml` (see Shipped cleaning rules).
   - **Roots are never paths.** A root is one of a closed set of named `Location`s (`user_temp`,
-    `local_app_data`, `roaming_app_data`, `program_data`, `windows`) plus a relative path. The
+    `local_app_data`, `roaming_app_data`, `program_data`, `windows`, `user_profile`) plus a relative
+    path. `user_profile` is the shell Profile folder; the profile is protected, so a root there must
+    lie below it (for example `.cargo`). The
     `KnownFolders` port resolves a location, so the core never reads the environment. Refused at
     load: an absolute path or drive, `..`, and an empty path for any location but `user_temp`.
     Refused at resolution, on every scan and again before every clean: a root that is not
@@ -308,11 +327,30 @@ What `volt-core` contains today:
     (risk Caution: the service owns it). Four browser rules in the `browser_cache` category,
     `chrome-cache`, `edge-cache`, `brave-cache` and `firefox-cache`, are Safe and run per profile:
     the profile wildcard is an include pattern one level below the root (`*/Cache/**`), and
-    excludes keep the walk out of user data folders. The UI leaves them unticked by default. Every description says what the files are, why removing
+    excludes keep the walk out of user data folders. The UI leaves them unticked by default, as it
+    does every category listed in `UNTICKED_CATEGORIES` (`messages.ts`). Every description says what the files are, why removing
     them is safe and what the user notices. **Deliberately not rules:** the Windows Update
     download cache (clearing it needs the update service stopped and started again, which needs
     elevation) and emptying the Recycle Bin (a permanent delete, so it is the separate action
     above). A location is left out when there is doubt.
+  - **Shader caches** (`shader_cache`, Safe, 1 day minimum, unticked): `directx-shader-cache`,
+    `nvidia-shader-cache` (`DXCache`, `GLCache`), `nvidia-compute-cache` (the roaming
+    `ComputeCache`) and `amd-shader-cache` (`DxCache`, `DxcCache`, `GLCache`). Left out: NVIDIA's
+    per-driver `DXCache` under `LocalLow` (there is no `LocalLow` location) and AMD's `VkCache`.
+  - **Chat app caches** (`chat_app_cache`, Safe, 1 day minimum, unticked): `discord-cache`,
+    `telegram-cache`, `teams-cache`, `teams-classic-cache` and `zalo-cache`. They name the cache
+    folders in `include` and keep user data out with `exclude` as a second guard; `locked_by` names
+    the app. Zalo's `ZaloData/media` (received files) and `Database` (messages) are never taken.
+  - **Developer caches** (`developer_cache`, unticked): nine rules (npm, pnpm store and metadata,
+    pip, cargo, NuGet HTTP cache and packages, Gradle, Yarn). `pnpm-store`, `cargo-cache`,
+    `nuget-packages` and `gradle-caches` are Caution because rebuilding them is slow or needs the
+    network; the others are Safe. Only default locations are covered: `CARGO_HOME`, the npm config
+    cache, `PIP_CACHE_DIR`, a pnpm `store-dir` or `.pnpm-store` on another drive, `NUGET_PACKAGES`,
+    `GRADLE_USER_HOME` and `YARN_CACHE_FOLDER` are not followed, and the descriptions say so. Tool
+    clean commands (`npm cache clean`, `docker system prune`) are not used because they cannot be
+    previewed or sent to the Recycle Bin; Docker is left out for that reason. Model and AI output
+    caches (Hugging Face, torch hub, Ollama, ComfyUI) are not covered: they need per-item
+    selection and user-chosen folders.
   - **Every rule has a fixture.** `apps/desktop/src-tauri/tests/cleaning_rules.rs` builds, for
     each rule of the embedded file, a tree with the core fakes holding entries the rule must take
     and entries it must not (too new, at the age limit, excluded, matching no include, too deep,
@@ -464,23 +502,27 @@ file-publisher ports with the Windows API: `WinRegistry`, `WinServices`, `WinFil
     one pipe, so the text keeps its order. At most 64 KiB is kept, the rest is dropped and a
     note is appended. Text is decoded without failing (UTF-8, UTF-16 with a byte order mark, or
     the OEM code page).
-  - A command has 60 seconds by default. The child runs in a job object that kills its members
-    when it closes. On timeout the whole process tree is terminated and the call fails with
-    `CommandError::TimedOut`, which reaches the port as `PortError::Other` (the core has no timeout
-    variant). When the program exits by itself, processes it left behind are killed too.
+  - A command has 60 seconds by default, or its own `timeout_secs` (1 to 600, `MAX_TIMEOUT_SECS`;
+    the adapter caps whatever it is given). The child is created suspended, added to a
+    kill-on-close job object and then resumed, so no grandchild can start outside the job. On
+    timeout the whole job is killed and the call fails with `PortError::TimedOut`
+    (`IpcError::TimedOut` at the UI boundary). When the program exits by itself, processes it left
+    behind are killed too.
   - Only the program's file name and the exit code are logged, per the redaction rule.
-  - Tests run the test executable itself as the helper process (exit codes, output, arguments,
-    sleeping), plus read-only system programs, so nothing changes the machine.
+  - Tests start only the test executable's own helper processes, `cmd /c exit` and `ping` to
+    loopback, and end only what they started, so nothing changes the machine.
 - **`WinProcesses`** reads `NtQuerySystemInformation(SystemProcessInformation)`: pid, parent,
   private working set and user plus kernel CPU time, read by offset (tested with a hand-built
   buffer and with the test process). It ends a process with `OpenProcess(PROCESS_TERMINATE)` and
-  `TerminateProcess`, and the adapter refuses pid 4 or below and its own process.
+  `TerminateProcess`, after checking the creation time on the handle, and the adapter refuses pid 4
+  or below and its own process.
   `windows_ports()` uses it.
 - **`WinRecycleBin`** implements the `RecycleBin` port (status and empty).
 - **`WinMemory`** reads the memory lists with `NtQuerySystemInformation` class 80 (struct and class
   from phnt `ntexapi.h`), which needs no rights, and purges five areas separately. Working-set
   trim needs no rights (`PROCESS_SET_QUOTA`; processes that cannot be opened are counted and
-  skipped). List purges need `SeProfileSingleProcessPrivilege` and the file cache trim needs
+  skipped). `availability` only reads the token (privilege held means Available, absent means
+  NeedsAdministrator) and enables nothing; `purge` enables the privilege right before the call. List purges need `SeProfileSingleProcessPrivilege` and the file cache trim needs
   `SeIncreaseQuotaPrivilege`, both only in an elevated token. A missing privilege is
   `PortError::AccessDenied`; a status the build rejects is `Unsupported`.
 
@@ -524,7 +566,9 @@ and `autostart.rs`.
   (`TrayAction`) is a pure function. **Boost** does not open the window: it runs `boost::boost_of`
   in Rust on a blocking thread (a second click while it runs does nothing), sets the tray tooltip
   and emits `BoostFinished` with the report. An open window navigates to Home and shows the report;
-  with no window the run is only in the activity history and the tooltip.
+  with no window the run ends with a desktop notification (`tauri-plugin-notification`, driven
+  from Rust; the UI is granted no notification capability), besides the activity history and the
+  tooltip.
 - **Single instance.** `tauri-plugin-single-instance` is registered before every other plugin. A
   second launch focuses (or recreates) the window of the first instance and exits.
 - **Launch mode.** A launch with `--background` (what the Start with Windows entry passes) does
@@ -748,12 +792,13 @@ the WebView2 processes. The diagnostic log was read to confirm the sampler start
   screen has a category filter and search. Screenshot: `docs/design/tweaks-light-460x700.png`
   (Simple mode; the dark variant is not refreshed).
 - `features/clean` is the Clean page: scan, a per-rule review, confirm, and the Recycle Bin card.
-  Safe rules are ticked by default, browser caches are not. Rules that need administrator rights
+  Safe rules are ticked by default; browser, shader, chat app and developer caches are not. Rules that need administrator rights
   are shown but cannot be cleaned, and a note names running browsers whose open files are skipped.
   Screenshot: `docs/design/clean-light-460x700.png`.
 - `features/memory` is the Memory page (state, and a choice of the five purge areas; the three
   admin-only ones are disabled with the reason). Screenshot: `docs/design/memory-light-460x700.png`.
-  The formatters in `shared/text/{memory,size}.ts` are shared.
+  Byte formatting lives in `shared/text/size.ts`: `formatBytes` for memory and disk, `formatSize`
+  for file sizes.
 - `features/home` is the Home dashboard: the health score with its explanation, and four live
   cards. See Home below.
 - `features/startup` is the Startup screen (nav entry "Startup", id `startup`). It lists the entries read
@@ -932,6 +977,9 @@ is visible, so every record Volt writes is listed and says whether it can be tak
   `cannotUndo` (a change record with no journal entry, whose entry is gone or unreadable, or not
   confirmed yet: one line, `reason`, says why; cleaning and memory actions will produce these) and
   `restored` (the line itself records an undo or an automatic rollback; no badge, no button).
+- **Titles.** `api.rs` `activity_title` names a record from its label: `memory.clean`,
+  `process.end`, `recycle-bin`, a cleaning rule id, a tweak id or `startup`. A standalone row
+  shows `<title>: <status>`.
 - **Batches.** Neighbouring records of one journal batch (what one applied plan did, and the undo
   of it) are shown as one group named after the tweak (`title`, from the catalogue), with an Undo
   all button while something in it can be undone. Grouping is done in the UI on the newest-first
