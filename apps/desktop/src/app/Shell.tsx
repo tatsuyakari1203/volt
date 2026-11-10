@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { HomeScreen } from '../features/home/HomeScreen';
 import { TweaksScreen } from '../features/tweaks/TweaksScreen';
+import { onTrayBoostRequested } from '../shared/ipc';
 import { NavRail } from './NavRail';
 import { PlaceholderScreen } from './PlaceholderScreen';
 import { SettingsScreen } from './SettingsScreen';
@@ -36,6 +37,23 @@ export function Shell() {
     shown.current = current;
     mainRef.current?.focus({ preventScroll: true });
   }, [current]);
+
+  // The tray's Boost item opens the window on Home, also when it is already open elsewhere.
+  // Outside the Tauri window (a plain browser) there is no bridge and nothing to listen to.
+  useEffect(() => {
+    let stop: (() => void) | undefined;
+    let cancelled = false;
+    onTrayBoostRequested(() => setCurrent('home'))
+      .then((unlisten) => {
+        if (cancelled) unlisten();
+        else stop = unlisten;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      stop?.();
+    };
+  }, []);
 
   return (
     <div className="flex h-full min-h-0">

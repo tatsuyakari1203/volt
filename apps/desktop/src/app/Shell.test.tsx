@@ -1,13 +1,23 @@
-import { render, screen, within } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { expect, it, vi } from 'vitest';
 import { ThemeProvider } from '../shared/theme';
 import { ToastProvider } from '../shared/ui';
 import { Shell } from './Shell';
 
-// A plain browser has no Tauri bridge: the call fails. The About block must absorb that.
+// A plain browser has no Tauri bridge: the calls fail. The screens must absorb that. The tray
+// Boost event is the exception: the test captures its handler to fire it by hand.
+const { boostListeners } = vi.hoisted(() => ({ boostListeners: [] as Array<() => void> }));
 vi.mock('../shared/ipc', () => ({
   getAppInfo: () => Promise.reject(new Error('no tauri bridge')),
+  getAutostartEnabled: () => Promise.reject(new Error('no tauri bridge')),
+  setAutostartEnabled: () => Promise.reject(new Error('no tauri bridge')),
+  onTrayBoostRequested: (handler: () => void) => {
+    boostListeners.push(handler);
+    return Promise.resolve(() => {
+      boostListeners.splice(boostListeners.indexOf(handler), 1);
+    });
+  },
 }));
 
 function renderShell() {
@@ -92,4 +102,34 @@ it('the Home mock shows its sample data notice, a Boost button and four metrics'
   expect(screen.getByRole('progressbar', { name: 'Health score' })).toBeTruthy();
   const metrics = screen.getByRole('region', { name: 'Metrics' });
   expect(within(metrics).getAllByText(/./, { selector: 'span' })).toHaveLength(4);
+});
+
+it('the tray Boost event brings an open window back to Home', async () => {
+  const user = userEvent.setup();
+  renderShell();
+  await user.click(screen.getByRole('button', { name: 'Tweaks' }));
+  expect(screen.getByRole('heading', { level: 1, name: 'Tweaks' })).toBeTruthy();
+
+  await vi.waitFor(() => expect(boostListeners).toHaveLength(1));
+  act(() => {
+    for (const listener of boostListeners) listener();
+  });
+  expect(screen.getByRole('heading', { level: 1, name: 'Home' })).toBeTruthy();
+});
+
+it('stops listening for the tray Boost event when the shell unmounts', async () => {
+  const { unmount } = renderShell();
+  await vi.waitFor(() => expect(boostListeners).toHaveLength(1));
+  unmount();
+  await vi.waitFor(() => expect(boostListeners).toHaveLength(0));
+});
+
+it('shows the Start with Windows switch in Settings, unavailable without the shell', async () => {
+  const user = userEvent.setup();
+  renderShell();
+  await user.click(screen.getByRole('button', { name: 'Settings' }));
+  const startup = screen.getByRole('region', { name: 'Startup' });
+  const toggle = within(startup).getByRole('switch', { name: 'Start with Windows' });
+  expect(toggle.hasAttribute('disabled')).toBe(true);
+  expect(await within(startup).findByRole('alert')).toBeTruthy();
 });
