@@ -26,6 +26,8 @@ const RULE_KEYS: &[&str] = &[
     "include",
     "exclude",
     "constraints",
+    "requires_admin",
+    "min_age_setting",
 ];
 const MAX_MIN_AGE_DAYS: u32 = 3650;
 const MAX_RELATIVE_COMPONENTS: usize = 16;
@@ -175,6 +177,12 @@ impl CleaningRules {
     /// max_depth = 8                     # required; 0 = only entries directly in the root, at most 32
     /// remove_empty_dirs = true          # optional, default false
     /// ```
+    ///
+    /// Two optional top-level fields describe the rule's environment:
+    /// `requires_admin = true` says the location can only be cleaned with
+    /// administrator rights (default `false`), and `min_age_setting =
+    /// "clean.temp_min_age_days"` names the settings key that may override
+    /// `constraints.min_age_days` (see [`CleanEngine::with_settings`](super::CleanEngine::with_settings)).
     ///
     /// Patterns support `*`, `?` and `**` as a whole component and ignore case
     /// (see [`Pattern`]). A root is never an absolute path: it is a named
@@ -326,6 +334,11 @@ impl Reader<'_> {
         let include = self.patterns(table, "include", true);
         let exclude = self.patterns(table, "exclude", false);
         let constraints = self.constraints(table);
+        let requires_admin = match table.get("requires_admin") {
+            None => Some(false),
+            Some(value) => self.convert::<bool>(value, "requires_admin".to_owned()),
+        };
+        let min_age_setting = self.min_age_setting(table);
 
         if self.issues.len() > before {
             return None;
@@ -340,7 +353,33 @@ impl Reader<'_> {
             include: include?,
             exclude: exclude?,
             constraints: constraints?,
+            requires_admin: requires_admin?,
+            min_age_setting,
         })
+    }
+
+    /// The optional settings key that overrides the minimum age. `None` when
+    /// the field is absent, and also after a reported problem (the rule is then
+    /// rejected as a whole, so the caller needs no third state).
+    fn min_age_setting(&mut self, table: &Table) -> Option<String> {
+        let value = table.get("min_age_setting")?;
+        let field = "min_age_setting".to_owned();
+        let Some(key) = value.as_str() else {
+            self.report(field, RuleIssueKind::Invalid("must be a string".to_owned()));
+            return None;
+        };
+        if !is_setting_key(key) {
+            self.report(
+                field,
+                RuleIssueKind::Malformed(
+                    "must be lower-case words of letters, digits and underscores separated by \
+                     dots, such as `clean.temp_min_age_days`, at most 64 characters"
+                        .to_owned(),
+                ),
+            );
+            return None;
+        }
+        Some(key.to_owned())
     }
 
     fn root(&mut self, table: &Table) -> Option<RuleRoot> {
@@ -608,6 +647,18 @@ impl Reader<'_> {
             }
         }
     }
+}
+
+/// Whether `key` is a well formed settings key: dot separated words that start
+/// with a lower-case letter and continue with lower-case letters, digits and
+/// underscores.
+fn is_setting_key(key: &str) -> bool {
+    key.len() <= 64
+        && key.split('.').all(|word| {
+            let mut chars = word.chars();
+            chars.next().is_some_and(|c| c.is_ascii_lowercase())
+                && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        })
 }
 
 /// Why `id` is not a valid rule id, if it is not.

@@ -52,10 +52,14 @@ pub use plan::{
     ScanFailure, SkipReason, SkippedEntry,
 };
 pub use root::RootError;
-pub use rule::{CleanCategory, CleaningRule, Constraints, MAX_DEPTH_LIMIT, RuleRoot};
+pub use rule::{
+    CleanCategory, CleaningRule, Constraints, MAX_DEPTH_LIMIT, MIN_AGE_SETTING_MAX,
+    MIN_AGE_SETTING_MIN, RuleRoot,
+};
 
 use crate::activity::ActivityLog;
 use crate::ports::FileSystem;
+use crate::settings::Settings;
 use crate::time::Clock;
 
 /// A scan was asked for a rule that does not exist.
@@ -73,6 +77,7 @@ pub struct CleanEngine {
     file_system: Arc<dyn FileSystem>,
     clock: Arc<dyn Clock>,
     activity: Option<Arc<dyn ActivityLog>>,
+    settings: Option<Arc<dyn Settings>>,
 }
 
 impl fmt::Debug for CleanEngine {
@@ -80,6 +85,7 @@ impl fmt::Debug for CleanEngine {
         f.debug_struct("CleanEngine")
             .field("rules", &self.rules.len())
             .field("activity_log", &self.activity.is_some())
+            .field("settings", &self.settings.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -100,7 +106,20 @@ impl CleanEngine {
             file_system,
             clock,
             activity: None,
+            settings: None,
         }
+    }
+
+    /// Lets the user's settings override the minimum age of the rules that
+    /// name a settings key (`min_age_setting`). The key holds a whole number
+    /// of days from [`MIN_AGE_SETTING_MIN`] to [`MIN_AGE_SETTING_MAX`]. Without
+    /// settings, or with no value stored, a rule keeps its own age. A value
+    /// that cannot be read or is out of range fails that rule's scan with a
+    /// typed [`ScanFailure`]: it is never replaced by a smaller age.
+    #[must_use]
+    pub fn with_settings(mut self, settings: Arc<dyn Settings>) -> Self {
+        self.settings = Some(settings);
+        self
     }
 
     /// Also writes an activity record for every clean (see

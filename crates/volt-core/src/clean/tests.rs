@@ -8,10 +8,11 @@ use super::fakes::FakeKnownFolders;
 use super::*;
 use crate::activity::ActivityOutcome;
 use crate::error::PortError;
-use crate::fakes::{FakeActivityLog, FakeFileSystem, ManualClock};
+use crate::fakes::{FakeActivityLog, FakeFileSystem, FakeSettings, ManualClock};
 use crate::journal::Source;
 use crate::label::Risk;
 use crate::ports::FileSystem;
+use crate::settings::Settings;
 use crate::time::Timestamp;
 
 const NOW: i64 = 1_800_000_000_000;
@@ -762,14 +763,31 @@ fn an_unreadable_folder_is_reported_and_does_not_stop_the_scan() {
     let plan = engine.scan(&["temp-files"]).expect("scan");
     let scan = only(&plan);
     assert_eq!(paths(scan), [temp().join("a.tmp"), temp().join("ok/c.tmp")]);
-    assert_eq!(scan.counts.unreadable, 1);
+    assert_eq!(scan.counts.access_denied, 1);
+    assert_eq!(scan.counts.unreadable, 0);
     assert_eq!(
         scan.skipped[0],
         SkippedEntry {
             path: temp().join("locked"),
-            reason: SkipReason::Unreadable("access denied"),
+            reason: SkipReason::AccessDenied,
         }
     );
+}
+
+#[test]
+fn a_folder_unreadable_for_another_reason_keeps_its_error_class() {
+    let fx = Fixture::new();
+    fx.fs.add_file_at(temp().join("locked/b.tmp"), 1, ago(2));
+    fx.fs
+        .fail_read_dir_of(temp().join("locked"), PortError::Other("boom".to_owned()));
+    let plan = fx
+        .engine(&default_rule())
+        .scan(&["temp-files"])
+        .expect("scan");
+    let scan = only(&plan);
+    assert_eq!(scan.counts.unreadable, 1);
+    assert_eq!(scan.counts.access_denied, 0);
+    assert_eq!(scan.skipped[0].reason, SkipReason::Unreadable("error"));
 }
 
 #[test]
@@ -1225,4 +1243,296 @@ fn sizes_are_shown_in_human_units() {
     assert_eq!(human_bytes(1536), "1.5 KB");
     assert_eq!(human_bytes(5 * 1024 * 1024), "5.0 MB");
     assert_eq!(human_bytes(u64::MAX), "16777216.0 TB");
+}
+
+// ---- administrator rights --------------------------------------------------------------------
+
+/// A rule over the temp folder, with the optional top-level fields appended.
+fn rule_with(extra: &str) -> String {
+    format!(
+        r#"
+[[rule]]
+id = "r"
+title = "t"
+description = "d"
+category = "temporary_files"
+risk = "safe"
+include = ["**"]
+{extra}
+
+[rule.root]
+location = "user_temp"
+
+[rule.constraints]
+min_age_days = 7
+max_depth = 3
+"#
+    )
+}
+
+#[test]
+fn requires_admin_and_min_age_setting_are_optional_and_default_to_off() {
+    let rules = CleaningRules::from_toml(&rule_with("")).expect("loads");
+    let rule = rules.get("r").expect("rule");
+    assert!(!rule.requires_admin);
+    assert_eq!(rule.min_age_setting, None);
+
+    let rules = CleaningRules::from_toml(&rule_with(
+        "requires_admin = true\nmin_age_setting = \"clean.temp_min_age_days\"",
+    ))
+    .expect("loads");
+    let rule = rules.get("r").expect("rule");
+    assert!(rule.requires_admin);
+    assert_eq!(
+        rule.min_age_setting.as_deref(),
+        Some("clean.temp_min_age_days")
+    );
+}
+
+#[test]
+fn a_malformed_requires_admin_or_settings_key_is_rejected_with_the_field() {
+    for (extra, field) in [
+        ("requires_admin = \"yes\"", "requires_admin"),
+        ("min_age_setting = 7", "min_age_setting"),
+        ("min_age_setting = \"\"", "min_age_setting"),
+        ("min_age_setting = \"Clean.Temp\"", "min_age_setting"),
+        ("min_age_setting = \"clean..temp\"", "min_age_setting"),
+        ("min_age_setting = \"1clean\"", "min_age_setting"),
+        ("min_age_setting = \"clean temp\"", "min_age_setting"),
+    ] {
+        let issues = issues_of(&rule_with(extra));
+        assert_eq!(issues.len(), 1, "{extra}: {issues:?}");
+        assert_eq!(issues[0].0.as_deref(), Some("r"));
+        assert_eq!(issues[0].1, field, "{extra}");
+    }
+}
+
+#[test]
+fn a_denied_root_is_a_typed_failure_and_says_so_for_a_rule_that_needs_admin() {
+    let fx = Fixture::new();
+    fx.fs.add_file_at(temp().join("a.tmp"), 1, ago(30));
+    fx.fs
+        .fail_read_dir_of(temp(), PortError::AccessDenied("x".to_owned()));
+
+    let plan = fx.engine(&rule_with("requires_admin = true")).scan_all();
+    let scan = only(&plan);
+    assert_eq!(scan.failure, Some(ScanFailure::RootAccessDenied));
+    assert!(scan.requires_admin);
+    assert!(scan.needs_administrator());
+    assert!(scan.items.is_empty());
+
+    // The same refusal on a rule that does not claim to need administrator
+    // rights is a plain failure: the flag is the rule's statement.
+    let plan = fx.engine(&rule_with("")).scan_all();
+    let scan = only(&plan);
+    assert_eq!(scan.failure, Some(ScanFailure::RootAccessDenied));
+    assert!(!scan.needs_administrator());
+
+    // Another kind of failure is not a sign of missing rights.
+    let fx = Fixture::new();
+    fx.fs.add_file_at(temp().join("a.tmp"), 1, ago(30));
+    fx.fs
+        .fail_read_dir_of(temp(), PortError::Other("boom".to_owned()));
+    let plan = fx.engine(&rule_with("requires_admin = true")).scan_all();
+    assert_eq!(
+        only(&plan).failure,
+        Some(ScanFailure::RootUnreadable("error"))
+    );
+    assert!(!only(&plan).needs_administrator());
+}
+
+#[test]
+fn items_that_cannot_be_read_mark_a_partial_scan_of_an_admin_rule() {
+    let fx = Fixture::new();
+    fx.fs.add_file_at(temp().join("a.tmp"), 1, ago(30));
+    fx.fs.add_file_at(temp().join("sub/b.tmp"), 1, ago(30));
+    fx.fs
+        .fail_read_dir_of(temp().join("sub"), PortError::AccessDenied("x".to_owned()));
+    let plan = fx.engine(&rule_with("requires_admin = true")).scan_all();
+    let scan = only(&plan);
+    assert_eq!(scan.failure, None);
+    assert_eq!(paths(scan), [temp().join("a.tmp")]);
+    assert_eq!(scan.counts.access_denied, 1);
+    assert!(scan.needs_administrator());
+
+    // A rule that needs no rights does not claim it.
+    let plan = fx.engine(&rule_with("")).scan_all();
+    assert!(!only(&plan).needs_administrator());
+}
+
+#[test]
+fn a_readable_admin_rule_does_not_need_administrator_rights() {
+    let fx = Fixture::new();
+    fx.fs.add_file_at(temp().join("a.tmp"), 1, ago(30));
+    let plan = fx.engine(&rule_with("requires_admin = true")).scan_all();
+    let scan = only(&plan);
+    assert_eq!(scan.file_count(), 1);
+    assert!(scan.requires_admin);
+    assert!(!scan.needs_administrator());
+}
+
+// ---- the minimum age setting -----------------------------------------------------------------
+
+const AGE_KEY: &str = "clean.temp_min_age_days";
+
+fn aged_rule() -> String {
+    rule_with(&format!("min_age_setting = \"{AGE_KEY}\""))
+}
+
+/// Settings whose reads fail.
+struct FailingSettings;
+
+impl Settings for FailingSettings {
+    fn get(&self, _key: &str) -> Result<Option<serde_json::Value>, PortError> {
+        Err(PortError::Other("locked database".to_owned()))
+    }
+    fn set(&self, _key: &str, _value: &serde_json::Value) -> Result<(), PortError> {
+        Ok(())
+    }
+    fn remove(&self, _key: &str) -> Result<bool, PortError> {
+        Ok(false)
+    }
+}
+
+fn settings_with(value: Option<serde_json::Value>) -> Arc<FakeSettings> {
+    let settings = Arc::new(FakeSettings::new());
+    if let Some(value) = value {
+        settings.set(AGE_KEY, &value).expect("set");
+    }
+    settings
+}
+
+#[test]
+fn a_rule_keeps_its_own_age_without_settings_or_without_a_stored_value() {
+    let fx = Fixture::new();
+    fx.fs.add_file_at(temp().join("old.tmp"), 1, ago(8));
+    fx.fs.add_file_at(temp().join("new.tmp"), 1, ago(6));
+
+    // No settings attached at all.
+    let plan = fx.engine(&aged_rule()).scan_all();
+    assert_eq!(only(&plan).min_age_days, 7);
+    assert_eq!(paths(only(&plan)), [temp().join("old.tmp")]);
+
+    // Settings attached, nothing stored.
+    let engine = fx.engine(&aged_rule()).with_settings(settings_with(None));
+    let plan = engine.scan_all();
+    assert_eq!(only(&plan).min_age_days, 7);
+    assert_eq!(paths(only(&plan)), [temp().join("old.tmp")]);
+}
+
+#[test]
+fn a_file_newer_than_the_configured_age_is_never_listed() {
+    let fx = Fixture::new();
+    fx.fs.add_file_at(temp().join("year.tmp"), 1, ago(400));
+    fx.fs.add_file_at(temp().join("exact.tmp"), 1, ago(30));
+    fx.fs.add_file_at(temp().join("recent.tmp"), 1, ago(29));
+    fx.fs.add_file_at(temp().join("today.tmp"), 1, ago(0));
+    let settings = settings_with(Some(serde_json::json!(30)));
+    let engine = fx.engine(&aged_rule()).with_settings(settings.clone());
+
+    let plan = engine.scan_all();
+    let scan = only(&plan);
+    assert_eq!(scan.min_age_days, 30);
+    assert_eq!(
+        paths(scan),
+        [temp().join("exact.tmp"), temp().join("year.tmp")]
+    );
+    assert_eq!(scan.counts.too_new, 2);
+    assert!(
+        scan.skipped
+            .iter()
+            .all(|entry| entry.reason == SkipReason::TooNew)
+    );
+
+    // The setting can also lower the age below the rule's own, down to a day.
+    settings.set(AGE_KEY, &serde_json::json!(1)).expect("set");
+    let plan = engine.scan_all();
+    assert_eq!(only(&plan).min_age_days, 1);
+    assert_eq!(only(&plan).file_count(), 3);
+    assert!(!paths(only(&plan)).contains(&temp().join("today.tmp")));
+}
+
+#[test]
+fn an_invalid_age_setting_fails_the_rule_instead_of_guessing() {
+    use serde_json::json;
+    for bad in [
+        json!(0),
+        json!(-3),
+        json!(3651),
+        json!(7.5),
+        json!("7"),
+        json!(true),
+        json!(null),
+        json!([7]),
+    ] {
+        let fx = Fixture::new();
+        fx.fs.add_file_at(temp().join("old.tmp"), 1, ago(400));
+        let engine = fx
+            .engine(&aged_rule())
+            .with_settings(settings_with(Some(bad.clone())));
+        let plan = engine.scan_all();
+        let scan = only(&plan);
+        assert_eq!(
+            scan.failure,
+            Some(ScanFailure::MinAgeSettingInvalid),
+            "{bad}"
+        );
+        assert!(scan.items.is_empty(), "{bad}");
+        assert!(!scan.root_exists, "the root is not even looked at: {bad}");
+    }
+    // The edges are valid.
+    for good in [1, 3650] {
+        let fx = Fixture::new();
+        let engine = fx
+            .engine(&aged_rule())
+            .with_settings(settings_with(Some(serde_json::json!(good))));
+        assert_eq!(only(&engine.scan_all()).failure, None, "{good}");
+        assert_eq!(only(&engine.scan_all()).min_age_days, good);
+    }
+}
+
+#[test]
+fn an_unreadable_age_setting_fails_the_rule_with_its_error_class_only() {
+    let fx = Fixture::new();
+    fx.fs.add_file_at(temp().join("old.tmp"), 1, ago(400));
+    let engine = fx
+        .engine(&aged_rule())
+        .with_settings(Arc::new(FailingSettings));
+    let plan = engine.scan_all();
+    let scan = only(&plan);
+    assert_eq!(
+        scan.failure,
+        Some(ScanFailure::MinAgeSettingUnreadable("error"))
+    );
+    assert!(scan.items.is_empty());
+    assert!(!format!("{scan:?}").contains("locked database"));
+}
+
+#[test]
+fn a_rule_without_a_settings_key_ignores_the_setting() {
+    let fx = Fixture::new();
+    fx.fs.add_file_at(temp().join("old.tmp"), 1, ago(8));
+    fx.fs.add_file_at(temp().join("new.tmp"), 1, ago(6));
+    let engine = fx
+        .engine(&rule_with(""))
+        .with_settings(settings_with(Some(serde_json::json!(1))));
+    let plan = engine.scan_all();
+    assert_eq!(only(&plan).min_age_days, 7);
+    assert_eq!(paths(only(&plan)), [temp().join("old.tmp")]);
+}
+
+#[test]
+fn the_configured_age_also_governs_the_folders_taken_with_remove_empty_dirs() {
+    let fx = Fixture::new();
+    fx.fs.add_dir(temp().join("a"), Some(ago(10)));
+    fx.fs.add_file_at(temp().join("a/x.tmp"), 1, ago(10));
+    let toml = format!(
+        "{}\n",
+        aged_rule().replace("max_depth = 3", "max_depth = 3\nremove_empty_dirs = true")
+    );
+    let settings = settings_with(Some(serde_json::json!(30)));
+    let engine = fx.engine(&toml).with_settings(settings);
+    let plan = engine.scan_all();
+    assert!(only(&plan).items.is_empty());
+    assert_eq!(only(&plan).counts.too_new, 1);
 }

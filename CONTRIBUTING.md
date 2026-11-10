@@ -35,6 +35,11 @@ A tweak or rule is accepted only if it has: a read-only detect step, an apply st
 a risk level, a statement of what it improves and how that was measured (or that it is
 anecdotal), and tests for all three steps.
 
+A cleaning rule is a table in `catalogue/cleaning.toml`. Its description must say what the files
+are, why removing them is safe and what the user notices afterwards, and it needs a fixture in
+`apps/desktop/src-tauri/tests/cleaning_rules.rs` (entries it must take and entries it must leave
+alone); a test fails when a rule has none. When in doubt, leave a location out.
+
 ## Reporting security issues
 
 See [SECURITY.md](SECURITY.md). Please do not open public issues for vulnerabilities.

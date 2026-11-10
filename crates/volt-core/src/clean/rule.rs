@@ -12,6 +12,13 @@ use crate::label::Risk;
 /// Deepest folder level a rule may descend to, whatever it declares.
 pub const MAX_DEPTH_LIMIT: u32 = 32;
 
+/// Smallest minimum age, in days, a settings value may ask for. Zero would let a
+/// clean take files a program wrote a moment ago.
+pub const MIN_AGE_SETTING_MIN: u32 = 1;
+
+/// Largest minimum age, in days, a settings value may ask for.
+pub const MIN_AGE_SETTING_MAX: u32 = 3650;
+
 /// The group a rule belongs to in the UI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -118,6 +125,15 @@ pub struct CleaningRule {
     pub exclude: Vec<Pattern>,
     /// Age, depth and empty-folder limits.
     pub constraints: Constraints,
+    /// Whether this location can only be cleaned with administrator rights.
+    /// The rule is still scanned (it may turn out to be readable); a scan that
+    /// is refused access says so in a typed way (see
+    /// [`RuleScan::needs_administrator`](super::RuleScan::needs_administrator)).
+    pub requires_admin: bool,
+    /// The settings key that may override `constraints.min_age_days`, for rules
+    /// whose age the user can configure (temp-like rules). `None`: the age is
+    /// fixed by the rule.
+    pub min_age_setting: Option<String>,
 }
 
 impl CleaningRule {
