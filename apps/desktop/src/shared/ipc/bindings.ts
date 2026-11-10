@@ -202,6 +202,78 @@ async setStartupEntryEnabled(id: string, enabled: boolean) : Promise<Result<Star
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Tauri command: lists the cleaning rules. Reads nothing from the file system.
+ */
+async listCleaningRules() : Promise<Result<CleaningRuleInfo[], IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_cleaning_rules") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: scans every cleaning rule (read-only) and keeps the plan in the shell under the
+ * returned id. Emits `cleanScanProgress` before each rule; `cancelCleaningScan` stops it between
+ * rules. Runs off the main thread. The result has counts and sizes, never a full path.
+ */
+async scanCleaning() : Promise<Result<CleanScanResult, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("scan_cleaning") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: asks the running scan to stop before its next rule. Does nothing when no scan
+ * runs.
+ */
+async cancelCleaningScan() : Promise<Result<null, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("cancel_cleaning_scan") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: moves the files of the chosen rules of the scan `plan_id` to the Recycle Bin and
+ * reports what was moved and what was left, with reasons. Rules that need administrator rights
+ * answer `accessDenied`. The scan is used up: scan again to clean again.
+ */
+async cleanSelectedRules(planId: string, ruleIds: string[]) : Promise<Result<CleanRunResult, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("clean_selected_rules", { planId, ruleIds }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: how many items the Recycle Bin holds and how big they are. Read-only.
+ */
+async recycleBinStatus() : Promise<Result<RecycleBinView, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("recycle_bin_status") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: permanently deletes everything in the Recycle Bin. This cannot be undone; the UI
+ * asks first and says so.
+ */
+async emptyRecycleBin() : Promise<Result<EmptyBinResult, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("empty_recycle_bin") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -210,10 +282,12 @@ async setStartupEntryEnabled(id: string, enabled: boolean) : Promise<Result<Star
 
 export const events = __makeEvents__<{
 appReady: AppReady,
+cleanScanProgress: CleanScanProgress,
 metricsUpdated: MetricsUpdated,
 trayBoostRequested: TrayBoostRequested
 }>({
 appReady: "app-ready",
+cleanScanProgress: "clean-scan-progress",
 metricsUpdated: "metrics-updated",
 trayBoostRequested: "tray-boost-requested"
 })
@@ -428,6 +502,140 @@ export type ChangeState =
  */
 "restored"
 /**
+ * The group a rule is listed under. Mirrors [`volt_core::CleanCategory`].
+ */
+export type CleanCategoryView = 
+/**
+ * Temporary files programs left behind.
+ */
+"temporaryFiles" | 
+/**
+ * Caches of applications.
+ */
+"applicationCache" | 
+/**
+ * Caches of web browsers.
+ */
+"browserCache" | 
+/**
+ * Log files.
+ */
+"logs" | 
+/**
+ * Crash dumps and error reports.
+ */
+"crashReports" | 
+/**
+ * Leftovers of Windows Update.
+ */
+"windowsUpdate" | 
+/**
+ * A group this build does not know a name for.
+ */
+"other"
+/**
+ * What a clean did. The files are in the Recycle Bin and still use their space: there is no
+ * "freed" figure.
+ */
+export type CleanRunResult = { 
+/**
+ * Files moved to the Recycle Bin.
+ */
+movedFiles: number; 
+/**
+ * Empty folders moved to the Recycle Bin.
+ */
+movedFolders: number; 
+/**
+ * Size of the files moved, in bytes.
+ */
+movedBytes: number; 
+/**
+ * Items left in place, in all.
+ */
+skippedTotal: number; 
+/**
+ * Items left in place, by reason.
+ */
+skipped: SkipGroup[]; 
+/**
+ * Per rule.
+ */
+rules: RuleCleanView[]; 
+/**
+ * The engine's own sentence about what happened.
+ */
+message: string; 
+/**
+ * Whether the activity record could not be written (the clean itself is unaffected).
+ */
+historyIncomplete: boolean }
+/**
+ * How far a scan is: rule `done + 1` of `total` is about to be looked at.
+ */
+export type CleanScanProgress = { 
+/**
+ * Rules finished.
+ */
+done: number; 
+/**
+ * Rules in the scan.
+ */
+total: number }
+/**
+ * The result of a scan.
+ */
+export type CleanScanResult = { 
+/**
+ * Names this scan when cleaning it; empty when the scan was cancelled.
+ */
+planId: string; 
+/**
+ * Whether the scan was cancelled. Nothing was found and the earlier scan, if any, still
+ * stands.
+ */
+cancelled: boolean; 
+/**
+ * One entry per rule, in file order.
+ */
+rules: RuleScanView[] }
+/**
+ * One cleaning rule, as the UI lists it.
+ */
+export type CleaningRuleInfo = { 
+/**
+ * Stable id, sent back to clean.
+ */
+id: string; 
+/**
+ * Short name.
+ */
+title: string; 
+/**
+ * What the rule takes and why that is safe.
+ */
+description: string; 
+/**
+ * The group it is listed under.
+ */
+category: CleanCategoryView; 
+/**
+ * The group's name.
+ */
+categoryLabel: string; 
+/**
+ * How risky cleaning what it finds is.
+ */
+risk: RiskLevel; 
+/**
+ * Whether this rule needs administrator rights, so it cannot be cleaned yet.
+ */
+needsAdministrator: boolean; 
+/**
+ * Files younger than this many days are never taken (0: no minimum).
+ */
+minAgeDays: number }
+/**
  * One reason the score is below 100.
  */
 export type DeductionView = { 
@@ -475,6 +683,26 @@ freeBytes: number;
  * Used space as a share of the capacity, 0 to 100.
  */
 usedPercent: number }
+/**
+ * What emptying the Recycle Bin did.
+ */
+export type EmptyBinResult = { 
+/**
+ * Whether the bin was emptied: `false` when it was already empty.
+ */
+emptied: boolean; 
+/**
+ * Items it held just before.
+ */
+itemCount: number; 
+/**
+ * Their size in bytes.
+ */
+sizeBytes: number; 
+/**
+ * Whether the activity record could not be written.
+ */
+historyIncomplete: boolean }
 /**
  * Whether the benefit of a tweak was measured. Mirrors [`volt_core::Evidence`].
  */
@@ -692,6 +920,18 @@ disks: DiskView[];
  */
 gpu: GpuView | null }
 /**
+ * What the Recycle Bin holds.
+ */
+export type RecycleBinView = { 
+/**
+ * Number of items.
+ */
+itemCount: number; 
+/**
+ * Size in bytes.
+ */
+sizeBytes: number }
+/**
  * What the user has to do before a tweak takes full effect.
  */
 export type RestartKind = 
@@ -768,6 +1008,79 @@ export type RiskLevel =
  * Can break software or the system if misused.
  */
 "advanced"
+/**
+ * What cleaning one rule did.
+ */
+export type RuleCleanView = { 
+/**
+ * The rule's id.
+ */
+id: string; 
+/**
+ * The rule's title.
+ */
+title: string; 
+/**
+ * Files moved to the Recycle Bin.
+ */
+movedFiles: number; 
+/**
+ * Size of those files in bytes.
+ */
+movedBytes: number; 
+/**
+ * Items left in place.
+ */
+skipped: number }
+/**
+ * What a scan found for one rule.
+ */
+export type RuleScanView = { 
+/**
+ * The rule.
+ */
+rule: CleaningRuleInfo; 
+/**
+ * Files a clean would move to the Recycle Bin.
+ */
+files: number; 
+/**
+ * Empty folders a clean would move to the Recycle Bin.
+ */
+folders: number; 
+/**
+ * Size of those files in bytes.
+ */
+bytes: number; 
+/**
+ * Whether the scan stopped at the per-rule limit: there is more than what is listed.
+ */
+truncated: boolean; 
+/**
+ * What was left out and why, in a few words (for example "12 too new"), or `null`.
+ */
+skipped: string | null; 
+/**
+ * Why the rule could not be scanned at all, or `null`. The counts are then zero.
+ */
+problem: string | null; 
+/**
+ * A few of the files, relative to the rule's location (for example `user_temp/sub/a.tmp`).
+ * Never a full path.
+ */
+samples: string[] }
+/**
+ * Skipped items with the same reason.
+ */
+export type SkipGroup = { 
+/**
+ * Why they were left where they were.
+ */
+reason: string; 
+/**
+ * How many.
+ */
+count: number }
 /**
  * Precise result of [`set_startup_entry_enabled`].
  */

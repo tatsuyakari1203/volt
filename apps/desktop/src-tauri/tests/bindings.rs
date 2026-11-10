@@ -68,6 +68,26 @@ fn generated_bindings_describe_the_health_report_with_its_closed_fix_set() {
     }
 }
 
+#[test]
+fn generated_bindings_describe_the_cleaner_commands_progress_event_and_results() {
+    let text = generated_bindings();
+    for name in [
+        "listCleaningRules",
+        "scanCleaning",
+        "cancelCleaningScan",
+        "cleanSelectedRules",
+        "recycleBinStatus",
+        "emptyRecycleBin",
+        "cleanScanProgress",
+        "export type CleanScanResult",
+        "export type CleanRunResult",
+    ] {
+        assert!(text.contains(name), "{name} missing in {text}");
+    }
+    // Sizes cross as numbers, never as 64-bit integers.
+    assert!(text.contains("bytes: number"), "{text}");
+}
+
 /// The drift gate: the committed bindings must equal what the Rust definitions generate.
 /// `scripts/bindings.ps1` (and so `pnpm check`) runs this test; `pnpm bindings` rewrites the
 /// committed file by setting `VOLT_UPDATE_BINDINGS=1`.

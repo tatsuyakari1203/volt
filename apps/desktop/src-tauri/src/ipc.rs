@@ -224,11 +224,18 @@ pub fn bindings_builder() -> Builder<tauri::Wry> {
             crate::commands::export_activity_text,
             crate::commands::list_startup_entries,
             crate::commands::set_startup_entry_enabled,
+            crate::commands::list_cleaning_rules,
+            crate::commands::scan_cleaning,
+            crate::commands::cancel_cleaning_scan,
+            crate::commands::clean_selected_rules,
+            crate::commands::recycle_bin_status,
+            crate::commands::empty_recycle_bin,
         ])
         .events(collect_events![
             AppReady,
             crate::TrayBoostRequested,
             crate::MetricsUpdated,
+            crate::cleaner::CleanScanProgress,
         ])
         .typ::<IpcError>()
 }

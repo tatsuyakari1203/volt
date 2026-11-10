@@ -70,8 +70,9 @@ pub use activity::{
 };
 pub use clean::{
     CleanCategory, CleanEngine, CleanItem, CleanPlan, CleanReport, CleanSkip, CleanSkipReason,
-    CleaningRule, CleaningRules, ConfirmedPlan, ItemKind, KnownFolders, Location, RuleClean,
-    RuleScan, RulesError, ScanFailure, SkipReason,
+    CleaningRule, CleaningRules, ConfirmedPlan, EmptyReport, ItemKind, KnownFolders, Location,
+    RecycleBin, RecycleBinManager, RecycleBinStatus, RuleClean, RuleScan, RulesError, ScanError,
+    ScanFailure, ScanObserver, SkipReason,
 };
 pub use command::{Command, CommandOutput, Commands};
 pub use error::{ExecError, PlanError, PortError, RevertError};

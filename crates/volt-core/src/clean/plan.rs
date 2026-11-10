@@ -13,6 +13,13 @@ use crate::time::Timestamp;
 /// a million too-new files cannot make the plan huge.
 pub const MAX_SKIPPED_DETAILS: usize = 500;
 
+/// How many items one rule may put in a plan. A scan that reaches it stops
+/// looking at that rule and says so ([`RuleScan::truncated`]), so a folder with
+/// millions of files cannot make the plan, and the memory behind it, unbounded.
+/// What was found is complete and cleanable; scanning again after a clean
+/// finds the rest.
+pub const MAX_ITEMS_PER_RULE: usize = 25_000;
+
 /// What a planned item is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -193,6 +200,9 @@ pub struct RuleScan {
     pub root_exists: bool,
     /// Set when the rule could not be scanned at all; `items` is then empty.
     pub failure: Option<ScanFailure>,
+    /// Whether the scan stopped at the item cap ([`MAX_ITEMS_PER_RULE`]): there
+    /// is more to clean than `items` lists, and the counts are partial.
+    pub truncated: bool,
     /// What a clean would move to the Recycle Bin. A folder is listed after
     /// everything inside it, so cleaning in this order empties it first.
     pub items: Vec<CleanItem>,

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { CleanScreen } from '../features/clean/CleanScreen';
 import { HomeScreen } from '../features/home/HomeScreen';
 import { StartupScreen } from '../features/startup/StartupScreen';
 import { TweaksScreen } from '../features/tweaks/TweaksScreen';
@@ -15,6 +16,8 @@ function Screen({ id, onNavigate }: { id: SectionId; onNavigate: (id: SectionId)
   switch (id) {
     case 'home':
       return <HomeScreen onNavigate={onNavigate} />;
+    case 'clean':
+      return <CleanScreen />;
     case 'tweaks':
       return <TweaksScreen />;
     case 'startup':

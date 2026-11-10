@@ -6,16 +6,20 @@
 
 use tauri::{AppHandle, Manager as _, State};
 use tauri_plugin_dialog::DialogExt as _;
+use tauri_specta::Event as _;
 
 use crate::IpcError;
 use crate::api::{
     self, ActivityExport, ActivityPage, ApplyResult, ExportResult, RevertResult,
     StartupChangeResult, StartupList, TweakInfo, UndoPreview, UndoResult,
 };
+use crate::cleaner::{
+    self, CleanRunResult, CleanScanResult, CleaningRuleInfo, EmptyBinResult, RecycleBinView,
+};
 use crate::wiring::{AppCore, AppState};
 
 /// Runs `work` on the blocking thread pool and returns its result.
-async fn blocking<T, F>(state: &AppState, work: F) -> Result<T, IpcError>
+pub(crate) async fn blocking<T, F>(state: &AppState, work: F) -> Result<T, IpcError>
 where
     T: Send + 'static,
     F: FnOnce(&AppCore) -> Result<T, IpcError> + Send + 'static,
@@ -95,6 +99,82 @@ pub(crate) async fn set_startup_entry_enabled(
         api::set_startup_entry_enabled(core, &id, enabled)
     })
     .await
+}
+
+/// Tauri command: lists the cleaning rules. Reads nothing from the file system.
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn list_cleaning_rules(
+    state: State<'_, AppState>,
+) -> Result<Vec<CleaningRuleInfo>, IpcError> {
+    blocking(&state, cleaner::list_cleaning_rules).await
+}
+
+/// Tauri command: scans every cleaning rule (read-only) and keeps the plan in the shell under the
+/// returned id. Emits `cleanScanProgress` before each rule; `cancelCleaningScan` stops it between
+/// rules. Runs off the main thread. The result has counts and sizes, never a full path.
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn scan_cleaning(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<CleanScanResult, IpcError> {
+    blocking(&state, move |core| {
+        cleaner::scan_cleaning(core, &|progress| {
+            // A missed progress event only means the bar does not move; the scan goes on.
+            let _ = progress.emit(&app);
+        })
+    })
+    .await
+}
+
+/// Tauri command: asks the running scan to stop before its next rule. Does nothing when no scan
+/// runs.
+#[tauri::command]
+#[specta::specta]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "Tauri hands managed state to a command by value"
+)]
+pub(crate) fn cancel_cleaning_scan(state: State<'_, AppState>) -> Result<(), IpcError> {
+    let core = state.core()?;
+    cleaner::cancel_cleaning_scan(&core);
+    Ok(())
+}
+
+/// Tauri command: moves the files of the chosen rules of the scan `plan_id` to the Recycle Bin and
+/// reports what was moved and what was left, with reasons. Rules that need administrator rights
+/// answer `accessDenied`. The scan is used up: scan again to clean again.
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn clean_selected_rules(
+    state: State<'_, AppState>,
+    plan_id: String,
+    rule_ids: Vec<String>,
+) -> Result<CleanRunResult, IpcError> {
+    blocking(&state, move |core| {
+        cleaner::clean_plan(core, &plan_id, &rule_ids)
+    })
+    .await
+}
+
+/// Tauri command: how many items the Recycle Bin holds and how big they are. Read-only.
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn recycle_bin_status(
+    state: State<'_, AppState>,
+) -> Result<RecycleBinView, IpcError> {
+    blocking(&state, cleaner::recycle_bin_status).await
+}
+
+/// Tauri command: permanently deletes everything in the Recycle Bin. This cannot be undone; the UI
+/// asks first and says so.
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn empty_recycle_bin(
+    state: State<'_, AppState>,
+) -> Result<EmptyBinResult, IpcError> {
+    blocking(&state, cleaner::empty_recycle_bin).await
 }
 
 /// Tauri command: undoes one journal entry (the `entry` of an activity line) and reports exactly

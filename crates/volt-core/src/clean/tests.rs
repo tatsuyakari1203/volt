@@ -1536,3 +1536,226 @@ fn the_configured_age_also_governs_the_folders_taken_with_remove_empty_dirs() {
     assert!(only(&plan).items.is_empty());
     assert_eq!(only(&plan).counts.too_new, 1);
 }
+
+// ---- item cap, progress and cancel -----------------------------------------------------------
+
+#[test]
+fn a_rule_stops_at_the_item_cap_and_says_the_scan_is_truncated() {
+    let fx = Fixture::new();
+    for n in 0..5 {
+        fx.fs
+            .add_file_at(temp().join(format!("f{n}.tmp")), 10, ago(5));
+    }
+    let engine = fx.engine(&default_rule()).with_item_cap(3);
+    let plan = engine.scan(&["temp-files"]).expect("scan");
+    let scan = only(&plan);
+    assert_eq!(scan.items.len(), 3);
+    assert!(scan.truncated);
+    assert_eq!(scan.failure, None);
+
+    // Exactly at the cap is not truncated: nothing was left out.
+    let engine = fx.engine(&default_rule()).with_item_cap(5);
+    let plan = engine.scan(&["temp-files"]).expect("scan");
+    assert_eq!(only(&plan).items.len(), 5);
+    assert!(!only(&plan).truncated);
+}
+
+#[test]
+fn a_folder_that_was_not_fully_looked_at_is_not_planned_for_removal() {
+    let fx = Fixture::new();
+    fx.fs.add_dir(temp().join("a"), Some(ago(5)));
+    fx.fs.add_file_at(temp().join("a").join("1.tmp"), 1, ago(5));
+    fx.fs.add_file_at(temp().join("a").join("2.tmp"), 1, ago(5));
+    let toml = temp_rule(
+        "temp-files",
+        r#"["**"]"#,
+        "[]",
+        "min_age_days = 1\nmax_depth = 3\nremove_empty_dirs = true",
+    );
+    let plan = fx
+        .engine(&toml)
+        .with_item_cap(1)
+        .scan(&["temp-files"])
+        .expect("scan");
+    let scan = only(&plan);
+    assert!(scan.truncated);
+    assert_eq!(
+        scan.directory_count(),
+        0,
+        "the folder still has files in it"
+    );
+}
+
+#[test]
+fn the_cap_defaults_to_the_documented_maximum_and_cannot_be_raised() {
+    let fx = Fixture::new();
+    let engine = fx.engine(&default_rule()).with_item_cap(usize::MAX);
+    assert_eq!(engine.item_cap, MAX_ITEMS_PER_RULE);
+    assert_eq!(fx.engine(&default_rule()).item_cap, MAX_ITEMS_PER_RULE);
+}
+
+struct Watcher {
+    seen: std::sync::Mutex<Vec<(usize, usize)>>,
+    cancel_after: usize,
+}
+
+impl Watcher {
+    fn new(cancel_after: usize) -> Self {
+        Self {
+            seen: std::sync::Mutex::default(),
+            cancel_after,
+        }
+    }
+
+    fn seen(&self) -> Vec<(usize, usize)> {
+        self.seen.lock().expect("lock").clone()
+    }
+}
+
+impl ScanObserver for Watcher {
+    fn progress(&self, done: usize, total: usize) {
+        self.seen.lock().expect("lock").push((done, total));
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.seen().len() >= self.cancel_after
+    }
+}
+
+fn two_rules() -> String {
+    format!(
+        "{}{}",
+        temp_rule("one", r#"["**"]"#, "[]", "min_age_days = 0\nmax_depth = 1"),
+        temp_rule("two", r#"["**"]"#, "[]", "min_age_days = 0\nmax_depth = 1"),
+    )
+}
+
+#[test]
+fn an_observed_scan_reports_each_rule_and_returns_the_same_plan() {
+    let fx = Fixture::new();
+    fx.fs.add_file_at(temp().join("a.tmp"), 7, ago(5));
+    let engine = fx.engine(&two_rules());
+    let watcher = Watcher::new(usize::MAX);
+    let plan = engine
+        .scan_observed(&["one", "two"], &watcher)
+        .expect("scan");
+    assert_eq!(watcher.seen(), [(0, 2), (1, 2)]);
+    // The manual clock ticks on every read, so only the rules are compared.
+    assert_eq!(
+        plan.rules,
+        engine.scan(&["one", "two"]).expect("scan").rules
+    );
+}
+
+#[test]
+fn cancelling_between_rules_stops_the_scan_and_yields_no_plan() {
+    let fx = Fixture::new();
+    let engine = fx.engine(&two_rules());
+    let watcher = Watcher::new(1);
+    let result = engine.scan_observed(&["one", "two"], &watcher);
+    assert_eq!(result, Err(ScanError::Cancelled));
+    assert_eq!(watcher.seen(), [(0, 2)], "the second rule never started");
+    assert!(fx.fs.trash_attempts().is_empty());
+}
+
+#[test]
+fn an_observed_scan_of_an_unknown_rule_is_refused_before_anything_is_scanned() {
+    let fx = Fixture::new();
+    let engine = fx.engine(&two_rules());
+    let watcher = Watcher::new(usize::MAX);
+    assert_eq!(
+        engine.scan_observed(&["one", "nope"], &watcher),
+        Err(ScanError::UnknownRule(UnknownRule("nope".to_owned())))
+    );
+    assert!(watcher.seen().is_empty());
+}
+
+// ---- the Recycle Bin ------------------------------------------------------------------------
+
+mod recycle_bin {
+    use super::*;
+    use crate::clean::fakes::FakeRecycleBin;
+
+    fn manager(bin: &Arc<FakeRecycleBin>, log: &Arc<FakeActivityLog>) -> RecycleBinManager {
+        RecycleBinManager::new(bin.clone(), Arc::new(ManualClock::new(NOW)))
+            .with_activity_log(log.clone())
+    }
+
+    #[test]
+    fn status_reads_the_bin_and_changes_nothing() {
+        let bin = Arc::new(FakeRecycleBin::holding(12, 3_000_000));
+        let log = Arc::new(FakeActivityLog::new());
+        let status = manager(&bin, &log).status().expect("status");
+        assert_eq!(
+            status,
+            RecycleBinStatus {
+                item_count: 12,
+                size_bytes: 3_000_000
+            }
+        );
+        assert_eq!(bin.empty_calls(), 0);
+        assert!(log.records().is_empty());
+    }
+
+    #[test]
+    fn emptying_is_recorded_as_permanent_and_cannot_be_undone() {
+        let bin = Arc::new(FakeRecycleBin::holding(2, 2048));
+        let log = Arc::new(FakeActivityLog::new());
+        let report = manager(&bin, &log).empty(Source::Manual).expect("empty");
+        assert!(report.emptied);
+        assert_eq!(report.before.item_count, 2);
+        assert_eq!(bin.empty_calls(), 1);
+        assert_eq!(bin.status().expect("status").item_count, 0);
+        let records = log.records();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].outcome, ActivityOutcome::Applied);
+        assert_eq!(records[0].label.as_deref(), Some("recycle-bin"));
+        assert!(records[0].entry.is_none() && records[0].batch.is_none());
+        assert!(records[0].summary.contains("permanently deleted"));
+        assert!(records[0].summary.contains("cannot be undone"));
+        assert!(records[0].summary.contains("2 items (2.0 KB)"));
+    }
+
+    #[test]
+    fn an_empty_bin_is_not_emptied_and_not_recorded() {
+        let bin = Arc::new(FakeRecycleBin::new());
+        let log = Arc::new(FakeActivityLog::new());
+        let report = manager(&bin, &log).empty(Source::Manual).expect("empty");
+        assert!(!report.emptied);
+        assert_eq!(bin.empty_calls(), 0);
+        assert!(log.records().is_empty());
+    }
+
+    #[test]
+    fn a_failed_emptying_is_returned_and_recorded_as_failed() {
+        let bin = Arc::new(FakeRecycleBin::holding(1, 10));
+        bin.fail_empty_with(Some(PortError::AccessDenied("secret detail".into())));
+        let log = Arc::new(FakeActivityLog::new());
+        let error = manager(&bin, &log)
+            .empty(Source::Manual)
+            .expect_err("fails");
+        assert!(matches!(error, PortError::AccessDenied(_)));
+        let records = log.records();
+        assert_eq!(records[0].outcome, ActivityOutcome::Failed);
+        assert!(!records[0].summary.contains("secret"));
+    }
+
+    #[test]
+    fn a_bin_that_cannot_be_read_is_never_emptied_blind() {
+        let bin = Arc::new(FakeRecycleBin::holding(1, 10));
+        bin.fail_status_with(Some(PortError::Other("boom".into())));
+        let log = Arc::new(FakeActivityLog::new());
+        assert!(manager(&bin, &log).empty(Source::Manual).is_err());
+        assert_eq!(bin.empty_calls(), 0);
+    }
+
+    #[test]
+    fn a_failing_activity_log_does_not_stop_the_emptying_but_is_reported() {
+        let bin = Arc::new(FakeRecycleBin::holding(1, 10));
+        let log = Arc::new(FakeActivityLog::new());
+        log.fail_records_with(Some(PortError::Other("disk full".into())));
+        let report = manager(&bin, &log).empty(Source::Manual).expect("empty");
+        assert!(report.emptied && report.activity_write_failed);
+        assert_eq!(bin.empty_calls(), 1);
+    }
+}

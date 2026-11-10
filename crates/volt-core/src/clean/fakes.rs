@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
+use super::bin::{RecycleBin, RecycleBinStatus};
 use super::folders::{KnownFolders, Location};
 use crate::error::PortError;
 
@@ -56,5 +57,80 @@ impl KnownFolders for FakeKnownFolders {
             return Err(error);
         }
         Ok(lock(&self.protected).clone())
+    }
+}
+
+#[derive(Debug, Default)]
+struct BinState {
+    status: RecycleBinStatus,
+    status_failure: Option<PortError>,
+    empty_failure: Option<PortError>,
+    empty_calls: usize,
+}
+
+/// In-memory [`RecycleBin`]: holds what the test says and counts how often it
+/// was emptied. Emptying it only resets the fake's own numbers.
+#[derive(Debug, Default)]
+pub struct FakeRecycleBin {
+    state: Mutex<BinState>,
+}
+
+impl FakeRecycleBin {
+    /// An empty bin.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A bin holding `item_count` items of `size_bytes` in all.
+    #[must_use]
+    pub fn holding(item_count: u64, size_bytes: u64) -> Self {
+        let bin = Self::default();
+        bin.set(item_count, size_bytes);
+        bin
+    }
+
+    /// Sets what the bin holds.
+    pub fn set(&self, item_count: u64, size_bytes: u64) {
+        lock(&self.state).status = RecycleBinStatus {
+            item_count,
+            size_bytes,
+        };
+    }
+
+    /// Makes `status` fail, or stop failing with `None`.
+    pub fn fail_status_with(&self, error: Option<PortError>) {
+        lock(&self.state).status_failure = error;
+    }
+
+    /// Makes `empty` fail, or stop failing with `None`.
+    pub fn fail_empty_with(&self, error: Option<PortError>) {
+        lock(&self.state).empty_failure = error;
+    }
+
+    /// How many times `empty` was called.
+    #[must_use]
+    pub fn empty_calls(&self) -> usize {
+        lock(&self.state).empty_calls
+    }
+}
+
+impl RecycleBin for FakeRecycleBin {
+    fn status(&self) -> Result<RecycleBinStatus, PortError> {
+        let state = lock(&self.state);
+        match &state.status_failure {
+            Some(error) => Err(error.clone()),
+            None => Ok(state.status),
+        }
+    }
+
+    fn empty(&self) -> Result<(), PortError> {
+        let mut state = lock(&self.state);
+        state.empty_calls += 1;
+        if let Some(error) = state.empty_failure.clone() {
+            return Err(error);
+        }
+        state.status = RecycleBinStatus::default();
+        Ok(())
     }
 }

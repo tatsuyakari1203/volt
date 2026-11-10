@@ -119,11 +119,14 @@ impl RuleClean {
 ///
 /// Everything Volt removes goes to the Recycle Bin, and the files keep using
 /// their space there. Nothing is freed until the Recycle Bin is emptied, which
-/// Volt never does. So the report offers [`moved_bytes`] (what now sits in the
-/// Recycle Bin, and what emptying it would free) and has no "freed" figure;
+/// a clean never does: it is a separate, permanent action
+/// ([`RecycleBinManager`]) that the user confirms. So the report offers
+/// [`moved_bytes`] (what now sits in the Recycle Bin, and what emptying it
+/// would free) and has no "freed" figure;
 /// UI text must say "moved to the Recycle Bin", not "freed".
 ///
 /// [`moved_bytes`]: CleanReport::moved_bytes
+/// [`RecycleBinManager`]: super::RecycleBinManager
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct CleanReport {
@@ -176,9 +179,7 @@ impl CleanReport {
                 counted_items(self.skipped_count())
             );
         }
-        text.push_str(
-            " No disk space is freed until the Recycle Bin is emptied; Volt does not empty it.",
-        );
+        text.push_str(" No disk space is freed until the Recycle Bin is emptied.");
         text
     }
 }

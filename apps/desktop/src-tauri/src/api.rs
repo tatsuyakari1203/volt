@@ -754,7 +754,7 @@ fn startup_entry_view(entry: &StartupEntry) -> StartupEntryView {
     }
 }
 
-fn risk_view(risk: Risk) -> RiskLevel {
+pub(crate) fn risk_view(risk: Risk) -> RiskLevel {
     match risk {
         Risk::Safe => RiskLevel::Safe,
         Risk::Caution => RiskLevel::Caution,
