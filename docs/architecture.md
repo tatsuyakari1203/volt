@@ -1,19 +1,14 @@
----
-id: doc-003
-title: Architecture
-type: specification
-created_date: '2026-11-10T03:01:00Z'
-updated_date: '2026-11-10T04:06:00Z'
----
-Volt follows a ports-and-adapters layout so that the rules about *what* to change on a system are
-separate from the code that *does* it. That separation is what makes a system-modifying tool
+# Architecture
+
+Volt follows a ports-and-adapters layout so that the rules about _what_ to change on a system are
+separate from the code that _does_ it. That separation is what makes a system-modifying tool
 testable: the domain can be exercised against in-memory fakes, and real Windows calls are confined
 to one crate.
 
 ## Layers
 
 ```
-apps/desktop (crate volt-desktop: Tauri shell + React UI)      crates/volt-cli (later)
+apps/desktop (crate volt-desktop: Tauri shell + React UI)      crates/volt-cli (planned)
                  |                                                  |
                  +----------------------+---------------------------+
                                         |           composition roots
@@ -30,17 +25,17 @@ apps/desktop (crate volt-desktop: Tauri shell + React UI)      crates/volt-cli (
                         domain model, use cases, port traits
 ```
 
-| Crate | Responsibility | May depend on | Must not depend on |
-|---|---|---|---|
-| `volt-core` | Domain types, use cases, port traits, in-memory fakes | nothing internal | `tauri`, `windows`, `windows-sys`, `winreg`, `rusqlite` |
-| `volt-win` | Implements ports with the Windows API. The only crate with `unsafe` | `volt-core` | `tauri`, `rusqlite` |
-| `volt-store` | Implements persistence ports | `volt-core` | `tauri`, `windows`, `windows-sys`, `winreg` |
-| `volt-desktop` | Tauri commands, tray, window lifecycle; wires adapters into use cases | all three | - |
-| `volt-cli` | Command-line front end (M3) | all three | `tauri` |
+| Crate          | Responsibility                                                        | May depend on    | Must not depend on                                      |
+| -------------- | --------------------------------------------------------------------- | ---------------- | ------------------------------------------------------- |
+| `volt-core`    | Domain types, use cases, port traits, in-memory fakes                 | nothing internal | `tauri`, `windows`, `windows-sys`, `winreg`, `rusqlite` |
+| `volt-win`     | Implements ports with the Windows API. The only crate with `unsafe`   | `volt-core`      | `tauri`, `rusqlite`                                     |
+| `volt-store`   | Implements persistence ports                                          | `volt-core`      | `tauri`, `windows`, `windows-sys`, `winreg`             |
+| `volt-desktop` | Tauri commands, tray, window lifecycle; wires adapters into use cases | all three        | -                                                       |
+| `volt-cli`     | Command-line front end (planned)                                      | all three        | `tauri`                                                 |
 
 `scripts/check-arch.mjs` enforces this table on direct dependencies, in the pre-commit hook, in
 `pnpm check` and in CI. A workspace crate with no rule fails the check: adding a crate is an
-architecture decision and needs a decision record.
+architecture decision and should be discussed in an issue first.
 
 ## Core concepts
 
@@ -113,32 +108,32 @@ Still to be built:
 
 ## Process and elevation model
 
-Proposed (to be confirmed by a spike in M0, see the decision record): one elevated process that
-is both the tray agent and the Tauri host. The window and its WebView are created on demand and
-destroyed when hidden, so idle memory stays low. Start-with-Windows uses a scheduled task with
-highest privileges to avoid a UAC prompt at every login.
+Not decided yet. The proposal, to be confirmed by a prototype before code depends on it: one
+elevated process that is both the tray agent and the Tauri host. The window and its WebView are
+created on demand and destroyed when hidden, so idle memory stays low. Start-with-Windows uses a
+scheduled task with highest privileges to avoid a UAC prompt at every login.
 
 The alternative, an unelevated UI talking to an elevated helper over a named pipe, has a smaller
-attack surface but costs an IPC protocol and a second binary. The spike decides.
+attack surface but costs an IPC protocol and a second binary.
 
 ## Frontend
 
 - `apps/desktop/src`: React + TypeScript + Tailwind.
 - Feature folders (`features/clean`, `features/memory`, ...) on top of `shared/ui` (design system)
-  and `shared/ipc` (generated bindings). Features do not import each other; a boundary rule
-  (dependency-cruiser, `apps/desktop/.dependency-cruiser.cjs`, run by `pnpm check`) enforces it and also
-  forbids `shared` importing features, mirroring the crate check.
+  and `shared/ipc` (bindings to the Rust commands). Features do not import each other; a boundary
+  rule (dependency-cruiser, `apps/desktop/.dependency-cruiser.cjs`, run by `pnpm check`) enforces
+  it and also forbids `shared` importing features, mirroring the crate check.
 - The UI holds no business rules: it renders plans and results produced by the core.
-- IPC types are generated from Rust so a breaking change fails the TypeScript build.
+- IPC types will be generated from Rust so a breaking change fails the TypeScript build.
 
 ## Testing strategy
 
-| Level | What | How |
-|---|---|---|
-| Unit | Core use cases, tweak engine, rule evaluation | In-memory fakes of the ports; runs on any OS |
-| Adapter | `volt-win`, `volt-store` | Real APIs against a throwaway `HKCU\Software\VoltTest` key, a temp directory and a temp database only |
-| UI | Components and feature state | Vitest |
-| End to end | A few flows through the real app | WebDriver (the Tauri docs recommend `@wdio/tauri-service`), added once flows exist |
+| Level      | What                                          | How                                                                                                   |
+| ---------- | --------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Unit       | Core use cases, tweak engine, rule evaluation | In-memory fakes of the ports; runs on any OS                                                          |
+| Adapter    | `volt-win`, `volt-store`                      | Real APIs against a throwaway `HKCU\Software\VoltTest` key, a temp directory and a temp database only |
+| UI         | Components and feature state                  | Vitest                                                                                                |
+| End to end | A few flows through the real app              | WebDriver, added once flows exist                                                                     |
 
 Tests never apply a real tweak, clean real user data or purge memory on the machine running them.
 

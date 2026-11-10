@@ -1,24 +1,26 @@
 # Volt: guide for coding agents
 
 Volt is an open-source Windows optimizer (memory, cleanup, startup, reversible tweaks) built with
-Tauri 2, a Rust core and a React + TypeScript UI. Status: pre-alpha, foundation phase. The repo
-currently holds the devflow, the plan and empty crate skeletons.
+Tauri 2, a Rust core and a React + TypeScript UI. Status: pre-alpha, foundation phase.
 
 ## Sources of truth
 
-| What                            | Where                                  | How to access                                         |
-| ------------------------------- | -------------------------------------- | ----------------------------------------------------- |
-| Plan, tasks, milestones, docs   | `.backlog/` (Backlog.md)               | MCP server `backlog`, or `pnpm exec backlog ...`      |
-| Decisions (ADRs)                | `.backlog/decisions/`                  | `pnpm exec backlog decision list`, then read the file |
-| Code structure, callers, impact | codegraph index (`.codegraph/`, local) | MCP server `codegraph`, or `pnpm exec codegraph ...`  |
-| Quality gates                   | `scripts/check.ps1`                    | `pnpm check`                                          |
+| What                            | Where                                         | How to access                                        |
+| ------------------------------- | --------------------------------------------- | ---------------------------------------------------- |
+| Architecture                    | `docs/architecture.md`                        | Read it before non-trivial work                      |
+| Plan, tasks, decisions          | `.backlog/` (Backlog.md), private, not in git | MCP server `backlog`, or `pnpm exec backlog ...`     |
+| Code structure, callers, impact | codegraph index (`.codegraph/`, local)        | MCP server `codegraph`, or `pnpm exec codegraph ...` |
+| Quality gates                   | `scripts/check.ps1`                           | `pnpm check`                                         |
 
-Backlog docs to read before non-trivial work: **Product Plan**, **Feature Matrix**,
-**Architecture**, **Devflow**, **Resources** (`backlog` MCP `document_list` / `document_view`).
+The backlog is the maintainers' internal plan. It lives in `.backlog/` in the maintainer's main
+checkout, is ignored by git and is never committed or quoted wholesale into public files. If
+`.backlog/` does not exist in your checkout, you are working as an outside contributor: skip the
+backlog steps below and work from the GitHub issue instead.
 
 Never edit task, milestone or document files under `.backlog/` by hand: use the MCP tools or the
 CLI so IDs and metadata stay consistent. Decision files are the exception: the CLI can only create
-them, so their body is edited directly.
+them, so their body is edited directly. In a git worktree there is no `.backlog/`: run the CLI
+from the main checkout.
 
 ## The loop for every task
 

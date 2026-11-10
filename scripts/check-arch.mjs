@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Enforces the crate layering described in the Architecture doc (.backlog/docs).
+// Enforces the crate layering described in docs/architecture.md.
 //
 //   volt-desktop, volt-cli   composition roots: wire adapters into the core
 //        |          |

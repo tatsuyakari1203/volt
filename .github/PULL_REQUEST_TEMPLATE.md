@@ -2,7 +2,7 @@
 
 ## What and why
 
-<!-- What changes, and what problem it solves. Link the task: Refs: TASK-NNN -->
+<!-- What changes, and what problem it solves. Link the issue: Refs: #NNN -->
 
 ## How it was verified
 
@@ -18,5 +18,4 @@
 
 ## Docs
 
-- [ ] Task updated (acceptance criteria, notes, final summary)
-- [ ] Feature matrix, docs or a decision updated if behaviour or a decision changed
+- [ ] `docs/` and the README updated if behaviour or the architecture changed

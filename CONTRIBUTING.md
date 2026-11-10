@@ -1,20 +1,22 @@
 # Contributing to Volt
 
 Volt changes registries, services and files on real machines, so the bar for changes is
-"explainable, tested and reversible". The full workflow is in the **Devflow** document under
-`.backlog/docs/`; this page is the short version.
+"explainable, tested and reversible".
 
 ## Setup
 
-1. Install Rust via `rustup`, Node 22.18 or newer, pnpm 10 and PowerShell 7.
+1. Install Rust via `rustup`, Node 22 or newer, pnpm 10 and PowerShell 7.
 2. Run `pnpm install`. This installs the dev tools and the git hooks.
 3. Run `pnpm check`. It should pass on a fresh clone.
 
 ## Workflow
 
-1. Every non-trivial change starts from a task in `.backlog/tasks/` (`pnpm board` to browse).
-2. Branch from `main`: `type/task-NNN-short-slug`.
-3. Keep the layering intact (see `AGENTS.md`); `pnpm check:arch` enforces it.
+1. Every non-trivial change starts from a GitHub issue: open one, or comment on an existing one,
+   before writing code, so the approach can be agreed first. (Maintainers plan in a private
+   backlog; the `TASK-NNN` references in commits point there.)
+2. Branch from `main`: `type/short-slug`, for example `feat/standby-purge`.
+3. Keep the layering intact (see [docs/architecture.md](docs/architecture.md) and `AGENTS.md`);
+   `pnpm check:arch` enforces it.
 4. Write tests. Code that touches Windows is tested through fakes of the port traits.
 5. `pnpm check` must pass before you push (the pre-push hook runs it).
 6. Open a pull request whose title is a Conventional Commit, for example
@@ -23,7 +25,7 @@ Volt changes registries, services and files on real machines, so the bar for cha
 ## Commit messages
 
 [Conventional Commits](https://www.conventionalcommits.org/). Allowed scopes are listed in
-`commitlint.config.mjs`. Reference the task in a footer: `Refs: TASK-012`.
+`commitlint.config.mjs`. Reference the issue in a footer: `Refs: #12`.
 
 ## Adding a tweak or a cleaning rule
 
