@@ -32,6 +32,24 @@ take back. Volt is built on the opposite assumptions:
 | **Honest**     | Each tweak carries a risk level (Safe, Caution, Advanced) and states whether its benefit is measured or anecdotal. Tweaks that cannot be explained are not shipped. |
 | **Quiet**      | No telemetry, no ads, works offline, and stays small when idle.                                                                                                     |
 
+## Privacy
+
+Volt works offline and sends nothing.
+
+- **What it does:** reads your system state and changes it only when you confirm. Its undo journal,
+  settings and a small diagnostic log stay on your machine.
+- **What it never sends:** no telemetry, analytics, crash reports, update checks, ads or accounts,
+  and no file names, registry values or logs. The app has no network permission and its content
+  security policy allows no remote origin.
+- **What is outside its control:** the Microsoft WebView2 runtime that draws the window. It has its
+  own updater and settings, and in a one-minute test it made a few HTTPS connections to Microsoft
+  on its own while Volt's own process made none. Also Windows itself and any build you did not
+  make from this source.
+- **It is checked, not just promised:** `pnpm check` and CI fail if a network permission, a
+  network-capable crate or package, a remote origin or a remote request is added without
+  [docs/privacy.md](docs/privacy.md) changing in the same commit. That page has the exact
+  statement, the allowlist the check reads and how the running app was observed.
+
 ## Planned features
 
 Volt aims to cover what Microsoft PC Manager does and go deeper where it stops.

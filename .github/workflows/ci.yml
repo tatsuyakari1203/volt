@@ -39,6 +39,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # Also part of `pnpm check`; run first and by name so a privacy failure is easy to find.
+      - name: Privacy guarantee (offline, no telemetry)
+        run: pnpm check:privacy
+
       - name: Run all gates
         run: pnpm check
 
