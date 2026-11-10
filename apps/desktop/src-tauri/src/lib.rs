@@ -9,6 +9,7 @@ mod commands;
 pub mod health;
 mod ipc;
 mod logging;
+pub mod memory;
 pub mod metrics;
 mod sampler;
 mod tray;

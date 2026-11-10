@@ -136,22 +136,115 @@ pub struct MemoryStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum MemoryArea {
-    /// Trim the working sets of processes.
+    /// Trim the working sets of the processes Volt may open.
     WorkingSets,
     /// Flush the standby list.
     StandbyList,
-    /// Flush the modified page list.
+    /// Flush only the low-priority part of the standby list (priority 0).
+    StandbyListLowPriority,
+    /// Flush the modified page list: write its pages to disk so they become standby pages.
     ModifiedList,
+    /// Trim the system file cache.
+    FileCache,
 }
 
-/// Port: memory. Purging is not an undoable operation: it only releases
-/// reclaimable memory.
+impl MemoryArea {
+    /// Every area, in the order a run performs them. Trimming and flushing move pages onto the
+    /// standby list, so the standby purges come last and see everything the earlier steps moved.
+    pub const RUN_ORDER: [Self; 5] = [
+        Self::WorkingSets,
+        Self::FileCache,
+        Self::ModifiedList,
+        Self::StandbyListLowPriority,
+        Self::StandbyList,
+    ];
+
+    /// What the area is called in a sentence ("the standby list").
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::WorkingSets => "working sets",
+            Self::StandbyList => "standby list",
+            Self::StandbyListLowPriority => "low-priority standby list",
+            Self::ModifiedList => "modified list",
+            Self::FileCache => "system file cache",
+        }
+    }
+}
+
+/// Physical memory split by the lists Windows keeps pages on, in bytes. The four parts add up to
+/// the total (`in_use` is what is left after the other three).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryLists {
+    /// Installed physical memory.
+    pub total_bytes: u64,
+    /// Pages in working sets, the kernel and drivers: memory that is not reclaimable for free.
+    pub in_use_bytes: u64,
+    /// Standby list: cached pages that still hold data and that Windows gives back on demand.
+    pub standby_bytes: u64,
+    /// Modified list: pages that must be written to disk before they can be reused.
+    pub modified_bytes: u64,
+    /// Free and zeroed pages.
+    pub free_bytes: u64,
+}
+
+impl MemoryLists {
+    /// Builds the split from the three lists a system reports; `in_use` is the remainder.
+    #[must_use]
+    pub fn from_lists(
+        total_bytes: u64,
+        standby_bytes: u64,
+        modified_bytes: u64,
+        free_bytes: u64,
+    ) -> Self {
+        let listed = standby_bytes
+            .saturating_add(modified_bytes)
+            .saturating_add(free_bytes);
+        Self {
+            total_bytes,
+            in_use_bytes: total_bytes.saturating_sub(listed),
+            standby_bytes,
+            modified_bytes,
+            free_bytes,
+        }
+    }
+}
+
+/// Whether an area can be purged right now, without trying.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum Availability {
+    /// The purge can run.
+    Available,
+    /// The purge needs rights only an elevated (administrator) process has.
+    NeedsAdministrator,
+    /// This Windows build or adapter cannot do it.
+    Unsupported,
+}
+
+/// What a purge did, beyond "it worked". Only trimming working sets has counts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PurgeOutcome {
+    /// Processes whose working set was trimmed.
+    pub processes_trimmed: u32,
+    /// Processes that could not be opened (protected or owned by another user) and were left.
+    pub processes_skipped: u32,
+}
+
+/// Port: memory. Purging is not an undoable operation: it only releases reclaimable memory.
 pub trait Memory: Send + Sync {
     /// Current physical memory totals.
     fn status(&self) -> Result<MemoryStatus, PortError>;
 
-    /// Purges a memory area.
-    fn purge(&self, area: MemoryArea) -> Result<(), PortError>;
+    /// Physical memory by list. Reading changes nothing.
+    fn lists(&self) -> Result<MemoryLists, PortError>;
+
+    /// Whether `area` can be purged now. Reads only.
+    fn availability(&self, area: MemoryArea) -> Availability;
+
+    /// Purges a memory area. A missing privilege is [`PortError::AccessDenied`] and a call this
+    /// Windows build does not have is [`PortError::Unsupported`]; neither changes anything.
+    fn purge(&self, area: MemoryArea) -> Result<PurgeOutcome, PortError>;
 }
 
 /// The ports an operation may touch, bundled for the executor.

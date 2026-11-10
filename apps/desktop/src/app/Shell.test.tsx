@@ -165,6 +165,15 @@ it('shows the real Startup screen, and explains that it cannot load here', async
   expect(screen.queryByText('Coming soon')).toBeNull();
 });
 
+it('shows the real Memory screen, and explains that it cannot load here', async () => {
+  const user = userEvent.setup();
+  renderShell();
+  await user.click(screen.getByRole('button', { name: 'Memory' }));
+  expect(screen.getByRole('heading', { level: 1, name: 'Memory' })).toBeTruthy();
+  expect(await screen.findByText('Memory could not be read')).toBeTruthy();
+  expect(screen.queryByText('Coming soon')).toBeNull();
+});
+
 it('shows the activity history on the Undo screen instead of a placeholder', async () => {
   const user = userEvent.setup();
   renderShell();

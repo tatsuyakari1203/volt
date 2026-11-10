@@ -230,6 +230,8 @@ pub fn bindings_builder() -> Builder<tauri::Wry> {
             crate::commands::clean_selected_rules,
             crate::commands::recycle_bin_status,
             crate::commands::empty_recycle_bin,
+            crate::memory::memory_state,
+            crate::memory::clean_memory,
         ])
         .events(collect_events![
             AppReady,

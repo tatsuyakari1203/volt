@@ -107,3 +107,11 @@ fn committed_bindings_match_the_rust_definitions() {
         "apps/desktop/src/shared/ipc/bindings.ts is out of date: run `pnpm bindings`"
     );
 }
+
+#[test]
+fn generated_bindings_describe_the_memory_commands_and_their_report_types() {
+    let text = generated_bindings();
+    assert!(text.contains("memoryState"), "{text}");
+    assert!(text.contains("cleanMemory"), "{text}");
+    assert!(text.contains("MemoryCleanResult"), "{text}");
+}
