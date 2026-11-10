@@ -70,6 +70,10 @@ pub struct PlanItem {
 pub struct Plan {
     /// The items, applied in this order.
     pub items: Vec<PlanItem>,
+    /// Names the journal batch the plan is applied as (the tweak engine uses
+    /// the tweak id), so the batch can be found again after a restart.
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 impl Plan {
@@ -96,7 +100,14 @@ impl Plan {
                 evidence: request.evidence,
             });
         }
-        Ok(Self { items })
+        Ok(Self { items, label: None })
+    }
+
+    /// The same plan, applied as a journal batch carrying `label`.
+    #[must_use]
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
     }
 
     /// The plan's risk: the maximum over its items; `Safe` for an empty plan.

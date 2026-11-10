@@ -135,10 +135,87 @@ fn a_single_entry_and_a_whole_batch_can_be_reverted_after_a_restart() {
 }
 
 #[test]
+fn a_tweak_applied_in_one_run_is_found_and_reverted_by_a_new_engine_after_a_restart() {
+    use volt_core::{Catalogue, TweakEngine, TweakState};
+
+    const TWEAK: &str = r#"
+[[tweak]]
+id = "store-tweak"
+title = "Store tweak"
+description = "One registry value, one command."
+category = "privacy"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "Test."
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\VoltTest\Store'
+name = "Flag"
+value = { dword = 0 }
+
+[[tweak.steps]]
+kind = "command"
+detect = { program = "tool", args = ["--on"] }
+apply = { program = "tool", args = ["--enable"] }
+revert = { program = "tool", args = ["--disable"] }
+"#;
+
+    let dir = TempDir::new().expect("temp dir");
+    let path = db_path(&dir);
+    let system = FakeSystem::new();
+    system
+        .registry
+        .set(&value_ref("Flag"), RegistryValue::Dword(1));
+    let command = |arg: &str| volt_core::Command::new("tool", [arg]);
+    system.commands.add_toggle(
+        command("--on"),
+        command("--enable"),
+        command("--disable"),
+        false,
+    );
+    let catalogue = Arc::new(Catalogue::from_toml(TWEAK).expect("catalogue"));
+    let engine = |store: &Arc<Store>| {
+        TweakEngine::new(
+            catalogue.clone(),
+            system.ports(),
+            store.clone(),
+            system.clock.clone(),
+        )
+    };
+
+    // Run one: apply, then quit.
+    let store = open(&path);
+    let first = engine(&store);
+    assert_eq!(first.state("store-tweak"), Ok(TweakState::NotApplied));
+    first.apply("store-tweak", Source::Manual).expect("apply");
+    assert_eq!(first.state("store-tweak"), Ok(TweakState::Applied));
+    drop(first);
+    drop(store);
+
+    // Run two: the batch is found by its label in the database file.
+    let store = open(&path);
+    let second = engine(&store);
+    let report = second.revert("store-tweak").expect("revert");
+    assert!(report.is_complete());
+    assert_eq!(
+        store.batches_with_label("store-tweak").expect("labels"),
+        [report.batches[0].batch]
+    );
+    assert_eq!(second.state("store-tweak"), Ok(TweakState::NotApplied));
+    assert_eq!(
+        system.registry.get(&value_ref("Flag")),
+        Some(RegistryValue::Dword(1))
+    );
+    assert_eq!(system.commands.is_on(&command("--on")), Some(false));
+}
+
+#[test]
 fn entries_round_trip_exactly_including_absent_prior_values() {
     let dir = TempDir::new().expect("temp dir");
     let store = open(&db_path(&dir));
-    let batch = store.new_batch().expect("batch");
+    let batch = store.new_batch(None).expect("batch");
     let absent = store
         .record_pending(new_entry(
             batch,
@@ -185,7 +262,7 @@ fn entries_round_trip_exactly_including_absent_prior_values() {
     // Ids and batch ids keep growing across reopen.
     drop(store);
     let store = open(&db_path(&dir));
-    assert!(store.new_batch().expect("batch") > batch);
+    assert!(store.new_batch(None).expect("batch") > batch);
 }
 
 // ---- durability -----------------------------------------------------------------------------
@@ -208,7 +285,7 @@ fn record_pending_is_committed_to_disk_before_it_returns() {
         assert_eq!(mode, "wal");
     }
 
-    let batch = store.new_batch().expect("batch");
+    let batch = store.new_batch(None).expect("batch");
     let id = store
         .record_pending(new_entry(
             batch,
@@ -246,7 +323,7 @@ fn an_entry_left_pending_by_a_crash_is_reconciled_on_the_next_start() {
 
     // The process wrote both entries, changed only B, and then died.
     let store = open(&path);
-    let batch = store.new_batch().expect("batch");
+    let batch = store.new_batch(None).expect("batch");
     let never = store
         .record_pending(new_entry(
             batch,
@@ -298,10 +375,15 @@ fn an_entry_left_pending_by_a_crash_is_reconciled_on_the_next_start() {
 
 // ---- migrations -----------------------------------------------------------------------------
 
-const TEST_V2: Migration = Migration {
-    version: 2,
+/// A migration after the last real one, to prove upgrades keep data.
+const TEST_V3: Migration = Migration {
+    version: 3,
     sql: "ALTER TABLE journal_entries ADD COLUMN note TEXT;",
 };
+
+fn migrations_with_test_v3() -> [Migration; 3] {
+    [MIGRATIONS[0], MIGRATIONS[1], TEST_V3]
+}
 
 fn user_version(conn: &Connection) -> u32 {
     conn.pragma_query_value(None, "user_version", |row| row.get(0))
@@ -318,7 +400,7 @@ fn a_database_at_an_older_schema_version_is_upgraded_and_keeps_its_data() {
         store
             .set("theme", &serde_json::json!("dark"))
             .expect("setting");
-        let batch = store.new_batch().expect("batch");
+        let batch = store.new_batch(None).expect("batch");
         store
             .record_pending(new_entry(
                 batch,
@@ -329,9 +411,9 @@ fn a_database_at_an_older_schema_version_is_upgraded_and_keeps_its_data() {
     }
 
     let mut conn = Connection::open(&path).expect("open raw");
-    assert_eq!(user_version(&conn), 1);
-    migrate(&mut conn, &[MIGRATIONS[0], TEST_V2]).expect("upgrade");
     assert_eq!(user_version(&conn), 2);
+    migrate(&mut conn, &migrations_with_test_v3()).expect("upgrade");
+    assert_eq!(user_version(&conn), 3);
     let (rows, note): (i64, Option<String>) = conn
         .query_row("SELECT COUNT(*), MAX(note) FROM journal_entries", [], |r| {
             Ok((r.get(0)?, r.get(1)?))
@@ -346,8 +428,80 @@ fn a_database_at_an_older_schema_version_is_upgraded_and_keeps_its_data() {
     assert_eq!(theme, "\"dark\"");
 
     // Migrating again is a no-op.
-    migrate(&mut conn, &[MIGRATIONS[0], TEST_V2]).expect("idempotent");
-    assert_eq!(user_version(&conn), 2);
+    migrate(&mut conn, &migrations_with_test_v3()).expect("idempotent");
+    assert_eq!(user_version(&conn), 3);
+}
+
+#[test]
+fn a_version_1_database_is_upgraded_to_version_2_and_keeps_its_journal() {
+    let dir = TempDir::new().expect("temp dir");
+    let path = db_path(&dir);
+    let operation = set_dword("A", 1);
+    {
+        // A database exactly as the first release left it: schema version 1,
+        // a batch without a label, a journal entry and a setting.
+        let mut conn = Connection::open(&path).expect("open raw");
+        migrate(&mut conn, &MIGRATIONS[..1]).expect("v1 schema");
+        assert_eq!(user_version(&conn), 1);
+        assert!(
+            conn.prepare("SELECT label FROM batches").is_err(),
+            "version 1 has no label column"
+        );
+        conn.execute("INSERT INTO batches (created_ms) VALUES (5)", [])
+            .expect("old batch");
+        conn.execute(
+            "INSERT INTO journal_entries              (batch, timestamp_ms, source, state, operation, prior, error)              VALUES (1, 5, 'Manual', 'Applied', ?1, ?2, NULL)",
+            [
+                serde_json::to_string(&operation).expect("json"),
+                serde_json::to_string(&PriorState::RegistryValue(None)).expect("json"),
+            ],
+        )
+        .expect("old entry");
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('theme', '\"dark\"')",
+            [],
+        )
+        .expect("old setting");
+    }
+
+    // The next start of the app opens it and migrates it.
+    let store = open(&path);
+    assert_eq!(user_version(&store.conn()), 2);
+    let old = store.batch_entries(BatchId(1)).expect("old entries");
+    assert_eq!(old.len(), 1);
+    assert_eq!(old[0].operation, operation);
+    assert_eq!(old[0].state, EntryState::Applied);
+    assert_eq!(
+        store.get("theme").expect("setting"),
+        Some(serde_json::json!("dark"))
+    );
+    // The old batch has no label; new batches can be labelled and found.
+    assert_eq!(store.batches_with_label("any").expect("labels"), []);
+    let labelled = store.new_batch(Some("tweak-a")).expect("batch");
+    assert!(labelled > BatchId(1), "ids continue after the old batch");
+}
+
+#[test]
+fn batches_are_found_by_label_in_id_order_and_labels_survive_a_restart() {
+    let dir = TempDir::new().expect("temp dir");
+    let path = db_path(&dir);
+    let store = open(&path);
+    let first = store.new_batch(Some("tweak-a")).expect("batch");
+    let unlabelled = store.new_batch(None).expect("batch");
+    let other = store.new_batch(Some("tweak-b")).expect("batch");
+    let second = store.new_batch(Some("tweak-a")).expect("batch");
+    drop(store);
+
+    let store = open(&path);
+    assert_eq!(store.batches_with_label("tweak-a"), Ok(vec![first, second]));
+    assert_eq!(store.batches_with_label("tweak-b"), Ok(vec![other]));
+    assert_eq!(store.batches_with_label("tweak"), Ok(vec![]));
+    assert!(
+        !store
+            .batches_with_label("tweak-a")
+            .expect("ids")
+            .contains(&unlabelled)
+    );
 }
 
 #[test]
@@ -365,14 +519,14 @@ fn a_fresh_database_gets_the_current_schema_version() {
 #[test]
 fn a_failing_migration_rolls_back_and_keeps_the_old_version() {
     let mut conn = Connection::open_in_memory().expect("memory db");
-    migrate(&mut conn, MIGRATIONS).expect("v1");
+    migrate(&mut conn, MIGRATIONS).expect("current schema");
     let broken = Migration {
-        version: 2,
+        version: 3,
         sql: "ALTER TABLE journal_entries ADD COLUMN ok TEXT; ALTER TABLE nope ADD COLUMN x TEXT;",
     };
-    let result = migrate(&mut conn, &[MIGRATIONS[0], broken]);
+    let result = migrate(&mut conn, &[MIGRATIONS[0], MIGRATIONS[1], broken]);
     assert!(matches!(result, Err(MigrateError::Sql(_))));
-    assert_eq!(user_version(&conn), 1);
+    assert_eq!(user_version(&conn), 2);
     // The half-applied first statement was rolled back with the rest.
     assert!(
         conn.prepare("SELECT ok FROM journal_entries").is_err(),
@@ -395,7 +549,7 @@ fn a_database_from_a_newer_build_is_refused_and_left_alone() {
         error,
         StoreError::SchemaTooNew {
             found: 99,
-            supported: 1
+            supported: 2
         }
     );
     assert_eq!(fs::read(&path).expect("read"), before);
@@ -437,7 +591,7 @@ fn a_garbage_file_is_backed_up_and_replaced_and_the_caller_is_told() {
     // The store at the original path is a working, empty database.
     let store = outcome.store;
     assert_eq!(store.get("anything").expect("get"), None);
-    let batch = store.new_batch().expect("batch");
+    let batch = store.new_batch(None).expect("batch");
     store
         .record_pending(new_entry(
             batch,
@@ -456,7 +610,7 @@ fn a_database_with_damaged_pages_is_detected_by_the_integrity_check() {
     let path = db_path(&dir);
     {
         let store = open(&path);
-        let batch = store.new_batch().expect("batch");
+        let batch = store.new_batch(None).expect("batch");
         for i in 0..50 {
             store
                 .record_pending(new_entry(

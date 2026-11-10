@@ -8,16 +8,22 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ServiceStartType {
     /// Started by the boot loader (drivers).
+    #[serde(alias = "boot")]
     Boot,
     /// Started during kernel initialisation (drivers).
+    #[serde(alias = "system")]
     System,
     /// Started automatically at boot.
+    #[serde(alias = "automatic")]
     Automatic,
     /// Started automatically shortly after boot.
+    #[serde(alias = "automatic_delayed")]
     AutomaticDelayed,
     /// Started on demand.
+    #[serde(alias = "manual")]
     Manual,
     /// Cannot be started.
+    #[serde(alias = "disabled")]
     Disabled,
 }
 

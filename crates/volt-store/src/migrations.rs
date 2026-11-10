@@ -35,11 +35,25 @@ CREATE TABLE settings (
 );
 ";
 
+/// Batches can carry a label (the tweak engine stores the tweak id), so a
+/// tweak's batches can be found again after a restart. Existing batches stay
+/// unlabelled.
+const V2: &str = "
+ALTER TABLE batches ADD COLUMN label TEXT;
+CREATE INDEX batches_label ON batches (label);
+";
+
 /// Every migration this build knows, in order, with consecutive versions.
-pub(crate) const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    sql: V1,
-}];
+pub(crate) const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        sql: V1,
+    },
+    Migration {
+        version: 2,
+        sql: V2,
+    },
+];
 
 /// Why migrating failed.
 #[derive(Debug)]

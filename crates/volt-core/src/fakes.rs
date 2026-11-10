@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use crate::command::{Command, CommandOutput, Commands};
 use crate::error::PortError;
 use crate::executor::Executor;
 use crate::journal::{BatchId, EntryId, EntryState, Journal, JournalEntry, NewEntry};
@@ -45,6 +46,9 @@ pub enum Event {
     ProcessTerminated(u32),
     /// A memory area was purged.
     MemoryPurged(MemoryArea),
+    /// A command that changes something was run (detect commands are reads
+    /// and are not logged).
+    CommandRun(Command),
 }
 
 /// Shared, ordered record of the side effects of all fakes built with it.
@@ -381,9 +385,145 @@ impl Memory for FakeMemory {
 }
 
 #[derive(Debug, Default)]
+struct CommandsState {
+    toggles: Vec<Toggle>,
+    exit_codes: HashMap<Command, i32>,
+    leaks: HashMap<Command, i32>,
+    failures: HashMap<Command, PortError>,
+    ran: Vec<Command>,
+}
+
+/// A fake effect: `apply` turns it on, `revert` turns it off, `detect` exits
+/// `0` when it is on and `1` when it is off.
+#[derive(Debug)]
+struct Toggle {
+    detect: Command,
+    apply: Command,
+    revert: Command,
+    on: bool,
+}
+
+/// In-memory [`Commands`]. Nothing is executed: commands act on registered
+/// toggles, fixed exit codes or injected failures. A command that matches none
+/// of them is [`PortError::NotFound`], like a missing program.
+#[derive(Debug, Default)]
+pub struct FakeCommands {
+    state: Mutex<CommandsState>,
+    log: EventLog,
+}
+
+impl FakeCommands {
+    /// No commands known, own event log.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// No commands known, reporting to a shared event log.
+    #[must_use]
+    pub fn with_log(log: EventLog) -> Self {
+        Self {
+            log,
+            ..Self::default()
+        }
+    }
+
+    /// Registers a fake effect that `apply` turns on and `revert` turns off.
+    /// `detect` exits `0` while it is on and `1` while it is off.
+    pub fn add_toggle(&self, detect: Command, apply: Command, revert: Command, on: bool) {
+        lock(&self.state).toggles.push(Toggle {
+            detect,
+            apply,
+            revert,
+            on,
+        });
+    }
+
+    /// Whether the toggle whose detect command is `detect` is on.
+    #[must_use]
+    pub fn is_on(&self, detect: &Command) -> Option<bool> {
+        lock(&self.state)
+            .toggles
+            .iter()
+            .find(|t| t.detect == *detect)
+            .map(|t| t.on)
+    }
+
+    /// Switches a toggle directly, without logging: a change made outside
+    /// Volt. For arranging a test.
+    pub fn set_on(&self, detect: &Command, on: bool) {
+        if let Some(toggle) = lock(&self.state)
+            .toggles
+            .iter_mut()
+            .find(|t| t.detect == *detect)
+        {
+            toggle.on = on;
+        }
+    }
+
+    /// Makes `command` exit with `code` and do nothing else. Takes precedence
+    /// over toggles.
+    pub fn set_exit_code(&self, command: &Command, code: i32) {
+        lock(&self.state).exit_codes.insert(command.clone(), code);
+    }
+
+    /// Makes `command` do its effect and still exit with `code`: a program
+    /// that fails after it already changed something.
+    pub fn leak(&self, command: &Command, code: i32) {
+        lock(&self.state).leaks.insert(command.clone(), code);
+    }
+
+    /// Makes `command` fail with `error`, as if it could not be started.
+    pub fn fail_on(&self, command: &Command, error: PortError) {
+        lock(&self.state).failures.insert(command.clone(), error);
+    }
+
+    /// Every command run so far, detect commands included, in order.
+    #[must_use]
+    pub fn ran(&self) -> Vec<Command> {
+        lock(&self.state).ran.clone()
+    }
+}
+
+impl Commands for FakeCommands {
+    fn run(&self, command: &Command) -> Result<CommandOutput, PortError> {
+        let mut state = lock(&self.state);
+        state.ran.push(command.clone());
+        if let Some(error) = state.failures.get(command) {
+            return Err(error.clone());
+        }
+        let exit_code = if let Some(code) = state.exit_codes.get(command).copied() {
+            code
+        } else if let Some(toggle) = state.toggles.iter().find(|t| t.detect == *command) {
+            // Reading: not a side effect, so not in the event log.
+            return Ok(CommandOutput {
+                exit_code: i32::from(!toggle.on),
+                output: String::new(),
+            });
+        } else {
+            let leaked = state.leaks.get(command).copied();
+            if let Some(toggle) = state.toggles.iter_mut().find(|t| t.apply == *command) {
+                toggle.on = true;
+            } else if let Some(toggle) = state.toggles.iter_mut().find(|t| t.revert == *command) {
+                toggle.on = false;
+            } else {
+                return Err(PortError::NotFound(format!("program {}", command.program)));
+            }
+            leaked.unwrap_or(0)
+        };
+        self.log.push(Event::CommandRun(command.clone()));
+        Ok(CommandOutput {
+            exit_code,
+            output: String::new(),
+        })
+    }
+}
+
+#[derive(Debug, Default)]
 struct JournalState {
     next_entry: u64,
     next_batch: u64,
+    batches: Vec<(BatchId, Option<String>)>,
     entries: Vec<JournalEntry>,
     fail_record: Option<PortError>,
     fail_set_state: Vec<(EntryState, PortError)>,
@@ -430,10 +570,21 @@ impl FakeJournal {
 }
 
 impl Journal for FakeJournal {
-    fn new_batch(&self) -> Result<BatchId, PortError> {
+    fn new_batch(&self, label: Option<&str>) -> Result<BatchId, PortError> {
         let mut state = lock(&self.state);
         state.next_batch += 1;
-        Ok(BatchId(state.next_batch))
+        let batch = BatchId(state.next_batch);
+        state.batches.push((batch, label.map(str::to_owned)));
+        Ok(batch)
+    }
+
+    fn batches_with_label(&self, label: &str) -> Result<Vec<BatchId>, PortError> {
+        Ok(lock(&self.state)
+            .batches
+            .iter()
+            .filter(|(_, l)| l.as_deref() == Some(label))
+            .map(|(id, _)| *id)
+            .collect())
     }
 
     fn record_pending(&self, entry: NewEntry) -> Result<EntryId, PortError> {
@@ -569,6 +720,8 @@ pub struct FakeSystem {
     pub processes: Arc<FakeProcesses>,
     /// Memory fake.
     pub memory: Arc<FakeMemory>,
+    /// Commands fake.
+    pub commands: Arc<FakeCommands>,
     /// Journal fake.
     pub journal: Arc<FakeJournal>,
     /// Clock fake, starting at 1000 ms.
@@ -588,6 +741,7 @@ impl FakeSystem {
             services: Arc::new(FakeServices::with_log(log.clone())),
             processes: Arc::new(FakeProcesses::with_log(log.clone())),
             memory: Arc::new(FakeMemory::with_log(log.clone())),
+            commands: Arc::new(FakeCommands::with_log(log.clone())),
             journal: Arc::new(FakeJournal::with_log(log.clone())),
             clock: Arc::new(ManualClock::new(1000)),
             log,
@@ -603,6 +757,7 @@ impl FakeSystem {
             services: self.services.clone(),
             processes: self.processes.clone(),
             memory: self.memory.clone(),
+            commands: self.commands.clone(),
         }
     }
 
@@ -731,10 +886,13 @@ mod tests {
     fn journal_assigns_increasing_ids_and_filters_by_batch() {
         let journal = FakeJournal::new();
         let (b1, b2) = (
-            journal.new_batch().expect("batch"),
-            journal.new_batch().expect("batch"),
+            journal.new_batch(None).expect("batch"),
+            journal.new_batch(Some("tweak-a")).expect("batch"),
         );
         assert_ne!(b1, b2);
+        let b3 = journal.new_batch(Some("tweak-a")).expect("batch");
+        assert_eq!(journal.batches_with_label("tweak-a"), Ok(vec![b2, b3]));
+        assert_eq!(journal.batches_with_label("other"), Ok(vec![]));
         let new_entry = |batch| NewEntry {
             batch,
             timestamp: Timestamp::from_unix_millis(1),

@@ -22,6 +22,10 @@
 //! the entry applied. Reverting restores the recorded prior state exactly,
 //! including "the value did not exist".
 //!
+//! On top of that, a [`Tweak`] is data (loaded from a TOML [`Catalogue`]) and
+//! the [`TweakEngine`] reads its state, previews, applies and reverts it
+//! through the executor.
+//!
 //! # Fakes
 //!
 //! In-memory fakes of every port live in the `fakes` module, compiled for this
@@ -29,6 +33,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod command;
 pub mod error;
 pub mod executor;
 pub mod journal;
@@ -40,10 +45,12 @@ pub mod registry;
 pub mod service;
 pub mod settings;
 pub mod time;
+pub mod tweak;
 
 #[cfg(any(test, feature = "fakes"))]
 pub mod fakes;
 
+pub use command::{Command, CommandOutput, Commands};
 pub use error::{ExecError, PlanError, PortError, RevertError};
 pub use executor::{
     ApplyReport, Executor, ItemOutcome, ItemStatus, ReconcileOutcome, ReconcileReport, Resolution,
@@ -60,3 +67,8 @@ pub use registry::{Registry, RegistryHive, RegistryValue, RegistryValueRef, Regi
 pub use service::ServiceStartType;
 pub use settings::{Settings, SettingsExt};
 pub use time::{Clock, SystemClock, Timestamp};
+pub use tweak::{
+    ApplyOutcome, BatchRevert, Catalogue, CatalogueError, CatalogueIssue, Category, IssueKind,
+    RestartRequirement, Tweak, TweakApplyReport, TweakEngine, TweakError, TweakRevertReport,
+    TweakState, TweakStep,
+};

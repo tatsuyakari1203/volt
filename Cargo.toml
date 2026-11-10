@@ -20,6 +20,8 @@ thiserror = "2"
 # Windows API bindings. Only volt-win may use it (scripts/check-arch.mjs); features are listed there.
 windows = "0.62"
 serde_json = "1"
+# Tweak catalogue files. Parse-only: the core reads TOML text, it never writes TOML.
+toml = { version = "1.2", default-features = false, features = ["std", "serde", "parse"] }
 # SQLite is compiled in (`bundled`): no system library is needed.
 rusqlite = { version = "0.41", features = ["bundled"] }
 # Dev-only: temp directories for persistence tests.

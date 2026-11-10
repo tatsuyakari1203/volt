@@ -84,12 +84,28 @@ fn decode_unit<T: DeserializeOwned>(name: &str) -> Result<T, PortError> {
 }
 
 impl Journal for Store {
-    fn new_batch(&self) -> Result<BatchId, PortError> {
+    fn new_batch(&self, label: Option<&str>) -> Result<BatchId, PortError> {
         let now = self.clock.now().as_unix_millis();
         let conn = self.conn();
-        conn.execute("INSERT INTO batches (created_ms) VALUES (?1)", [now])
-            .map_err(|e| db_error(&e))?;
+        conn.execute(
+            "INSERT INTO batches (created_ms, label) VALUES (?1, ?2)",
+            params![now, label],
+        )
+        .map_err(|e| db_error(&e))?;
         Ok(BatchId(to_u64(conn.last_insert_rowid())?))
+    }
+
+    fn batches_with_label(&self, label: &str) -> Result<Vec<BatchId>, PortError> {
+        let conn = self.conn();
+        let mut statement = conn
+            .prepare("SELECT id FROM batches WHERE label = ?1 ORDER BY id")
+            .map_err(|e| db_error(&e))?;
+        let ids = statement
+            .query_map([label], |row| row.get::<_, i64>(0))
+            .map_err(|e| db_error(&e))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| db_error(&e))?;
+        ids.into_iter().map(|id| Ok(BatchId(to_u64(id)?))).collect()
     }
 
     fn record_pending(&self, entry: NewEntry) -> Result<EntryId, PortError> {

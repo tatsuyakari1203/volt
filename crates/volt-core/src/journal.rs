@@ -92,8 +92,13 @@ pub struct JournalEntry {
 
 /// Port: the persistent undo journal.
 pub trait Journal: Send + Sync {
-    /// Allocates a new batch id.
-    fn new_batch(&self) -> Result<BatchId, PortError>;
+    /// Allocates a new batch id. A `label` (the tweak engine passes the tweak
+    /// id) is stored with the batch and makes it findable again with
+    /// [`Journal::batches_with_label`], also after a restart.
+    fn new_batch(&self, label: Option<&str>) -> Result<BatchId, PortError>;
+
+    /// Batches created with exactly this `label`, ordered by ascending id.
+    fn batches_with_label(&self, label: &str) -> Result<Vec<BatchId>, PortError>;
 
     /// Stores a new entry in state [`EntryState::Pending`] and returns its id.
     ///

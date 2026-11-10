@@ -10,14 +10,19 @@ use crate::error::PortError;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RegistryHive {
     /// `HKEY_CLASSES_ROOT`
+    #[serde(alias = "HKCR", alias = "classes_root")]
     ClassesRoot,
     /// `HKEY_CURRENT_USER`
+    #[serde(alias = "HKCU", alias = "current_user")]
     CurrentUser,
     /// `HKEY_LOCAL_MACHINE`
+    #[serde(alias = "HKLM", alias = "local_machine")]
     LocalMachine,
     /// `HKEY_USERS`
+    #[serde(alias = "HKU", alias = "users")]
     Users,
     /// `HKEY_CURRENT_CONFIG`
+    #[serde(alias = "HKCC", alias = "current_config")]
     CurrentConfig,
 }
 
@@ -40,10 +45,13 @@ impl RegistryHive {
 pub enum RegistryView {
     /// The view native to the calling process.
     #[default]
+    #[serde(alias = "native")]
     Native,
     /// The 32-bit view.
+    #[serde(alias = "bit32")]
     Bit32,
     /// The 64-bit view.
+    #[serde(alias = "bit64")]
     Bit64,
 }
 
@@ -51,16 +59,22 @@ pub enum RegistryView {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RegistryValue {
     /// `REG_DWORD`
+    #[serde(alias = "dword")]
     Dword(u32),
     /// `REG_QWORD`
+    #[serde(alias = "qword")]
     Qword(u64),
     /// `REG_SZ`
+    #[serde(alias = "sz")]
     Sz(String),
     /// `REG_EXPAND_SZ`: a string with unexpanded `%VAR%` references.
+    #[serde(alias = "expand_sz")]
     ExpandSz(String),
     /// `REG_MULTI_SZ`
+    #[serde(alias = "multi_sz")]
     MultiSz(Vec<String>),
     /// `REG_BINARY`
+    #[serde(alias = "binary")]
     Binary(Vec<u8>),
 }
 

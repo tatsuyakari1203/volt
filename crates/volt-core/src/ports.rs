@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::command::Commands;
 use crate::error::PortError;
 use crate::registry::Registry;
 use crate::service::ServiceStartType;
@@ -115,6 +116,8 @@ pub struct Ports {
     pub processes: Arc<dyn Processes>,
     /// Memory port.
     pub memory: Arc<dyn Memory>,
+    /// External commands port.
+    pub commands: Arc<dyn Commands>,
 }
 
 impl fmt::Debug for Ports {
