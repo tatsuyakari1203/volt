@@ -14,15 +14,17 @@
 
 use std::ffi::c_void;
 
-use windows::Win32::Foundation::{FILETIME, HANDLE, HLOCAL, LocalFree};
+use windows::Win32::Foundation::{FILETIME, HANDLE, HLOCAL, LocalFree, WAIT_OBJECT_0};
 use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows::Win32::Security::{
     GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, PSID, TOKEN_MANDATORY_LABEL,
-    TOKEN_QUERY, TOKEN_USER, TokenIntegrityLevel, TokenSessionId, TokenUser,
+    TOKEN_QUERY, TOKEN_USER, TokenElevation, TokenElevationType, TokenIntegrityLevel,
+    TokenSessionId, TokenUser,
 };
 use windows::Win32::System::Threading::{
-    GetCurrentProcessId, GetProcessId, GetProcessTimes, OpenProcess, OpenProcessToken,
-    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+    GetCurrentProcess, GetCurrentProcessId, GetProcessId, GetProcessTimes, OpenProcess,
+    OpenProcessToken, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    QueryFullProcessImageNameW, WaitForSingleObject,
 };
 use windows::core::PWSTR;
 
@@ -127,6 +129,58 @@ pub fn admit(client: &TokenFacts, own: &TokenFacts) -> Result<(), ClientRefusal>
     Ok(())
 }
 
+/// What the process's own token says about elevation, which decides what asking for it would do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenKind {
+    /// Already elevated: an administrator with UAC off, the built-in Administrator, or a process
+    /// started as administrator. Elevating again shows no prompt.
+    Elevated,
+    /// The filtered token of an administrator: elevating shows a consent prompt (no credentials).
+    Limited,
+    /// Neither: a standard user, for whom elevating asks for an administrator's credentials.
+    Standard,
+}
+
+/// `TokenElevationTypeLimited`.
+const ELEVATION_TYPE_LIMITED: u32 = 3;
+
+/// Classifies a token from `TokenIsElevated` and `TokenElevationType`.
+#[must_use]
+pub fn classify_token(is_elevated: bool, elevation_type: u32) -> TokenKind {
+    if is_elevated {
+        TokenKind::Elevated
+    } else if elevation_type == ELEVATION_TYPE_LIMITED {
+        TokenKind::Limited
+    } else {
+        TokenKind::Standard
+    }
+}
+
+/// The first `u32` a token information class wrote.
+fn first_u32(buffer: &[u64]) -> u32 {
+    buffer.first().map_or(0, |word| {
+        // The class writes one u32: the low half of the first word on a little-endian machine.
+        u32::try_from(word & u64::from(u32::MAX)).unwrap_or(0)
+    })
+}
+
+/// The elevation facts of this process's own token.
+///
+/// # Errors
+/// A message when the token cannot be read.
+pub fn current_token_kind() -> Result<TokenKind, String> {
+    let mut token = HANDLE::default();
+    // SAFETY: the pseudo handle of the current process is always valid; the out pointer is valid
+    // and the token is closed on drop below.
+    unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut token) }
+        .map_err(|e| failed("OpenProcessToken", &e))?;
+    let token = OwnedHandle(token);
+    // TOKEN_ELEVATION is one u32 (TokenIsElevated); TOKEN_ELEVATION_TYPE is one enum of u32 size.
+    let elevated = first_u32(&token_info(token.raw(), TokenElevation)?) != 0;
+    let elevation_type = first_u32(&token_info(token.raw(), TokenElevationType)?);
+    Ok(classify_token(elevated, elevation_type))
+}
+
 /// Reads one token information class into an 8-byte aligned buffer.
 fn token_info(
     token: HANDLE,
@@ -179,10 +233,7 @@ fn token_facts(token: HANDLE) -> Result<TokenFacts, String> {
     let user_sid = sid_to_string(unsafe { (*user_buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid })?;
 
     let session_buffer = token_info(token, TokenSessionId)?;
-    let session_id = session_buffer.first().map_or(0, |word| {
-        // The class writes one u32: the low half of the first word on a little-endian machine.
-        u32::try_from(word & u64::from(u32::MAX)).unwrap_or(0)
-    });
+    let session_id = first_u32(&session_buffer);
 
     let label_buffer = token_info(token, TokenIntegrityLevel)?;
     // SAFETY: the buffer holds a TOKEN_MANDATORY_LABEL written by GetTokenInformation, 8-byte
@@ -295,6 +346,19 @@ impl ProcessHandle {
     /// A message when the process cannot be opened.
     pub fn open(pid: u32) -> Result<Self, String> {
         open_limited(pid).map(Self)
+    }
+
+    /// Wraps the process handle a launch call returned. `None` for a null or invalid handle.
+    pub(crate) fn from_launch(handle: HANDLE) -> Option<Self> {
+        (!handle.is_invalid() && !handle.0.is_null()).then(|| Self(OwnedHandle(handle)))
+    }
+
+    /// Whether the process has exited. A handle that cannot be waited on (it lacks the
+    /// synchronise right) reports `false`: the caller then relies on the pipe to notice.
+    #[must_use]
+    pub fn has_exited(&self) -> bool {
+        // SAFETY: a valid process handle; a zero timeout only polls.
+        unsafe { WaitForSingleObject(self.0.raw(), 0) == WAIT_OBJECT_0 }
     }
 
     /// The id of the process this handle refers to.
@@ -457,8 +521,25 @@ mod tests {
     }
 
     #[test]
+    fn a_token_is_classified_by_elevation_and_type() {
+        assert_eq!(classify_token(true, 2), TokenKind::Elevated);
+        // UAC off: elevated with the default type.
+        assert_eq!(classify_token(true, 1), TokenKind::Elevated);
+        assert_eq!(classify_token(false, 3), TokenKind::Limited);
+        assert_eq!(classify_token(false, 1), TokenKind::Standard);
+        assert_eq!(classify_token(false, 0), TokenKind::Standard);
+    }
+
+    #[test]
+    fn this_process_token_can_be_classified() {
+        assert!(current_token_kind().is_ok());
+    }
+
+    #[test]
     fn a_process_handle_reports_its_process() {
         let handle = ProcessHandle::open(std::process::id()).expect("open");
         assert_eq!(handle.pid(), Ok(std::process::id()));
+        // This process is running.
+        assert!(!handle.has_exited());
     }
 }

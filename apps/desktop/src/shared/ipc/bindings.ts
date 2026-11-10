@@ -431,6 +431,31 @@ async cleanMemory(areas: MemoryAreaView[]) : Promise<Result<MemoryCleanResult, I
 }
 },
 /**
+ * Tauri command: whether administrator actions can be used now, and if not, why. Reads only; it
+ * never starts the helper and never shows a prompt.
+ */
+async elevationStatus() : Promise<Result<ElevationStatusView, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("elevation_status") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: runs the selected memory operations as administrator through the helper. The
+ * first call of a session shows one administrator prompt; cancelling it resolves with `declined`.
+ * This cannot be undone, so it is recorded in the activity log but not in the undo journal.
+ */
+async cleanMemoryElevated(areas: MemoryAreaView[]) : Promise<Result<ElevatedCleanResult, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("clean_memory_elevated", { areas }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Tauri command: the process list grouped by app with memory and CPU. Reads the system only.
  */
 async listProcesses() : Promise<Result<ProcessListView, IpcError>> {
@@ -1046,6 +1071,54 @@ freeBytes: number;
  * Used space as a share of the capacity, 0 to 100.
  */
 usedPercent: number }
+/**
+ * What an elevated purge did.
+ */
+export type ElevatedCleanResult = 
+/**
+ * The helper ran the purges.
+ */
+{ outcome: "done"; report: MemoryCleanResult } | 
+/**
+ * The user cancelled the administrator prompt. Nothing was changed and nothing was recorded.
+ */
+{ outcome: "declined" }
+/**
+ * Why administrator actions cannot be used. The UI words each one itself.
+ */
+export type ElevationReasonView = 
+/**
+ * Volt is not installed for all users (a per-user, portable or development copy).
+ */
+"notAllUsers" | 
+/**
+ * The helper is missing from the install folder.
+ */
+"helperMissing" | 
+/**
+ * The install folder can be changed by other programs, or could not be checked.
+ */
+"installNotProtected" | 
+/**
+ * A standard user: an administrator has to approve.
+ */
+"standardUser" | 
+/**
+ * Anything else.
+ */
+"unknown"
+/**
+ * Whether administrator actions can be used now.
+ */
+export type ElevationStatusView = 
+/**
+ * A shield action may start the helper (one administrator prompt per session).
+ */
+{ state: "available" } | 
+/**
+ * They cannot be used.
+ */
+{ state: "unavailable"; reason: ElevationReasonView; detail: string }
 /**
  * What emptying the Recycle Bin did.
  */

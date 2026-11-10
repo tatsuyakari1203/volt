@@ -4,17 +4,23 @@
 //! use ([`pipe`]), facts about processes and tokens and the decision whether a client may be served
 //! ([`identity`]), the check that the install folder cannot be tampered with by a non-administrator
 //! ([`install`]), the hardening the helper applies to itself at start ([`harden`]) and the strict
-//! command line ([`args`]). The helper binary (`volt-helper`) composes them; the UI side (part of a
-//! later task) uses the client half of the pipe and the install check.
+//! command line ([`args`]). The helper binary (`volt-helper`) composes them; the UI side (see
+//! below) uses the client half of the pipe and the install check.
 //!
-//! Nothing in this module starts a process, asks for elevation or changes the system outside the
-//! calling process.
+//! The UI's half of the helper lives in [`launch`] (can the helper be started, and the one call
+//! that starts it through the administrator prompt) and [`elevator`] (the session: authenticate the
+//! server, agree on the version, send requests).
+//!
+//! Only [`launch`] can start a process or show a prompt, and only when the UI asks it to; nothing
+//! else in this module does, and tests replace the launch call.
 
 pub mod acl;
 pub mod args;
+pub mod elevator;
 pub mod harden;
 pub mod identity;
 pub mod install;
+pub mod launch;
 pub mod pipe;
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE};

@@ -100,10 +100,10 @@ pub use clean::{
 };
 pub use command::{Command, CommandOutput, Commands, MAX_TIMEOUT_SECS};
 pub use elevation::{
-    AreaResult, AreaStatus, CatalogueHashes, ElevationError, Elevator, ErrorCode, HelloReply,
-    MAX_REPLY_BYTES, MAX_REQUEST_BYTES, MemoryPurgeReply, PROTOCOL_VERSION, Reply, ReplyBody,
-    Request, RequestEnvelope, RequestSequencer, catalogue_hash, decode_reply, decode_request,
-    encode_reply, encode_request,
+    AreaResult, AreaStatus, CatalogueHashes, ElevationError, ElevationStatus, Elevator, ErrorCode,
+    HelloReply, MAX_REPLY_BYTES, MAX_REQUEST_BYTES, MemoryPurgeReply, PROTOCOL_VERSION, Reply,
+    ReplyBody, Request, RequestEnvelope, RequestSequencer, UnavailableReason, catalogue_hash,
+    decode_reply, decode_request, encode_reply, encode_request,
 };
 pub use error::{ExecError, PlanError, PortError, RevertError};
 pub use executor::{

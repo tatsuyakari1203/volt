@@ -58,6 +58,16 @@ mod tests {
 /// [`InitError`](crate::wiring::InitError), never a panic.
 pub const EMBEDDED_CLEANING_RULES: &str = include_str!("../../../../catalogue/cleaning.toml");
 
+/// The fingerprints of the two embedded catalogues. The elevated helper is built from the same
+/// files and reports its own in `hello`; the UI refuses a helper whose hashes differ.
+#[must_use]
+pub fn embedded_hashes() -> volt_core::CatalogueHashes {
+    volt_core::CatalogueHashes {
+        tweaks: volt_core::catalogue_hash(EMBEDDED_CATALOGUE),
+        cleaning: volt_core::catalogue_hash(EMBEDDED_CLEANING_RULES),
+    }
+}
+
 #[cfg(test)]
 mod cleaning_tests {
     use volt_core::{CleaningRules, Location, Risk};

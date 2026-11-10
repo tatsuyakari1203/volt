@@ -7,6 +7,7 @@ pub mod boost;
 pub mod catalogue;
 pub mod cleaner;
 mod commands;
+pub mod elevation;
 pub mod health;
 mod ipc;
 pub mod language;
@@ -24,8 +25,8 @@ pub mod wiring;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri::Manager as _;
-use tauri::WindowEvent;
 use tauri::webview::PageLoadEvent;
+use tauri::{RunEvent, WindowEvent};
 use tauri_specta::Event as _;
 
 pub use boost::BoostFinished;
@@ -116,7 +117,13 @@ pub fn run() {
         })
         .build(tauri::generate_context!());
     match built {
-        Ok(app) => app.run(window::keep_running),
+        Ok(app) => app.run(|handle, event| {
+            // The administrator session (if one is open) ends with the app: bye, then close.
+            if matches!(event, RunEvent::Exit) {
+                elevation::end_session(handle);
+            }
+            window::keep_running(handle, event);
+        }),
         Err(error) => {
             eprintln!("Volt failed to start: {error}");
             std::process::exit(1);

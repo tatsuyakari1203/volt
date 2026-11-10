@@ -253,6 +253,8 @@ pub fn bindings_builder() -> Builder<tauri::Wry> {
             crate::large_files::pick_scan_folder,
             crate::memory::memory_state,
             crate::memory::clean_memory,
+            crate::elevation::elevation_status,
+            crate::elevation::clean_memory_elevated,
             crate::processes::list_processes,
             crate::processes::end_app,
             crate::boost::boost,

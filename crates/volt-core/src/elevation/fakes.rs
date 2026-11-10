@@ -3,8 +3,8 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use super::{
-    CatalogueHashes, ElevationError, Elevator, ErrorCode, HelloReply, MemoryPurgeReply,
-    PROTOCOL_VERSION,
+    CatalogueHashes, ElevationError, ElevationStatus, Elevator, ErrorCode, HelloReply,
+    MemoryPurgeReply, PROTOCOL_VERSION, UnavailableReason,
 };
 use crate::journal::Source;
 use crate::memory::MemoryCleaner;
@@ -22,13 +22,15 @@ enum Behaviour {
     Grant,
     /// The user declines the prompt.
     Decline,
-    /// Administrator features are unavailable, with this reason.
-    Unavailable(String),
+    /// Administrator features are unavailable, for this reason.
+    Unavailable(UnavailableReason),
 }
 
 /// A call the fake received.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ElevatorCall {
+    /// `status`.
+    Status,
     /// `hello`.
     Hello,
     /// `memory_purge` with these areas.
@@ -92,10 +94,21 @@ impl FakeElevator {
         Self::with(memory, Behaviour::Decline)
     }
 
-    /// An elevator that is unavailable for `reason`.
+    /// An elevator that is unavailable for `reason`, given in words.
     #[must_use]
     pub fn unavailable(memory: Arc<dyn Memory>, reason: &str) -> Self {
-        Self::with(memory, Behaviour::Unavailable(reason.to_owned()))
+        Self::unavailable_because(
+            memory,
+            UnavailableReason::Unknown {
+                detail: reason.to_owned(),
+            },
+        )
+    }
+
+    /// An elevator that is unavailable for a typed `reason`.
+    #[must_use]
+    pub fn unavailable_because(memory: Arc<dyn Memory>, reason: UnavailableReason) -> Self {
+        Self::with(memory, Behaviour::Unavailable(reason))
     }
 
     /// Sets the catalogue hashes `hello` reports.
@@ -141,12 +154,23 @@ impl FakeElevator {
                 state.prompts += 1;
                 Err(ElevationError::Declined)
             }
-            Behaviour::Unavailable(reason) => Err(ElevationError::Unavailable(reason.clone())),
+            Behaviour::Unavailable(reason) => Err(ElevationError::Unavailable(reason.to_string())),
         }
     }
 }
 
 impl Elevator for FakeElevator {
+    fn status(&self) -> ElevationStatus {
+        let mut state = lock(&self.state);
+        state.calls.push(ElevatorCall::Status);
+        match &state.behaviour {
+            Behaviour::Unavailable(reason) => ElevationStatus::Unavailable {
+                reason: reason.clone(),
+            },
+            Behaviour::Grant | Behaviour::Decline => ElevationStatus::Available,
+        }
+    }
+
     fn hello(&self) -> Result<HelloReply, ElevationError> {
         let mut state = lock(&self.state);
         state.calls.push(ElevatorCall::Hello);

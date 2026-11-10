@@ -124,8 +124,16 @@ impl MemoryCleaner {
             areas,
             activity_write_failed: false,
         };
-        report.activity_write_failed = !self.record(&report, source);
+        report.activity_write_failed = !self.record(&report, source, false);
         report
+    }
+
+    /// Writes the activity record of a run that was carried out elsewhere: the elevated helper
+    /// ran the purges, this process keeps the history. Returns whether it was written (or there is
+    /// no log). The record names the administrator, so the history shows where the run happened.
+    #[must_use]
+    pub fn record_elevated_run(&self, report: &MemoryCleanReport, source: Source) -> bool {
+        self.record(report, source, true)
     }
 
     fn read_lists(&self, when: &str) -> Option<MemoryLists> {
@@ -142,7 +150,7 @@ impl MemoryCleaner {
     }
 
     /// Writes the activity record. Returns whether it was written (or there is no log).
-    fn record(&self, report: &MemoryCleanReport, source: Source) -> bool {
+    fn record(&self, report: &MemoryCleanReport, source: Source, elevated: bool) -> bool {
         let Some(log) = &self.activity else {
             return true;
         };
@@ -154,7 +162,7 @@ impl MemoryCleaner {
             } else {
                 ActivityOutcome::Failed
             },
-            summary: summary(report),
+            summary: summary(report, elevated),
             batch: None,
             entry: None,
             label: Some(MEMORY_LABEL.to_owned()),
@@ -174,7 +182,7 @@ impl MemoryCleaner {
 
 /// One line for the activity log: what ran, what failed (the error class only, never a port
 /// message) and the change in free memory. It says the run cannot be undone.
-fn summary(report: &MemoryCleanReport) -> String {
+fn summary(report: &MemoryCleanReport, elevated: bool) -> String {
     let mut done = Vec::new();
     let mut failed = Vec::new();
     for entry in &report.areas {
@@ -188,7 +196,11 @@ fn summary(report: &MemoryCleanReport) -> String {
             Err(error) => failed.push(format!("{} ({})", entry.area.name(), error_class(error))),
         }
     }
-    let head = "Cleaned memory (cannot be undone)";
+    let head = if elevated {
+        "Cleaned memory as administrator (cannot be undone)"
+    } else {
+        "Cleaned memory (cannot be undone)"
+    };
     // "Cleaned memory (cannot be undone): a, b; could not clean c; free memory ..."
     let mut parts = vec![if done.is_empty() {
         head.to_owned()
@@ -388,5 +400,32 @@ mod tests {
         assert_eq!(lists.in_use_bytes, 8 * GIB);
         // A source that reports more than the total never underflows.
         assert_eq!(MemoryLists::from_lists(10, 8, 8, 8).in_use_bytes, 0);
+    }
+}
+
+#[cfg(test)]
+mod elevated_record_tests {
+    use super::*;
+    use crate::fakes::{FakeActivityLog, FakeMemory, ManualClock};
+
+    #[test]
+    fn an_elevated_run_is_recorded_as_one_non_undoable_record_naming_the_administrator() {
+        let memory = Arc::new(FakeMemory::new());
+        let log = Arc::new(FakeActivityLog::new());
+        let cleaner = MemoryCleaner::new(memory.clone(), Arc::new(ManualClock::new(5)))
+            .with_activity_log(log.clone());
+        // The run was carried out by the helper: the cleaner here only keeps the history.
+        let report = MemoryCleaner::new(memory.clone(), Arc::new(ManualClock::new(5)))
+            .run(&[MemoryArea::StandbyList], Source::Manual);
+        assert!(cleaner.record_elevated_run(&report, Source::Manual));
+        let records = log.records();
+        assert_eq!(records.len(), 1);
+        assert!(
+            records[0]
+                .summary
+                .starts_with("Cleaned memory as administrator (cannot be undone)")
+        );
+        assert!(records[0].summary.contains("standby 4.0 GB to 0 B"));
+        assert_eq!((records[0].batch, records[0].entry), (None, None));
     }
 }
