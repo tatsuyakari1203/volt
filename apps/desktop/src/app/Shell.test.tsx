@@ -22,6 +22,7 @@ vi.mock('../shared/ipc', async (importOriginal) => ({
   getHealthReport: () => Promise.reject(new Error('no tauri bridge')),
   getLatestMetrics: () => Promise.reject(new Error('no tauri bridge')),
   onMetricsUpdated: () => Promise.reject(new Error('no tauri bridge')),
+  listStartupEntries: () => Promise.reject(new Error('no tauri bridge')),
   getAutostartEnabled: () => Promise.reject(new Error('no tauri bridge')),
   setAutostartEnabled: () => Promise.reject(new Error('no tauri bridge')),
   onTrayBoostRequested: (handler: () => void) => {
@@ -50,6 +51,7 @@ it('lists every section in the primary navigation, with Home current', () => {
     'Clean',
     'Memory',
     'Tweaks',
+    'Startup',
     'Apps and Startup',
     'Health',
     'Settings',
@@ -152,6 +154,15 @@ it('shows the real Tweaks screen without the sample marker, and explains that it
   await user.click(screen.getByRole('button', { name: 'Tweaks' }));
   expect(await screen.findByText('Tweaks could not be loaded')).toBeTruthy();
   expect(screen.queryByText('Sample data')).toBeNull();
+});
+
+it('shows the real Startup screen, and explains that it cannot load here', async () => {
+  const user = userEvent.setup();
+  renderShell();
+  await user.click(screen.getByRole('button', { name: 'Startup' }));
+  expect(screen.getByRole('heading', { level: 1, name: 'Startup' })).toBeTruthy();
+  expect(await screen.findByText('Startup entries could not be loaded')).toBeTruthy();
+  expect(screen.queryByText('Coming soon')).toBeNull();
 });
 
 it('shows the activity history on the Undo screen instead of a placeholder', async () => {

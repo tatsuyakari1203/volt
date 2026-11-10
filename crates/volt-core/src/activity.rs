@@ -30,6 +30,7 @@ use crate::error::{ExecError, PortError, RevertError};
 use crate::journal::{BatchId, EntryId, Source};
 use crate::operation::{Operation, PriorState};
 use crate::registry::RegistryValue;
+use crate::startup::{StartupState, approved_entry_name, decode_approval};
 use crate::time::Timestamp;
 
 /// Identifier of an activity record, assigned by the activity log. Ids
@@ -240,7 +241,10 @@ pub fn error_class(error: &PortError) -> &'static str {
 pub fn subject(operation: &Operation) -> String {
     match operation {
         Operation::SetRegistryValue { target, .. } | Operation::DeleteRegistryValue { target } => {
-            format!("registry value {target}")
+            match approved_entry_name(target) {
+                Some(name) => format!("startup entry {name}"),
+                None => format!("registry value {target}"),
+            }
         }
         Operation::SetServiceStartType { service, .. } => {
             format!("service {service} start type")
@@ -252,6 +256,9 @@ pub fn subject(operation: &Operation) -> String {
 /// `Applied <subject> = <redacted new value>`.
 pub(crate) fn applied_summary(operation: &Operation) -> String {
     let subject = subject(operation);
+    if let Some(summary) = startup_applied_summary(operation) {
+        return summary;
+    }
     match operation {
         Operation::SetRegistryValue { value, .. } => {
             format!("Applied {subject} = {}", redacted_value(value))
@@ -271,15 +278,97 @@ pub(crate) fn restored_summary(
     prior: &PriorState,
     journal_note: bool,
 ) -> String {
-    let mut summary = format!(
-        "{verb} {}, restored {}",
-        subject(operation),
-        redacted_prior(prior)
-    );
+    let mut summary = startup_restored_summary(verb, operation, prior).unwrap_or_else(|| {
+        format!(
+            "{verb} {}, restored {}",
+            subject(operation),
+            redacted_prior(prior)
+        )
+    });
     if journal_note {
         summary.push_str(" (the journal entry could not be updated)");
     }
     summary
+}
+
+// ---- startup entries: the same change, said in plain words ---------------------------------
+
+/// `Disabled startup entry: Name` or `Enabled startup entry: Name` for a write of an approval
+/// record (see [`crate::startup::approval`]); `None` for any other operation.
+fn startup_applied_summary(operation: &Operation) -> Option<String> {
+    let Operation::SetRegistryValue { target, value } = operation else {
+        return None;
+    };
+    let name = approved_entry_name(target)?;
+    match decode_approval(value)? {
+        StartupState::Enabled => Some(format!("Enabled startup entry: {name}")),
+        StartupState::Disabled => Some(format!("Disabled startup entry: {name}")),
+    }
+}
+
+/// `Reverted startup entry: Name is enabled again` for the undo of an approval record.
+fn startup_restored_summary(
+    verb: &str,
+    operation: &Operation,
+    prior: &PriorState,
+) -> Option<String> {
+    let (Operation::SetRegistryValue { target, .. } | Operation::DeleteRegistryValue { target }) =
+        operation
+    else {
+        return None;
+    };
+    let name = approved_entry_name(target)?;
+    let PriorState::RegistryValue(previous) = prior else {
+        return None;
+    };
+    let now = match previous.as_ref().map(decode_approval) {
+        // No record means Windows starts the entry.
+        None | Some(Some(StartupState::Enabled)) => "is enabled again",
+        Some(Some(StartupState::Disabled)) => "is disabled again",
+        Some(None) => "has its earlier setting back",
+    };
+    Some(format!("{verb} startup entry: {name} {now}"))
+}
+
+/// [`redacted_prior`] for a journal entry: a startup approval record reads as `enabled` or
+/// `disabled` instead of `REG_BINARY (12 bytes)`.
+#[must_use]
+pub fn redacted_prior_for(operation: &Operation, prior: &PriorState) -> String {
+    match startup_prior_words(operation, prior) {
+        Some(state) => state.to_owned(),
+        None => redacted_prior(prior),
+    }
+}
+
+/// [`restore_words`] for a journal entry, with the same startup wording.
+#[must_use]
+pub fn restore_words_for(operation: &Operation, prior: &PriorState) -> String {
+    match startup_prior_words(operation, prior) {
+        Some("enabled (it had no record)") => {
+            "set back to enabled (the record Volt wrote is removed)".to_owned()
+        }
+        Some(state) => format!("set back to {state}"),
+        None => restore_words(prior),
+    }
+}
+
+/// What a startup approval record held before: `enabled`, `enabled (no record)`, `disabled`.
+fn startup_prior_words(operation: &Operation, prior: &PriorState) -> Option<&'static str> {
+    let (Operation::SetRegistryValue { target, .. } | Operation::DeleteRegistryValue { target }) =
+        operation
+    else {
+        return None;
+    };
+    approved_entry_name(target)?;
+    let PriorState::RegistryValue(previous) = prior else {
+        return None;
+    };
+    match previous.as_ref().map(decode_approval) {
+        None => Some("enabled (it had no record)"),
+        Some(Some(StartupState::Enabled)) => Some("enabled"),
+        Some(Some(StartupState::Disabled)) => Some("disabled"),
+        Some(None) => None,
+    }
 }
 
 /// `Failed to <verb> <subject>: <reason>`.

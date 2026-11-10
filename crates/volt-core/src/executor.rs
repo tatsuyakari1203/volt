@@ -222,6 +222,12 @@ impl Executor {
         }
     }
 
+    /// The ports this executor operates on, for callers that build a plan to
+    /// apply through it.
+    pub(crate) fn ports(&self) -> &Ports {
+        &self.ports
+    }
+
     /// Attaches an activity log: from now on every operation this executor
     /// applies, reverts, rolls back or reconciles is also written there, with
     /// the time from the executor's clock.

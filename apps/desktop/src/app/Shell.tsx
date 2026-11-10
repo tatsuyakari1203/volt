@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { HomeScreen } from '../features/home/HomeScreen';
+import { StartupScreen } from '../features/startup/StartupScreen';
 import { TweaksScreen } from '../features/tweaks/TweaksScreen';
 import { UndoScreen } from '../features/undo/UndoScreen';
 import { onTrayBoostRequested } from '../shared/ipc';
@@ -16,6 +17,8 @@ function Screen({ id, onNavigate }: { id: SectionId; onNavigate: (id: SectionId)
       return <HomeScreen onNavigate={onNavigate} />;
     case 'tweaks':
       return <TweaksScreen />;
+    case 'startup':
+      return <StartupScreen />;
     case 'settings':
       return <SettingsScreen />;
     case 'undo':

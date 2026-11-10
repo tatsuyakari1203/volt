@@ -144,6 +144,11 @@ What `volt-core` contains today:
     updater, for one) queue deletions of their temporary files in `PendingFileRenameOperations`,
     so the marker can be set on a machine that needs no restart for an update; Volt reports it
     as the Windows marker it is.
+- **Startup apps:** the `startup` module lists what starts with Windows and switches entries on
+  and off through the executor, with the same records Task Manager uses. It needs one addition to
+  the registry port (`list_values`, a default method that answers `Unsupported`, so an adapter
+  without it still compiles) and one small port of its own, `FilePublisher`. See Startup apps
+  below.
 - **Risk and evidence labels:** `Safe`, `Caution`, `Advanced`; `Measured` or `Anecdotal`. The UI
   shows both.
 - **`fakes` cargo feature:** in-memory fakes of every port (`FakeSystem` wires them together
@@ -297,6 +302,14 @@ fakes, or with a throwaway registry key and a temp directory.
   The report is logged (counts per resolution, a warning when a state is unknown or could not be
   read) and kept in `StartupReport`. A reconcile failure never stops the app: the entries stay
   pending for the next start.
+- **Startup apps wiring.** `build_core(ports, store_path, catalogue_toml)` is unchanged and builds
+  a core without the startup manager (its commands then answer `unsupported`).
+  `build_core_with(.., StartupWiring)` adds it: `StartupWiring` holds the `StartupSources` (the
+  registry keys and Startup folders, all injectable) and the `FilePublisher`. The app calls it with
+  `StartupWiring::windows()`; tests with `StartupSources::sandboxed_in_hkcu`. The manager gets the
+  registry and file system of `ports` and a handle on the tweak engine's executor, so a startup
+  change is journaled, recorded in the activity log and counted like a tweak's. `AppCore` carries it
+  as `startup_apps()`.
 - **Ports.** `windows_ports()` builds the bundle from `WinRegistry`, `WinFileSystem` and
   `WinServices`. `WinCommands` runs the commands port. The processes and memory ports have no Windows adapter yet, so
   `unsupported.rs` supplies `UnsupportedProcesses` and `UnsupportedMemory`, which fail every call
@@ -328,9 +341,20 @@ fakes, or with a throwaway registry key and a temp directory.
 
 ## Windows adapters
 
-`volt-win` implements the registry, services, file system, known-folders, metrics and commands ports
-with the Windows API: `WinRegistry`, `WinServices`, `WinFileSystem`, `WinKnownFolders`, `WinMetrics` and
-`WinCommands`.
+`volt-win` implements the registry, services, file system, known-folders, metrics, commands and
+file-publisher ports with the Windows API: `WinRegistry`, `WinServices`, `WinFileSystem`,
+`WinKnownFolders`, `WinMetrics`, `WinCommands` and `WinFilePublisher`.
+
+- `WinRegistry::list_values` enumerates the values of one key (`RegEnumValueW`), sorted by name
+  ignoring case and with the spelling they were written with. A missing key is an empty list; a
+  value that cannot be modelled (an unknown type) is listed with its error and does not fail the
+  list.
+- `WinFilePublisher` reads the `CompanyName` of a file's version resource (`GetFileVersionInfoW`,
+  `VerQueryValueW`, trying the file's own translations first). It expands `%VAR%` references
+  itself (pure Rust, unknown variables stay as written), looks a bare name up in the Windows
+  system folder only, and never reads a network path (UNC), which could hang or send the user's
+  credentials to another machine. A file without version information, a missing file or a refused
+  path all read as "no publisher". It reads and never runs the file.
 
 - File deletion goes to the Recycle Bin through `IFileOperation`. There is no permanent-delete
   fallback: if the Recycle Bin cannot take a file, the deletion fails. The shell reports a locked
@@ -474,6 +498,82 @@ Optional and off by default. It is exposed as two typed commands, `autostart_ena
 - **Known limit.** The registration is found by name, so an entry written by another build of
   Volt (for example a development build) counts as enabled.
 
+### Startup apps
+
+`volt_core::startup` (core), `volt-win` (`list_values`, `WinFilePublisher`) and
+`apps/desktop/src/features/startup` (the Startup section). It lists what starts with Windows and
+switches entries on and off the way Windows does, so Task Manager and Settings show the same state.
+
+- **What is listed** (`StartupManager::list`, read-only): the Run keys (`HKCU` once, because
+  `HKCU\...\Run` is shared by the 64-bit and the 32-bit view, which was checked by reading both
+  views on the development machine; `HKLM` in the 64-bit view and in the 32-bit view, which is
+  `WOW6432Node` and holds different values) and the per-user and common Startup folders. Every
+  `StartupEntry` has a stable id (`<origin>/<name>`), name, origin, the command as written, the
+  program of the command, an optional publisher and the state. A Startup folder item shows its
+  file path as its command; only plain files count (not folders, links or `desktop.ini`), and a
+  `.lnk` is shown without its extension. A shortcut's target is not resolved (it would need the
+  shell's link API), so a shortcut has no publisher. A source that cannot be read (access denied)
+  is a `SourceProblem` in the result; the rest of the list is still valid. `RunOnce`, services,
+  scheduled tasks and the other autostart places are not listed.
+- **The command line** (`parse_command_line`, pure): a quoted program ends at the closing quote;
+  an unquoted one ends at the first whitespace after `.exe`, `.com`, `.bat`, `.cmd`, `.lnk` or
+  `.scr`, which handles paths with spaces, and otherwise at the first word. Environment variable
+  references stay as written (`%ProgramFiles%\...`): the core never reads the environment.
+- **Publisher** (`FilePublisher`, optional by type): the company name of the program's version
+  information. A failure or a blank answer is `None`, logged at debug level, never an error.
+- **Switching** (`StartupManager::set_enabled`, dry run `plan`): Windows keeps the state of an
+  entry in a small binary value of the same name under
+  `HKCU|HKLM\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\<kind>`, where
+  `<kind>` is `Run` (the Run keys of the 64-bit view), `Run32` (the 32-bit machine-wide Run key) or
+  `StartupFolder`. Volt writes that value; it never deletes the Run value or the shortcut.
+  - **Value layout** (`startup::approval`): `REG_BINARY`, 12 bytes. The first four bytes are a
+    little-endian `u32` of flags: `0x02` or `0x06` enabled, `0x03` disabled. The last eight bytes
+    are a little-endian `FILETIME`: when the entry was disabled, zeros when enabled. Disabling
+    writes `03 00 00 00` and the current time; enabling writes `02 00 00 00` and zeros, which is
+    what Task Manager writes when an entry is switched back on (the value is kept). No value
+    means enabled.
+  - **Source of the layout:** it is not documented by Microsoft. It follows practitioner write-ups
+    of the artefact (Harlan Carvey, "Does autostart really mean autostart?", windowsir blog,
+    2022-07-09, and "StartupApproved\Run, pt II", 2022-07-17), and was checked on 2026-11-10 by
+    reading the development machine's `StartupApproved\Run`, `Run32` and `StartupFolder` keys
+    read-only (`HKCU` and `HKLM`): every value was `REG_BINARY` of 12 bytes; the entries
+    switched off in Task Manager had flags `0x03` and a non-zero `FILETIME`, enabled ones `0x02`
+    (or `0x06` under `HKLM`) with zeros. One `HKCU` value had flags `0x01`, which no source
+    explains. **A record Volt does not recognise reads as enabled and is never reinterpreted**;
+    switching such an entry off writes the documented `0x03` record and undo puts the old bytes
+    back.
+  - **Every change is an Operation** (a registry value write of the approval record) applied
+    through the Executor: the previous value is journaled first, including "there was no record",
+    the batch is labelled `startup`, and undo (the Undo page, also after a restart) puts back the
+    exact previous bytes or removes the record that did not exist. An entry already in the
+    requested state is left alone and journals nothing.
+  - **Activity summaries** say what happened in plain words. The journal holds a plain registry
+    operation, so the activity module recognises an approval record by its key (the last two
+    components are `StartupApproved` and `Run`, `Run32` or `StartupFolder`) and writes
+    `Disabled startup entry: <name>`, `Enabled startup entry: <name>` and, for an undo,
+    `Reverted startup entry: <name> is enabled again` (or `disabled again`). The Undo page shows the
+    previous value as `enabled`, `disabled` or `enabled (it had no record)` instead of
+    `REG_BINARY (12 bytes)`, and the batch is titled "Startup apps". Per the redaction rule
+    the record names the entry and the outcome, never the command line.
+- **Machine-wide entries cannot be changed yet.** Changing the `HKLM` Run keys, their approval
+  records and the common Startup folder needs administrator rights, and the elevation model is not
+  decided. They are listed (marked "Needs administrator rights") but `set_enabled` returns
+  `StartupError::NeedsAdministrator` before it reads or writes anything, which reaches the UI as
+  `accessDenied` with a message saying so. There is no workaround and no attempt that could be
+  half done.
+- **Safe ids.** A Startup folder item's name becomes a path, so it must be exactly one plain
+  component (no separator, no `..`, no drive): anything else is `invalidInput`. An entry is looked
+  up again before every change, so a stale id is `notFound`.
+- **Injectable places.** `StartupSources` carries every key and folder.
+  `StartupSources::windows(&KnownFolders)` is the real layout;
+  `StartupSources::sandboxed_in_hkcu` points all of them below one throwaway `HKCU` key and two
+  temp folders with the same shape, which is how the adapter and the integration tests run without
+  touching the real Run or `StartupApproved` keys.
+- **Known limits.** Task Manager can also show "Startup impact" and entries from places Volt does
+  not list; shortcuts are not resolved; the "Task Manager shows the same state" claim rests on the
+  layout above and has not been checked by changing a real entry. That check is manual: switch an
+  entry off in Volt and see it off in Task Manager's Startup apps tab, then the other way round.
+
 ### Idle memory
 
 Measured on 2026-11-10 on the development machine (Windows 11, WebView2 runtime installed). Method:
@@ -587,6 +687,17 @@ the WebView2 processes. The diagnostic log was read to confirm the sampler start
   The screen carries no Sample data marker.
 - `features/home` is the Home dashboard: the health score with its explanation, and four live
   cards. See Home below.
+- `features/startup` is the Startup screen (nav entry "Startup", id `startup`; the older "Apps and
+  Startup" placeholder is for app management and stays a placeholder). It lists the entries read
+  live (name, source badge, publisher or "Publisher unknown", the command shortened in the middle
+  with the full text one click away, and a Switch). Loading, empty and error states, a notice for
+  sources that could not be read, and a search field. The switch locks while a command runs and
+  shows the state the shell reports back; a change shows a toast saying what happened and that it
+  can be undone on the Undo page (there is no Undo button on the toast: the Undo page undoes the
+  journal entry). Machine-wide rows carry a "Needs administrator rights" badge and a disabled
+  switch; a refusal that still arrives (`accessDenied`) is explained in words and the list is
+  read again. Screenshots with sample data are `docs/design/startup-light-460x700.png` and
+  `startup-dark-460x700.png`.
 - `features/undo` is the Undo and activity page, described under Undo page below. A tweak can
   still be undone from the Tweaks screen. Features do not import each other.
 - Outside the Volt window (a plain browser) the generated bindings fail with a `TypeError` because
@@ -630,6 +741,12 @@ the WebView2 processes. The diagnostic log was read to confirm the sampler start
     snapshot (see Live metrics).
     `health_report` is async and read-only: it checks the machine now and returns the score, its
     deductions and what could not be checked (see Home).
+    snapshot (see Live metrics). `list_startup_entries() -> StartupList` and
+    `set_startup_entry_enabled(id, enabled) -> StartupChangeResult` (see Startup apps) run on the
+    blocking pool under the same lock as apply and revert; their transfer types
+    (`StartupEntryView`, `StartupProblemView`, `StartupChangeStatus`, ...) are owned by the shell,
+    and `StartupError` maps into `IpcError` (a machine-wide entry is `accessDenied`, built from the
+    core's redacted reasons, not from port messages).
   - **Events.** Events are structs deriving `tauri_specta::Event` and registered in
     `bindings_builder`; the sample is `AppReady(AppInfo)`, listened to as `events.appReady`.
     `TrayBoostRequested` (`events.trayBoostRequested`, payload `null`) is sent when the user
@@ -776,6 +893,12 @@ is visible, so every record Volt writes is listed and says whether it can be tak
 | Integration | The shell's wiring and commands            | The real `WinRegistry` on a throwaway `HKCU\Software\VoltTest` key and a real store in a temp directory (apply, restart, revert, activity, undo of one entry or a batch), then the same wiring over fakes for the failure outcomes |
 | UI          | Components and feature state               | Vitest, with the IPC wrapper mocked                                                                                                                                                                                                |
 | End to end  | A few flows through the real app           | WebDriver, added once flows exist                                                                                                                                                                                                  |
+
+The startup tests follow the same rule: the integration test (`tests/startup_apps.rs`) uses the
+real registry adapter, a real store and two temp folders, with every Run and `StartupApproved` key
+redirected to a throwaway `HKCU\Software\VoltTest\Startup-...` key. It lists, disables, reads the
+state back, undoes and restarts; the real Run keys, the real approval keys and the real Startup
+folders are never written, and no test or script changes a real startup entry.
 
 Tests never apply a real tweak, clean real user data or purge memory on the machine running them.
 In particular no test applies or reverts the shipped "Show file extensions" tweak: the end to end

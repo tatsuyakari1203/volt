@@ -148,10 +148,71 @@ impl fmt::Display for RegistryValueRef {
     }
 }
 
+/// Address of one registry key: hive, subkey path and view.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RegistryKeyRef {
+    /// Root key.
+    pub hive: RegistryHive,
+    /// Subkey path below the hive, with backslash separators and no leading one.
+    pub subkey: String,
+    /// 32-bit or 64-bit view.
+    pub view: RegistryView,
+}
+
+impl RegistryKeyRef {
+    /// A key reference in the given view.
+    #[must_use]
+    pub fn new(hive: RegistryHive, subkey: impl Into<String>, view: RegistryView) -> Self {
+        Self {
+            hive,
+            subkey: subkey.into(),
+            view,
+        }
+    }
+
+    /// The address of the value `name` in this key.
+    #[must_use]
+    pub fn value(&self, name: impl Into<String>) -> RegistryValueRef {
+        RegistryValueRef::new(self.hive, self.subkey.clone(), name).with_view(self.view)
+    }
+}
+
+impl fmt::Display for RegistryKeyRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}\\{}", self.hive.short_name(), self.subkey)?;
+        match self.view {
+            RegistryView::Native => Ok(()),
+            RegistryView::Bit32 => f.write_str(" [32-bit]"),
+            RegistryView::Bit64 => f.write_str(" [64-bit]"),
+        }
+    }
+}
+
+/// One value found by [`Registry::list_values`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedValue {
+    /// The value's name (empty for the default value).
+    pub name: String,
+    /// The data, or why it could not be read (for example a value type the
+    /// model does not cover). One unreadable value does not fail the listing.
+    pub value: Result<RegistryValue, PortError>,
+}
+
 /// Port: read and write registry values.
 ///
 /// Adapters implement this over the real registry; the core only sees the trait.
 pub trait Registry: Send + Sync {
+    /// Lists the values directly in a key (not its subkeys), sorted by name
+    /// ignoring case. Read-only. A missing key is `Ok` with an empty list.
+    ///
+    /// The default answers [`PortError::Unsupported`], so an adapter that has
+    /// no enumeration yet still satisfies the port.
+    fn list_values(&self, key: &RegistryKeyRef) -> Result<Vec<NamedValue>, PortError> {
+        Err(PortError::Unsupported(format!(
+            "listing the values of {key}"
+        )))
+    }
+
     /// Reads a value. A missing key or value is `Ok(None)`, not an error.
     fn read_value(&self, target: &RegistryValueRef) -> Result<Option<RegistryValue>, PortError>;
 

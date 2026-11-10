@@ -16,6 +16,8 @@ import {
   type MetricsView,
   type Result,
   type RevertResult,
+  type StartupChangeResult,
+  type StartupList,
   type TweakInfo,
   type UndoPreview,
   type UndoResult,
@@ -48,6 +50,12 @@ export type {
   RevertResult,
   RevertStatus,
   RiskLevel,
+  StartupChangeResult,
+  StartupChangeStatus,
+  StartupEntryView,
+  StartupList,
+  StartupProblemView,
+  StartupSource,
   TweakCategory,
   TweakInfo,
   TweakStateView,
@@ -182,6 +190,25 @@ export async function revertTweak(id: string): Promise<RevertResult> {
  */
 export async function listActivity(limit: number, cursor?: string | null): Promise<ActivityPage> {
   return call(() => commands.listActivity(limit, cursor ?? null));
+}
+
+/**
+ * Everything that starts with Windows (Run keys and Startup folders), with the state Task Manager
+ * shows. Sources that could not be read come back in `problems`; the rest of the list is valid.
+ */
+export async function listStartupEntries(): Promise<StartupList> {
+  return call(() => commands.listStartupEntries());
+}
+
+/**
+ * Switches a startup entry on or off the way Windows does, through the undo journal. Machine-wide
+ * entries reject with an `accessDenied` error (administrator rights).
+ */
+export async function setStartupEntryEnabled(
+  id: string,
+  enabled: boolean,
+): Promise<StartupChangeResult> {
+  return call(() => commands.setStartupEntryEnabled(id, enabled));
 }
 
 /**

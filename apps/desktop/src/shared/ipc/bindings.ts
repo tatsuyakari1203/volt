@@ -178,6 +178,30 @@ async exportActivityText() : Promise<Result<ActivityExport, IpcError>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Tauri command: lists everything that starts with Windows (Run keys and Startup folders) with
+ * the state Task Manager shows. Reads the system only.
+ */
+async listStartupEntries() : Promise<Result<StartupList, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_startup_entries") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: switches a startup entry on or off the way Windows does, through the undo
+ * journal. Entries that apply to every user answer `accessDenied` (administrator rights).
+ */
+async setStartupEntryEnabled(id: string, enabled: boolean) : Promise<Result<StartupChangeResult, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_startup_entry_enabled", { id, enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -744,6 +768,130 @@ export type RiskLevel =
  * Can break software or the system if misused.
  */
 "advanced"
+/**
+ * Precise result of [`set_startup_entry_enabled`].
+ */
+export type StartupChangeResult = { 
+/**
+ * The entry id.
+ */
+id: string; 
+/**
+ * The entry's name.
+ */
+name: string; 
+/**
+ * How it ended.
+ */
+status: StartupChangeStatus; 
+/**
+ * The state read again afterwards; `null` when it could not be read.
+ */
+enabled: boolean | null }
+/**
+ * How a change of a startup entry ended.
+ */
+export type StartupChangeStatus = 
+/**
+ * The state was changed (and can be undone on the Undo page).
+ */
+"changed" | 
+/**
+ * The entry was already in the requested state; nothing was changed or journaled.
+ */
+"alreadyInState"
+/**
+ * One thing that starts with Windows, as the Startup screen shows it.
+ */
+export type StartupEntryView = { 
+/**
+ * Stable id; pass it to [`set_startup_entry_enabled`].
+ */
+id: string; 
+/**
+ * The name shown to the user.
+ */
+name: string; 
+/**
+ * Where it comes from.
+ */
+source: StartupSource; 
+/**
+ * A short plain-words name of the source, for a badge.
+ */
+sourceLabel: string; 
+/**
+ * The command as written, with environment variables unexpanded.
+ */
+command: string; 
+/**
+ * Who published the program, when its version information says.
+ */
+publisher: string | null; 
+/**
+ * Whether it starts with Windows.
+ */
+enabled: boolean; 
+/**
+ * Whether changing it needs administrator rights (it applies to every user).
+ */
+needsAdmin: boolean }
+/**
+ * Everything that starts with Windows, read just now.
+ */
+export type StartupList = { 
+/**
+ * The entries, sorted by name.
+ */
+entries: StartupEntryView[]; 
+/**
+ * Sources that could not be read.
+ */
+problems: StartupProblemView[] }
+/**
+ * A source that could not be read; the rest of the list is valid.
+ */
+export type StartupProblemView = { 
+/**
+ * The source.
+ */
+source: StartupSource; 
+/**
+ * A short plain-words name of the source.
+ */
+sourceLabel: string; 
+/**
+ * The class of the failure ("access denied", "not found", ...), never a message with data.
+ */
+reason: string }
+/**
+ * Where a startup entry comes from. Mirrors [`volt_core::StartupOrigin`].
+ */
+export type StartupSource = 
+/**
+ * The current user's Run key.
+ */
+"userRun" | 
+/**
+ * The machine-wide Run key.
+ */
+"machineRun" | 
+/**
+ * The machine-wide Run key of 32-bit programs.
+ */
+"machineRun32" | 
+/**
+ * The current user's Startup folder.
+ */
+"userFolder" | 
+/**
+ * The Startup folder shared by all users.
+ */
+"commonFolder" | 
+/**
+ * A source this version of the UI does not know.
+ */
+"other"
 /**
  * Event emitted when the user picks Boost in the tray menu, after the window is open on Home.
  * 

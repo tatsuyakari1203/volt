@@ -9,8 +9,8 @@ use tauri_plugin_dialog::DialogExt as _;
 
 use crate::IpcError;
 use crate::api::{
-    self, ActivityExport, ActivityPage, ApplyResult, ExportResult, RevertResult, TweakInfo,
-    UndoPreview, UndoResult,
+    self, ActivityExport, ActivityPage, ApplyResult, ExportResult, RevertResult,
+    StartupChangeResult, StartupList, TweakInfo, UndoPreview, UndoResult,
 };
 use crate::wiring::{AppCore, AppState};
 
@@ -68,6 +68,31 @@ pub(crate) async fn list_activity(
 ) -> Result<ActivityPage, IpcError> {
     blocking(&state, move |core| {
         api::list_activity(core, limit, cursor.as_deref())
+    })
+    .await
+}
+
+/// Tauri command: lists everything that starts with Windows (Run keys and Startup folders) with
+/// the state Task Manager shows. Reads the system only.
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn list_startup_entries(
+    state: State<'_, AppState>,
+) -> Result<StartupList, IpcError> {
+    blocking(&state, api::list_startup_entries).await
+}
+
+/// Tauri command: switches a startup entry on or off the way Windows does, through the undo
+/// journal. Entries that apply to every user answer `accessDenied` (administrator rights).
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn set_startup_entry_enabled(
+    state: State<'_, AppState>,
+    id: String,
+    enabled: bool,
+) -> Result<StartupChangeResult, IpcError> {
+    blocking(&state, move |core| {
+        api::set_startup_entry_enabled(core, &id, enabled)
     })
     .await
 }

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use specta_typescript::Typescript;
 use tauri_specta::{Builder, Event, collect_commands, collect_events};
-use volt_core::{ExecError, PlanError, PortError, RevertError, TweakError};
+use volt_core::{ExecError, PlanError, PortError, RevertError, StartupError, TweakError};
 use volt_store::StoreError;
 
 use crate::AppInfo;
@@ -143,6 +143,50 @@ impl From<TweakError> for IpcError {
     }
 }
 
+impl From<StartupError> for IpcError {
+    /// Machine-wide entries need administrator rights, which is `accessDenied` with a message the
+    /// UI can show as it is; a failed change keeps the kind of the port failure under it. The
+    /// messages are built from the core's redacted reasons, not from port messages.
+    fn from(error: StartupError) -> Self {
+        match &error {
+            StartupError::InvalidId(_) => Self::InvalidInput {
+                message: error.to_string(),
+            },
+            StartupError::NotFound(_) => Self::NotFound {
+                message: error.to_string(),
+            },
+            StartupError::NeedsAdministrator { name } => Self::AccessDenied {
+                message: format!("Changing \"{name}\" needs administrator rights."),
+            },
+            StartupError::Read(port) => kinded(
+                port,
+                format!(
+                    "Volt could not read the startup entry ({}).",
+                    volt_core::activity::error_class(port)
+                ),
+            ),
+            StartupError::Change(exec) => {
+                let message = format!(
+                    "The startup entry could not be changed: {}.",
+                    volt_core::activity::exec_reason(exec)
+                );
+                match exec {
+                    ExecError::Detect(port)
+                    | ExecError::Journal(port)
+                    | ExecError::MarkApplied(port)
+                    | ExecError::Apply { error: port, .. } => kinded(port, message),
+                    // `ExecError` is non-exhaustive: anything new degrades to `Other`.
+                    _ => Self::Other { message },
+                }
+            }
+            // `StartupError` is non-exhaustive: anything new degrades to `Other`.
+            _ => Self::Other {
+                message: error.to_string(),
+            },
+        }
+    }
+}
+
 impl From<StoreError> for IpcError {
     /// Opening the database failed. The UI can do nothing about the kind, so it is `Other`.
     fn from(error: StoreError) -> Self {
@@ -177,6 +221,8 @@ pub fn bindings_builder() -> Builder<tauri::Wry> {
             crate::commands::preview_undo_batch,
             crate::commands::export_activity,
             crate::commands::export_activity_text,
+            crate::commands::list_startup_entries,
+            crate::commands::set_startup_entry_enabled,
         ])
         .events(collect_events![
             AppReady,
@@ -311,6 +357,38 @@ mod tests {
             revert(RevertError::NotRevertible(volt_core::EntryState::Reverted)),
             IpcError::InvalidInput { .. }
         ));
+    }
+
+    #[test]
+    fn startup_errors_keep_their_kind_and_say_administrator_rights_in_words() {
+        let admin = IpcError::from(StartupError::NeedsAdministrator {
+            name: "Vendor Updater".into(),
+        });
+        assert_eq!(
+            admin,
+            IpcError::AccessDenied {
+                message: "Changing \"Vendor Updater\" needs administrator rights.".into()
+            }
+        );
+        assert!(matches!(
+            IpcError::from(StartupError::NotFound("x".into())),
+            IpcError::NotFound { .. }
+        ));
+        assert!(matches!(
+            IpcError::from(StartupError::InvalidId("x".into())),
+            IpcError::InvalidInput { .. }
+        ));
+        // A failed change keeps the kind of the port failure and never carries its message.
+        let failed = IpcError::from(StartupError::Change(ExecError::Apply {
+            error: PortError::AccessDenied("secret detail".into()),
+            journal: None,
+        }));
+        assert!(
+            matches!(&failed, IpcError::AccessDenied { message } if !message.contains("secret"))
+        );
+        let unreadable =
+            IpcError::from(StartupError::Read(PortError::Other("secret detail".into())));
+        assert!(matches!(&unreadable, IpcError::Other { message } if !message.contains("secret")));
     }
 
     #[test]

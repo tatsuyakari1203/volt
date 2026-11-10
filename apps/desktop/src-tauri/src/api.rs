@@ -12,11 +12,13 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use volt_core::activity::{exec_reason, restore_words, revert_reason, subject};
+use volt_core::activity::{exec_reason, restore_words_for, revert_reason, subject};
+use volt_core::startup::STARTUP_LABEL;
 use volt_core::{
-    ActivityId, ActivityOutcome, ActivityRecord, ApplyOutcome, BatchId, Category, Clock, EntryId,
-    EntryState, Evidence, ItemStatus, JournalEntry, RestartRequirement, RevertError, RevertOutcome,
-    RevertReport, Risk, Source, SystemClock, Timestamp, TweakApplyReport, TweakError,
+    ActivityId, ActivityOutcome, ActivityRecord, ApplyOutcome, BatchId, Category, ChangeOutcome,
+    Clock, EntryId, EntryState, Evidence, ItemStatus, JournalEntry, RestartRequirement,
+    RevertError, RevertOutcome, RevertReport, Risk, Source, StartupEntry, StartupOrigin,
+    StartupScope, StartupState, SystemClock, Timestamp, TweakApplyReport, TweakError,
     TweakRevertReport, TweakState, activity, render_text,
 };
 
@@ -358,6 +360,97 @@ pub enum ExportResult {
     Cancelled,
 }
 
+// ---- startup apps: transfer types ------------------------------------------------------------
+
+/// What the Undo page calls the batches the startup manager writes.
+const STARTUP_TITLE: &str = "Startup apps";
+
+/// Where a startup entry comes from. Mirrors [`volt_core::StartupOrigin`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum StartupSource {
+    /// The current user's Run key.
+    UserRun,
+    /// The machine-wide Run key.
+    MachineRun,
+    /// The machine-wide Run key of 32-bit programs.
+    MachineRun32,
+    /// The current user's Startup folder.
+    UserFolder,
+    /// The Startup folder shared by all users.
+    CommonFolder,
+    /// A source this version of the UI does not know.
+    Other,
+}
+
+/// One thing that starts with Windows, as the Startup screen shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct StartupEntryView {
+    /// Stable id; pass it to [`set_startup_entry_enabled`].
+    pub id: String,
+    /// The name shown to the user.
+    pub name: String,
+    /// Where it comes from.
+    pub source: StartupSource,
+    /// A short plain-words name of the source, for a badge.
+    pub source_label: String,
+    /// The command as written, with environment variables unexpanded.
+    pub command: String,
+    /// Who published the program, when its version information says.
+    pub publisher: Option<String>,
+    /// Whether it starts with Windows.
+    pub enabled: bool,
+    /// Whether changing it needs administrator rights (it applies to every user).
+    pub needs_admin: bool,
+}
+
+/// A source that could not be read; the rest of the list is valid.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct StartupProblemView {
+    /// The source.
+    pub source: StartupSource,
+    /// A short plain-words name of the source.
+    pub source_label: String,
+    /// The class of the failure ("access denied", "not found", ...), never a message with data.
+    pub reason: String,
+}
+
+/// Everything that starts with Windows, read just now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct StartupList {
+    /// The entries, sorted by name.
+    pub entries: Vec<StartupEntryView>,
+    /// Sources that could not be read.
+    pub problems: Vec<StartupProblemView>,
+}
+
+/// How a change of a startup entry ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum StartupChangeStatus {
+    /// The state was changed (and can be undone on the Undo page).
+    Changed,
+    /// The entry was already in the requested state; nothing was changed or journaled.
+    AlreadyInState,
+}
+
+/// Precise result of [`set_startup_entry_enabled`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct StartupChangeResult {
+    /// The entry id.
+    pub id: String,
+    /// The entry's name.
+    pub name: String,
+    /// How it ended.
+    pub status: StartupChangeStatus,
+    /// The state read again afterwards; `null` when it could not be read.
+    pub enabled: Option<bool>,
+}
+
 // ---- the functions behind the commands -----------------------------------------------------
 
 /// Lists every catalogue tweak with its live state. A tweak whose state cannot be read is listed
@@ -534,7 +627,7 @@ pub fn preview_undo_batch(core: &AppCore, batch: &str) -> Result<UndoPreview, Ip
         .map(|entry| UndoPreviewItem {
             entry: entry.id.0.to_string(),
             what: capitalised(&subject(&entry.operation)),
-            restore: restore_words(&entry.prior),
+            restore: restore_words_for(&entry.operation, &entry.prior),
         })
         .collect();
     Ok(UndoPreview { items })
@@ -584,7 +677,78 @@ pub fn write_export(path: &Path, text: &str) -> Result<(), IpcError> {
     })
 }
 
+/// Lists everything that starts with Windows: the Run keys and both Startup folders, with the
+/// state Task Manager shows. Reads only. A source that cannot be read is listed in `problems`.
+pub fn list_startup_entries(core: &AppCore) -> Result<StartupList, IpcError> {
+    let manager = core.startup_apps()?;
+    let _exclusive = core.exclusive();
+    let listing = manager.list();
+    Ok(StartupList {
+        entries: listing.entries.iter().map(startup_entry_view).collect(),
+        problems: listing
+            .problems
+            .iter()
+            .map(|problem| StartupProblemView {
+                source: startup_source_view(problem.origin),
+                source_label: problem.origin.label().to_owned(),
+                reason: problem.reason.to_owned(),
+            })
+            .collect(),
+    })
+}
+
+/// Switches a startup entry on or off the way Windows does, through the undo journal. Reports
+/// precisely how it ended. Entries that apply to every user are refused with `accessDenied`
+/// (they need administrator rights) before anything is touched.
+pub fn set_startup_entry_enabled(
+    core: &AppCore,
+    id: &str,
+    enabled: bool,
+) -> Result<StartupChangeResult, IpcError> {
+    let manager = core.startup_apps()?;
+    let _exclusive = core.exclusive();
+    let failures_before = core.engine.activity_write_failures();
+    let result = manager.set_enabled(id, enabled, Source::Manual);
+    warn_if_history_incomplete(core, failures_before, "changing a startup entry");
+    let change = result?;
+    Ok(StartupChangeResult {
+        id: change.id,
+        name: change.name,
+        status: match change.outcome {
+            ChangeOutcome::AlreadyInState => StartupChangeStatus::AlreadyInState,
+            // `Changed`, and (the enum is non-exhaustive) any outcome this shell does not know
+            // yet, which has changed something.
+            _ => StartupChangeStatus::Changed,
+        },
+        enabled: change.state.map(|state| state == StartupState::Enabled),
+    })
+}
+
 // ---- mapping -------------------------------------------------------------------------------
+
+fn startup_source_view(origin: StartupOrigin) -> StartupSource {
+    match origin {
+        StartupOrigin::UserRun => StartupSource::UserRun,
+        StartupOrigin::MachineRun => StartupSource::MachineRun,
+        StartupOrigin::MachineRun32 => StartupSource::MachineRun32,
+        StartupOrigin::UserFolder => StartupSource::UserFolder,
+        StartupOrigin::CommonFolder => StartupSource::CommonFolder,
+        _ => StartupSource::Other,
+    }
+}
+
+fn startup_entry_view(entry: &StartupEntry) -> StartupEntryView {
+    StartupEntryView {
+        id: entry.id.clone(),
+        name: entry.name.clone(),
+        source: startup_source_view(entry.origin),
+        source_label: entry.origin.label().to_owned(),
+        command: entry.command.clone(),
+        publisher: entry.publisher.clone(),
+        enabled: entry.state == StartupState::Enabled,
+        needs_admin: entry.origin.scope() == StartupScope::Machine,
+    }
+}
 
 fn risk_view(risk: Risk) -> RiskLevel {
     match risk {
@@ -702,7 +866,7 @@ fn activity_item(core: &AppCore, record: &ActivityRecord) -> ActivityItem {
     // The value before the change belongs to a change that was made.
     let previous = match (&lookup, record.outcome) {
         (EntryLookup::Found(entry), ActivityOutcome::Applied) => {
-            Some(activity::redacted_prior(&entry.prior))
+            Some(activity::redacted_prior_for(&entry.operation, &entry.prior))
         }
         _ => None,
     };
@@ -722,11 +886,15 @@ fn activity_item(core: &AppCore, record: &ActivityRecord) -> ActivityItem {
             _ => ActivityStatus::Other,
         },
         summary: record.summary.clone(),
-        title: record
-            .label
-            .as_deref()
-            .and_then(|label| core.engine.catalogue().get(label))
-            .map(|tweak| tweak.title.clone()),
+        title: record.label.as_deref().and_then(|label| {
+            if label == STARTUP_LABEL {
+                return Some(STARTUP_TITLE.to_owned());
+            }
+            core.engine
+                .catalogue()
+                .get(label)
+                .map(|tweak| tweak.title.clone())
+        }),
         label: record.label.clone(),
         batch: record.batch.map(|batch| batch.0.to_string()),
         entry: record.entry.map(|entry| entry.0.to_string()),
