@@ -6,7 +6,7 @@ members = ["crates/*", "apps/desktop/src-tauri"]
 [workspace.package]
 version = "0.0.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.89"
 authors = ["tatsuyakari1203"]
 repository = "https://github.com/tatsuyakari1203/volt"
 publish = false
@@ -19,7 +19,7 @@ serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 serde_json = "1"
 # SQLite is compiled in (`bundled`): no system library is needed.
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 # Dev-only: temp directories for persistence tests.
 tempfile = "3"
 
