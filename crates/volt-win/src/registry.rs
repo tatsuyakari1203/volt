@@ -507,8 +507,36 @@ mod tests {
         assert_eq!(exists(&format!("{}\\other", key.subkey)), Ok(false));
         // Case does not matter, like the registry itself.
         assert_eq!(exists(&key.subkey.to_uppercase()), Ok(true));
-        // Listing returns the values directly in a key, with the spelling they
-        // were written with, sorted by name ignoring case; a missing key is empty.
+        listing_contract(reg, key);
+
+        // Overwrite may change the type.
+        let target = key.value("morph");
+        reg.write_value(&target, &RegistryValue::Dword(1))
+            .expect("write");
+        reg.write_value(&target, &RegistryValue::Sz("one".into()))
+            .expect("write");
+        assert_eq!(
+            reg.read_value(&target),
+            Ok(Some(RegistryValue::Sz("one".into())))
+        );
+
+        // Delete removes exactly that value; a second delete is NotFound.
+        reg.delete_value(&target).expect("delete");
+        assert_eq!(reg.read_value(&target), Ok(None));
+        assert!(matches!(
+            reg.delete_value(&target),
+            Err(PortError::NotFound(_))
+        ));
+        // Neighbours survive.
+        assert_eq!(
+            reg.read_value(&key.child("deep\\er", "dword")),
+            Ok(Some(RegistryValue::Dword(0xDEAD_BEEF)))
+        );
+    }
+
+    /// Listing returns the values directly in a key, with the spelling they were written with,
+    /// sorted by name ignoring case; a missing key is empty.
+    fn listing_contract(reg: &dyn Registry, key: &TestKey) {
         reg.write_value(&key.child("deep\\er", "MiXed"), &RegistryValue::Dword(9))
             .expect("write");
         let listing = reg
@@ -550,30 +578,6 @@ mod tests {
             RegistryView::Native,
         );
         assert_eq!(reg.list_values(&missing), Ok(vec![]));
-
-        // Overwrite may change the type.
-        let target = key.value("morph");
-        reg.write_value(&target, &RegistryValue::Dword(1))
-            .expect("write");
-        reg.write_value(&target, &RegistryValue::Sz("one".into()))
-            .expect("write");
-        assert_eq!(
-            reg.read_value(&target),
-            Ok(Some(RegistryValue::Sz("one".into())))
-        );
-
-        // Delete removes exactly that value; a second delete is NotFound.
-        reg.delete_value(&target).expect("delete");
-        assert_eq!(reg.read_value(&target), Ok(None));
-        assert!(matches!(
-            reg.delete_value(&target),
-            Err(PortError::NotFound(_))
-        ));
-        // Neighbours survive.
-        assert_eq!(
-            reg.read_value(&key.child("deep\\er", "dword")),
-            Ok(Some(RegistryValue::Dword(0xDEAD_BEEF)))
-        );
     }
 
     #[test]
