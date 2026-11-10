@@ -9,21 +9,24 @@
 //! score that moved while the user read it would look like a fault. The live cards show the
 //! moving numbers; the score is a statement about a moment, and says when that moment was.
 //!
-//! **Independent of the core and the sampler.** The command needs only the registry and one
-//! read of the machine, so it works even when the engine could not start and when the metrics
-//! sampler has not produced its first sample. The read is a [`WinMetrics`] without a GPU
-//! query: three cheap Win32 calls that leave nothing open.
+//! **Independent of the sampler.** The command needs only the registry and one read of the
+//! machine, so it works when the metrics sampler has not produced its first sample. The read is
+//! a [`WinMetrics`] without a GPU query: three cheap Win32 calls that leave nothing open. The
+//! startup load is the one input that comes from the core (the startup manager lists what is
+//! enabled); when the engine could not start it is simply unchecked.
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use tauri::State;
 use volt_core::health;
 use volt_core::{
     Clock, Deduction, FixAction, HealthCheck, HealthLevel, HealthReport, MetricsSource, Registry,
-    SystemClock,
+    StartupLoad, SystemClock,
 };
 use volt_win::{WinMetrics, WinRegistry};
 
 use crate::IpcError;
+use crate::wiring::AppState;
 
 /// The mount of the system disk when `SystemDrive` is not set: Windows is on `C:` unless the
 /// environment says otherwise.
@@ -203,10 +206,10 @@ pub(crate) fn collect_report(
     registry: &dyn Registry,
     metrics: &dyn MetricsSource,
     system_mount: &str,
+    startup_load: Option<StartupLoad>,
     clock: &dyn Clock,
 ) -> HealthView {
-    // Nothing yet measures the startup load; it joins the score when the startup manager can.
-    let report = health::inspect(registry, metrics, system_mount, None);
+    let report = health::inspect(registry, metrics, system_mount, startup_load);
     log::debug!(
         "health check: score {}, {} deduction(s), {} unchecked",
         report.score(),
@@ -216,14 +219,23 @@ pub(crate) fn collect_report(
     HealthView::new(&report, system_mount, clock.now().to_iso8601())
 }
 
+/// The startup load from the startup manager (a read-only listing), `None` when the core or the
+/// manager is missing or a source could not be read.
+fn startup_load_of(state: &AppState) -> Option<StartupLoad> {
+    let core = state.core().ok()?;
+    let manager = core.startup_apps().ok()?;
+    StartupLoad::from_listing(&manager.list())
+}
+
 /// Reads the real machine: the real registry, one read of CPU time, memory and disks, and the
 /// system disk named by the environment.
-fn collect_real_report() -> HealthView {
+fn collect_real_report(startup_load: Option<StartupLoad>) -> HealthView {
     let mount = system_mount(std::env::var("SystemDrive").ok().as_deref());
     collect_report(
         &WinRegistry::new(),
         &WinMetrics::without_gpu(),
         &mount,
+        startup_load,
         &SystemClock,
     )
 }
@@ -235,8 +247,9 @@ fn collect_real_report() -> HealthView {
 /// does.
 #[tauri::command]
 #[specta::specta]
-pub(crate) async fn health_report() -> Result<HealthView, IpcError> {
-    tauri::async_runtime::spawn_blocking(collect_real_report)
+pub(crate) async fn health_report(state: State<'_, AppState>) -> Result<HealthView, IpcError> {
+    let startup_load = startup_load_of(&state);
+    tauri::async_runtime::spawn_blocking(move || collect_real_report(startup_load))
         .await
         .map_err(|error| IpcError::Other {
             message: format!("the background task failed: {error}"),
@@ -277,6 +290,8 @@ mod tests {
         raw
     }
 
+    const QUIET: Option<StartupLoad> = Some(StartupLoad { enabled_apps: 2 });
+
     #[test]
     fn the_view_carries_the_score_the_deductions_and_the_time() {
         let registry = FakeRegistry::new();
@@ -287,7 +302,7 @@ mod tests {
         );
         // 85 percent of memory in use (12 points), 15 GB free of 200 GB (20 points), restart (10).
         let metrics = FakeMetrics::constant(sample(850, 15 * GIB));
-        let view = collect_report(&registry, &metrics, "C:\\", &FixedClock);
+        let view = collect_report(&registry, &metrics, "C:\\", QUIET, &FixedClock);
 
         assert_eq!(view.score, 100 - 12 - 20 - 10);
         assert_eq!(view.level, HealthLevelView::Poor);
@@ -304,9 +319,23 @@ mod tests {
     }
 
     #[test]
+    fn the_startup_load_joins_the_score_and_a_missing_one_is_unchecked() {
+        let metrics = FakeMetrics::constant(sample(400, 150 * GIB));
+        let busy = Some(StartupLoad { enabled_apps: 16 });
+        let view = collect_report(&FakeRegistry::new(), &metrics, "C:\\", busy, &FixedClock);
+        assert_eq!(view.score, 100 - 15);
+        assert_eq!(view.deductions[0].id, "startup.many");
+        assert_eq!(view.deductions[0].fix, Some(FixActionView::OpenStartup));
+
+        let view = collect_report(&FakeRegistry::new(), &metrics, "C:\\", None, &FixedClock);
+        assert_eq!(view.unchecked, [HealthCheckView::Startup]);
+        assert_eq!(view.score, 100);
+    }
+
+    #[test]
     fn a_healthy_machine_is_a_hundred_with_no_deductions() {
         let metrics = FakeMetrics::constant(sample(400, 150 * GIB));
-        let view = collect_report(&FakeRegistry::new(), &metrics, "C:\\", &FixedClock);
+        let view = collect_report(&FakeRegistry::new(), &metrics, "C:\\", QUIET, &FixedClock);
         assert_eq!(view.score, 100);
         assert_eq!(view.level, HealthLevelView::Good);
         assert!(view.deductions.is_empty());
@@ -322,14 +351,15 @@ mod tests {
             PortError::AccessDenied("hklm".into()),
         );
         let metrics = FakeMetrics::scripted(vec![Err(PortError::Other("no counters".into()))]);
-        let view = collect_report(&registry, &metrics, "C:\\", &FixedClock);
+        let view = collect_report(&registry, &metrics, "C:\\", None, &FixedClock);
         assert_eq!(view.level, HealthLevelView::Unknown);
         assert_eq!(
             view.unchecked,
             [
                 HealthCheckView::SystemDisk,
                 HealthCheckView::Memory,
-                HealthCheckView::PendingRestart
+                HealthCheckView::PendingRestart,
+                HealthCheckView::Startup
             ]
         );
         assert!(view.deductions.is_empty());
@@ -338,7 +368,7 @@ mod tests {
     #[test]
     fn the_view_serialises_in_camel_case() {
         let metrics = FakeMetrics::constant(sample(950, 3 * GIB));
-        let view = collect_report(&FakeRegistry::new(), &metrics, "C:\\", &FixedClock);
+        let view = collect_report(&FakeRegistry::new(), &metrics, "C:\\", QUIET, &FixedClock);
         let json = serde_json::to_value(&view).unwrap_or_default();
         assert_eq!(json["score"], 100 - 30 - 25);
         assert_eq!(json["level"], "poor");
@@ -353,7 +383,7 @@ mod tests {
     fn the_real_machine_can_be_checked_read_only() {
         // Reads the real markers and one sample of the machine; changes nothing. It asserts the
         // shape of the answer, not the state of whichever machine runs the test.
-        let view = collect_real_report();
+        let view = collect_real_report(Some(StartupLoad { enabled_apps: 0 }));
         println!("{view:#?}");
         let points: u8 = view.deductions.iter().map(|d| d.points).sum();
         assert_eq!(view.score, 100 - points);

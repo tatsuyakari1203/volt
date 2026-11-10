@@ -274,8 +274,8 @@ export async function listActivity(limit: number, cursor?: string | null): Promi
 }
 
 /**
- * Everything that starts with Windows (Run keys and Startup folders), with the state Task Manager
- * shows. Sources that could not be read come back in `problems`; the rest of the list is valid.
+ * Everything that starts with Windows (Run keys and Startup folders), each with whether it is
+ * enabled. Sources that could not be read come back in `problems`; the rest of the list is valid.
  */
 export async function listStartupEntries(): Promise<StartupList> {
   return call(() => commands.listStartupEntries());

@@ -867,8 +867,8 @@ pub fn write_export(path: &Path, text: &str) -> Result<(), IpcError> {
     })
 }
 
-/// Lists everything that starts with Windows: the Run keys and both Startup folders, with the
-/// state Task Manager shows. Reads only. A source that cannot be read is listed in `problems`.
+/// Lists everything that starts with Windows: the Run keys and both Startup folders, each with
+/// whether it is enabled. Reads only. A source that cannot be read is listed in `problems`.
 pub fn list_startup_entries(core: &AppCore) -> Result<StartupList, IpcError> {
     let manager = core.startup_apps()?;
     let _exclusive = core.exclusive();

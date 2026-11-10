@@ -23,8 +23,8 @@
 //!
 //! An input that could not be read is listed in [`HealthReport::unchecked`] and costs no points.
 //! It is never guessed: "we could not look" is not "it is fine" and is reported as such. The
-//! startup load is the exception: nothing produces it yet (the startup manager is a later
-//! task), so while it is `None` it is simply not part of the report, not listed as unchecked.
+//! startup load comes from the startup manager: the number of enabled startup entries. When the
+//! list cannot be read completely it is `None` and the check is listed as unchecked.
 
 mod restart;
 #[cfg(test)]
@@ -33,6 +33,7 @@ mod tests;
 use crate::activity::error_class;
 use crate::metrics::{DiskSnapshot, MetricsSource, disk_snapshot, memory_snapshot};
 use crate::registry::Registry;
+use crate::startup::{StartupListing, StartupState};
 
 pub use restart::{RestartMarker, pending_restart_markers};
 
@@ -84,14 +85,14 @@ pub const RESTART_PENDING_POINTS: u8 = 10;
 
 // --- Startup load -----------------------------------------------------------------------------
 
-/// At this many high-impact startup apps or more, sign-in is clearly slowed: each one adds
-/// seconds of disk and CPU work while Windows is still starting.
-pub const STARTUP_MANY_HIGH_IMPACT_APPS: u32 = 4;
-/// At this many high-impact startup apps or more, sign-in starts to feel the load.
-pub const STARTUP_SOME_HIGH_IMPACT_APPS: u32 = 2;
-/// Points for many high-impact startup apps.
+/// At this many enabled startup entries or more, sign-in is clearly slowed: each one starts a
+/// program while Windows is still starting, and a typical clean PC has well under ten.
+pub const STARTUP_MANY_APPS: u32 = 15;
+/// At this many enabled startup entries or more, sign-in starts to feel the load.
+pub const STARTUP_SOME_APPS: u32 = 8;
+/// Points for many enabled startup entries.
 pub const STARTUP_MANY_POINTS: u8 = 15;
-/// Points for some high-impact startup apps.
+/// Points for some enabled startup entries.
 pub const STARTUP_SOME_POINTS: u8 = 8;
 
 // --- Levels -----------------------------------------------------------------------------------
@@ -175,8 +176,27 @@ impl From<&DiskSnapshot> for DiskSpace {
 /// How heavily the apps that start with Windows load the machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StartupLoad {
-    /// Enabled startup apps that Windows rates as high impact.
-    pub high_impact_apps: u32,
+    /// Startup entries that are enabled, from every source the startup manager reads.
+    pub enabled_apps: u32,
+}
+
+impl StartupLoad {
+    /// The load of a startup listing. `None` when a source could not be read: a partial count
+    /// would understate the load, and "could not tell" is not "fine".
+    #[must_use]
+    pub fn from_listing(listing: &StartupListing) -> Option<Self> {
+        if !listing.problems.is_empty() {
+            return None;
+        }
+        let enabled = listing
+            .entries
+            .iter()
+            .filter(|entry| entry.state == StartupState::Enabled)
+            .count();
+        Some(Self {
+            enabled_apps: u32::try_from(enabled).unwrap_or(u32::MAX),
+        })
+    }
 }
 
 /// Everything the rules look at. `None` means "could not be read" (or, for the startup load,
@@ -189,7 +209,7 @@ pub struct HealthInputs {
     pub memory_used_percent: Option<f32>,
     /// Whether Windows waits for a restart.
     pub restart_pending: Option<bool>,
-    /// Load of the startup apps. Stays `None` until the startup manager can measure it.
+    /// Load of the startup apps. `None` when the startup manager could not read them all.
     pub startup_load: Option<StartupLoad>,
 }
 
@@ -297,9 +317,12 @@ pub fn assess(inputs: &HealthInputs) -> HealthReport {
         }
         None => unchecked.push(HealthCheck::PendingRestart),
     }
-    if let Some(load) = inputs.startup_load {
-        checks_run += 1;
-        deductions.extend(startup_deduction(load));
+    match inputs.startup_load {
+        Some(load) => {
+            checks_run += 1;
+            deductions.extend(startup_deduction(load));
+        }
+        None => unchecked.push(HealthCheck::Startup),
     }
 
     HealthReport {
@@ -394,13 +417,13 @@ fn restart_deduction() -> Deduction {
 }
 
 fn startup_deduction(load: StartupLoad) -> Option<Deduction> {
-    let (id, points, title) = if load.high_impact_apps >= STARTUP_MANY_HIGH_IMPACT_APPS {
+    let (id, points, title) = if load.enabled_apps >= STARTUP_MANY_APPS {
         (
             "startup.many",
             STARTUP_MANY_POINTS,
             "Many apps start with Windows",
         )
-    } else if load.high_impact_apps >= STARTUP_SOME_HIGH_IMPACT_APPS {
+    } else if load.enabled_apps >= STARTUP_SOME_APPS {
         (
             "startup.some",
             STARTUP_SOME_POINTS,
@@ -415,8 +438,8 @@ fn startup_deduction(load: StartupLoad) -> Option<Deduction> {
         points,
         title,
         reason: format!(
-            "{} apps that Windows rates as high impact start when you sign in, which slows it down.",
-            load.high_impact_apps
+            "{} startup entries are enabled. Each one starts a program when you sign in, which              slows it down.",
+            load.enabled_apps
         ),
         fix: FixAction::OpenStartup,
     })

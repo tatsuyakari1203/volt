@@ -8,7 +8,6 @@ import { TweaksScreen } from '../features/tweaks/TweaksScreen';
 import { UndoScreen } from '../features/undo/UndoScreen';
 import { type BoostResult, onBoostFinished } from '../shared/ipc';
 import { NavRail } from './NavRail';
-import { PlaceholderScreen } from './PlaceholderScreen';
 import { SettingsScreen } from './SettingsScreen';
 import { footerSections, initialSection, mainSections, type SectionId } from './sections';
 
@@ -40,10 +39,6 @@ function Screen({
       return <SettingsScreen />;
     case 'undo':
       return <UndoScreen />;
-    default: {
-      const section = allSections.find((candidate) => candidate.id === id);
-      return section ? <PlaceholderScreen section={section} /> : null;
-    }
   }
 }
 

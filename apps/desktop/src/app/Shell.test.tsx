@@ -53,12 +53,13 @@ it('lists every section in the primary navigation, with Home current', () => {
     'Tweaks',
     'Startup',
     'Processes',
-    'Health',
     'Settings',
     'Undo',
   ]) {
     expect(within(nav).getByRole('button', { name: label })).toBeTruthy();
   }
+  // Nothing is listed for a section that is not built.
+  expect(within(nav).queryByRole('button', { name: 'Health' })).toBeNull();
   expect(within(nav).getByRole('button', { name: 'Home' }).getAttribute('aria-current')).toBe(
     'page',
   );
@@ -76,15 +77,6 @@ it('navigates by keyboard and moves focus to the content', async () => {
   expect(tweaks.getAttribute('aria-current')).toBe('page');
   expect(screen.getByRole('heading', { level: 1, name: 'Tweaks' })).toBeTruthy();
   expect(document.activeElement).toBe(screen.getByRole('main'));
-});
-
-it('shows a placeholder that says what will live in an unbuilt section', async () => {
-  const user = userEvent.setup();
-  renderShell();
-  await user.click(screen.getByRole('button', { name: 'Health' }));
-  expect(screen.getByRole('heading', { level: 1, name: 'Health' })).toBeTruthy();
-  expect(screen.getByText('Coming soon')).toBeTruthy();
-  expect(screen.getByText(/disk, battery and system health/)).toBeTruthy();
 });
 
 it('contains the Rust-core failure inside the About block in Settings', async () => {
@@ -175,7 +167,6 @@ it('shows the real Startup screen, and explains that it cannot load here', async
   await user.click(screen.getByRole('button', { name: 'Startup' }));
   expect(screen.getByRole('heading', { level: 1, name: 'Startup' })).toBeTruthy();
   expect(await screen.findByText('Startup entries could not be loaded')).toBeTruthy();
-  expect(screen.queryByText('Coming soon')).toBeNull();
 });
 
 it('shows the real Memory screen, and explains that it cannot load here', async () => {
@@ -184,7 +175,6 @@ it('shows the real Memory screen, and explains that it cannot load here', async 
   await user.click(screen.getByRole('button', { name: 'Memory' }));
   expect(screen.getByRole('heading', { level: 1, name: 'Memory' })).toBeTruthy();
   expect(await screen.findByText('Memory could not be read')).toBeTruthy();
-  expect(screen.queryByText('Coming soon')).toBeNull();
 });
 
 it('shows the activity history on the Undo screen instead of a placeholder', async () => {
@@ -193,7 +183,6 @@ it('shows the activity history on the Undo screen instead of a placeholder', asy
   await user.click(screen.getByRole('button', { name: 'Undo' }));
   expect(screen.getByRole('heading', { level: 1, name: 'Undo' })).toBeTruthy();
   expect(await screen.findByText('The history could not be loaded')).toBeTruthy();
-  expect(screen.queryByText('Coming soon')).toBeNull();
 });
 
 it('reads the tweak states again when Tweaks is opened after the Undo screen', async () => {
