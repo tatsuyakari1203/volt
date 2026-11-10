@@ -438,7 +438,7 @@ fn startup_deduction(load: StartupLoad) -> Option<Deduction> {
         points,
         title,
         reason: format!(
-            "{} startup entries are enabled. Each one starts a program when you sign in, which              slows it down.",
+            "{} startup entries are enabled. Each one starts a program when you sign in, which slows it down.",
             load.enabled_apps
         ),
         fix: FixAction::OpenStartup,
