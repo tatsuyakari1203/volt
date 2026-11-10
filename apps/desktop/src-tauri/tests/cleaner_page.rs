@@ -283,6 +283,7 @@ fn skipped_items_are_grouped_by_reason() {
     assert_eq!(run.skipped.len(), 1);
     assert_eq!(run.skipped[0].reason, "locked, in use or access denied");
     assert_eq!(run.skipped[0].count, 1);
+    assert_eq!(run.skipped[0].reason_phrase.code, "skip.locked");
     assert!(
         run.message.contains("1 item left in place"),
         "{}",

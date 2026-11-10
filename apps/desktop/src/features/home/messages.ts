@@ -1,4 +1,4 @@
-import { getLocale, type MessageKey, t, tn } from '../../shared/i18n';
+import { getLocale, type MessageKey, say, t, tn } from '../../shared/i18n';
 import type {
   DeductionView,
   FixActionView,
@@ -114,40 +114,12 @@ export function deductionTitle(deduction: DeductionView): string {
   return key && getLocale() !== 'en' ? t(key) : deduction.title;
 }
 
-/** `12.4` as `12,4` where the language writes a decimal comma. */
-function localDecimals(text: string): string {
-  return getLocale() === 'vi' ? text.replace(/(\d)\.(\d)/g, '$1,$2') : text;
-}
-
 /**
- * The reason of a deduction. The core writes one English sentence with the figures in it; in
- * another language the figures are read back out of that sentence and set into the translated
- * one. A sentence this does not recognise is shown as the core wrote it.
+ * The reason of a deduction, written from the code and the figures the core sends with it. In
+ * English, and for a code this UI does not know, it is the core's own sentence.
  */
 export function deductionReason(deduction: DeductionView): string {
-  const { id, reason } = deduction;
-  if (getLocale() === 'en') return reason;
-  if (id.startsWith('disk.')) {
-    const found = /^(.+?) of (.+?) is free on (.+?) \((.+?)\)\./.exec(reason);
-    if (found) {
-      const [, free = '', total = '', mount = '', share = ''] = found;
-      return t('health.reason.disk', {
-        free: localDecimals(free),
-        total: localDecimals(total),
-        mount,
-        share: localDecimals(share),
-      });
-    }
-  } else if (id.startsWith('memory.')) {
-    const found = /^(\d+)%/.exec(reason);
-    if (found) return t('health.reason.memory', { percent: found[1] ?? '' });
-  } else if (id === 'restart.pending') {
-    return t('health.reason.restart');
-  } else if (id.startsWith('startup.')) {
-    const found = /^(\d+) startup entries/.exec(reason);
-    if (found) return tn('health.reason.startup', Number(found[1]));
-  }
-  return reason;
+  return say(deduction.reasonPhrase, deduction.reason);
 }
 
 function assertNever(value: never): never {

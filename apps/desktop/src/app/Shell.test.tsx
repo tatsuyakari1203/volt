@@ -8,10 +8,13 @@ import { Shell } from './Shell';
 
 // A plain browser has no Tauri bridge: the calls fail. The screens must absorb that. The tray
 // Boost event is the exception: the test captures its handler to fire it by hand.
-const { boostListeners, tweakReads, saveLanguage } = vi.hoisted(() => ({
+const { boostListeners, tweakReads, saveLanguage, languageSetting } = vi.hoisted(() => ({
   boostListeners: [] as Array<(report: unknown) => void>,
   tweakReads: { count: 0 },
   saveLanguage: vi.fn(() => Promise.resolve({ choice: 'vi', system: 'en' })),
+  languageSetting: vi.fn<() => Promise<{ choice: string; system: string }>>(() =>
+    Promise.reject(new Error('no tauri bridge')),
+  ),
 }));
 vi.mock('../shared/ipc', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../shared/ipc')>()),
@@ -26,7 +29,7 @@ vi.mock('../shared/ipc', async (importOriginal) => ({
   onMetricsUpdated: () => Promise.reject(new Error('no tauri bridge')),
   listStartupEntries: () => Promise.reject(new Error('no tauri bridge')),
   getAutostartEnabled: () => Promise.reject(new Error('no tauri bridge')),
-  getLanguageSetting: () => Promise.reject(new Error('no tauri bridge')),
+  getLanguageSetting: languageSetting,
   saveLanguageSetting: saveLanguage,
   setAutostartEnabled: () => Promise.reject(new Error('no tauri bridge')),
   onBoostFinished: (handler: (report: unknown) => void) => {
@@ -230,18 +233,27 @@ it('choosing Tiếng Việt in Settings translates the window at once and saves 
   expect(document.documentElement.lang).toBe('vi');
   expect(window.localStorage.getItem('volt.language')).toBe('vi');
   // The shell learns the choice and what System means on this PC (English here).
-  expect(saveLanguage).toHaveBeenCalledWith('vi', 'en');
+  expect(saveLanguage).toHaveBeenCalledWith('vi');
 
   await user.click(screen.getByRole('radio', { name: 'English' }));
   expect(screen.getByRole('heading', { level: 1, name: 'Settings' })).toBeTruthy();
   expect(window.localStorage.getItem('volt.language')).toBe('en');
 });
 
-it('follows the language of the system by default', () => {
+it('follows the display language of Windows, as the shell reports it, by default', async () => {
+  languageSetting.mockResolvedValueOnce({ choice: 'system', system: 'vi' });
+  renderLocalisedShell();
+  expect(
+    await screen.findByRole('heading', { level: 1, name: 'Trang chủ' }, { timeout: 2000 }),
+  ).toBeTruthy();
+  expect(window.localStorage.getItem('volt.language.system')).toBe('vi');
+});
+
+it('never takes the language from the browser language list', () => {
   const languages = vi.spyOn(window.navigator, 'languages', 'get').mockReturnValue(['vi-VN']);
   try {
     renderLocalisedShell();
-    expect(screen.getByRole('heading', { level: 1, name: 'Trang chủ' })).toBeTruthy();
+    expect(screen.getByRole('heading', { level: 1, name: 'Home' })).toBeTruthy();
   } finally {
     languages.mockRestore();
   }

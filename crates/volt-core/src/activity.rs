@@ -29,7 +29,9 @@ use serde::{Deserialize, Serialize};
 use crate::error::{ExecError, PortError, RevertError};
 use crate::journal::{BatchId, EntryId, Source};
 use crate::operation::{Operation, PriorState};
+use crate::phrase::{Phrase, class_phrase};
 use crate::registry::RegistryValue;
+use crate::service::ServiceStartType;
 use crate::startup::{StartupState, approved_entry_name, decode_approval};
 use crate::time::Timestamp;
 
@@ -88,6 +90,10 @@ pub struct NewActivity {
     pub entry: Option<EntryId>,
     /// The tweak id or plan label, when known.
     pub label: Option<String>,
+    /// The summary as a code and parameters, so the UI can write it in its own language.
+    /// `summary` stays the English text of the same phrase.
+    #[serde(default)]
+    pub phrase: Option<Phrase>,
 }
 
 /// A stored activity record.
@@ -109,6 +115,33 @@ pub struct ActivityRecord {
     pub entry: Option<EntryId>,
     /// The tweak id or plan label, when known.
     pub label: Option<String>,
+    /// The summary as a code and parameters. `None` for a record written before phrases existed:
+    /// its `summary` is all there is.
+    #[serde(default)]
+    pub phrase: Option<Phrase>,
+}
+
+impl NewActivity {
+    /// An event whose summary is `phrase`; the summary text is its English.
+    #[must_use]
+    pub fn said(
+        timestamp: Timestamp,
+        source: Source,
+        outcome: ActivityOutcome,
+        phrase: Phrase,
+        label: Option<String>,
+    ) -> Self {
+        Self {
+            timestamp,
+            source,
+            outcome,
+            summary: phrase.english(),
+            batch: None,
+            entry: None,
+            label,
+            phrase: Some(phrase),
+        }
+    }
 }
 
 /// Port: the persistent activity log.
@@ -224,61 +257,97 @@ fn one_line(text: &str) -> String {
 }
 
 // ---- redacted descriptions (used by the executor; public for later events) -----------------
+//
+// Every description is a [`Phrase`]: the UI writes it in the language of the user and the core
+// keeps the English text (`.english()`) for records and as the fallback. The functions that
+// return a `String` are the English text of the phrase of the same name.
 
 /// Describes a registry value for a log: the kind, and the number for the
 /// numeric kinds, but only the length for strings and binary data.
 #[must_use]
-pub fn redacted_value(value: &RegistryValue) -> String {
+pub fn value_phrase(value: &RegistryValue) -> Phrase {
     match value {
-        RegistryValue::Dword(v) => format!("REG_DWORD {v}"),
-        RegistryValue::Qword(v) => format!("REG_QWORD {v}"),
-        RegistryValue::Sz(v) => format!("REG_SZ ({} chars)", v.chars().count()),
-        RegistryValue::ExpandSz(v) => format!("REG_EXPAND_SZ ({} chars)", v.chars().count()),
-        RegistryValue::MultiSz(v) => format!(
-            "REG_MULTI_SZ ({} strings, {} chars)",
-            v.len(),
-            v.iter().map(|s| s.chars().count()).sum::<usize>()
-        ),
-        RegistryValue::Binary(v) => format!("REG_BINARY ({} bytes)", v.len()),
+        RegistryValue::Dword(v) => Phrase::new("value.dword").text("value", v.to_string()),
+        RegistryValue::Qword(v) => Phrase::new("value.qword").text("value", v.to_string()),
+        RegistryValue::Sz(v) => Phrase::new("value.sz").count("count", v.chars().count()),
+        RegistryValue::ExpandSz(v) => {
+            Phrase::new("value.expandSz").count("count", v.chars().count())
+        }
+        RegistryValue::MultiSz(v) => Phrase::new("value.multiSz")
+            .count("strings", v.len())
+            .count("chars", v.iter().map(|s| s.chars().count()).sum::<usize>()),
+        RegistryValue::Binary(v) => Phrase::new("value.binary").count("count", v.len()),
     }
+}
+
+/// [`value_phrase`] in English.
+#[must_use]
+pub fn redacted_value(value: &RegistryValue) -> String {
+    value_phrase(value).english()
+}
+
+/// A service start type as a phrase.
+#[must_use]
+pub fn start_type_phrase(start_type: ServiceStartType) -> Phrase {
+    Phrase::new(match start_type {
+        ServiceStartType::Boot => "start.boot",
+        ServiceStartType::System => "start.system",
+        ServiceStartType::Automatic => "start.automatic",
+        ServiceStartType::AutomaticDelayed => "start.automaticDelayed",
+        ServiceStartType::Manual => "start.manual",
+        ServiceStartType::Disabled => "start.disabled",
+    })
 }
 
 /// Describes a recorded prior state for a log, with the same redaction.
 #[must_use]
-pub fn redacted_prior(prior: &PriorState) -> String {
+pub fn prior_phrase(prior: &PriorState) -> Phrase {
     match prior {
-        PriorState::RegistryValue(Some(value)) => redacted_value(value),
+        PriorState::RegistryValue(Some(value)) => value_phrase(value),
         PriorState::RegistryValue(None) | PriorState::RegistryValueInNewKey { .. } => {
-            "(not set)".to_owned()
+            Phrase::new("prior.notSet")
         }
-        PriorState::RegistryKeyMissing { .. } => "key missing".to_owned(),
+        PriorState::RegistryKeyMissing { .. } => Phrase::new("prior.keyMissing"),
         PriorState::RegistryKeyPresent(contents) => {
-            format!("key exists ({} values)", contents.values.len())
+            Phrase::new("prior.keyExists").count("count", contents.values.len())
         }
-        PriorState::ServiceStartType(start_type) => start_type.to_string(),
-        PriorState::CommandState(true) => "applied".to_owned(),
-        PriorState::CommandState(false) => "not applied".to_owned(),
+        PriorState::ServiceStartType(start_type) => start_type_phrase(*start_type),
+        PriorState::CommandState(true) => Phrase::new("prior.applied"),
+        PriorState::CommandState(false) => Phrase::new("prior.notApplied"),
     }
 }
 
+/// [`prior_phrase`] in English.
+#[must_use]
+pub fn redacted_prior(prior: &PriorState) -> String {
+    prior_phrase(prior).english()
+}
+
 /// What reverting does to a target, in plain words with the same redaction as
-/// [`redacted_prior`]: `set back to REG_DWORD 1`, `removed (it did not exist
+/// [`prior_phrase`]: `set back to REG_DWORD 1`, `removed (it did not exist
 /// before)`, `set back to disabled`.
 #[must_use]
-pub fn restore_words(prior: &PriorState) -> String {
+pub fn restore_phrase(prior: &PriorState) -> Phrase {
+    let set_back = |to: Phrase| Phrase::new("restore.setBack").phrase("to", to);
     match prior {
-        PriorState::RegistryValue(Some(value)) => format!("set back to {}", redacted_value(value)),
-        PriorState::RegistryValue(None) => "removed (it did not exist before)".to_owned(),
+        PriorState::RegistryValue(Some(value)) => set_back(value_phrase(value)),
+        PriorState::RegistryValue(None) => Phrase::new("restore.removed"),
         PriorState::RegistryValueInNewKey { .. } | PriorState::RegistryKeyMissing { .. } => {
-            "removed, with its empty parent keys (it did not exist before)".to_owned()
+            Phrase::new("restore.removedKey")
         }
         PriorState::RegistryKeyPresent(contents) => {
-            format!("put back with {} values", contents.values.len())
+            Phrase::new("restore.putBack").count("count", contents.values.len())
         }
-        PriorState::ServiceStartType(start_type) => format!("set back to {start_type}"),
-        PriorState::CommandState(true) => "put back to in effect".to_owned(),
-        PriorState::CommandState(false) => "put back to not in effect".to_owned(),
+        PriorState::ServiceStartType(start_type) => set_back(start_type_phrase(*start_type)),
+        PriorState::CommandState(true) => Phrase::new("restore.inEffect"),
+        PriorState::CommandState(false) => Phrase::new("restore.notInEffect"),
     }
+}
+
+/// [`restore_phrase`] in English.
+#[must_use]
+pub fn restore_words(prior: &PriorState) -> String {
+    restore_phrase(prior).english()
 }
 
 /// The class of a port error, without its message (which can carry command
@@ -295,88 +364,139 @@ pub fn error_class(error: &PortError) -> &'static str {
     }
 }
 
+/// [`error_class`] as a phrase.
+#[must_use]
+pub fn error_class_phrase(error: &PortError) -> Phrase {
+    class_phrase(error_class(error))
+}
+
 /// What an operation touches, named without any data: for a command only the
 /// program, never the arguments.
 #[must_use]
-pub fn subject(operation: &Operation) -> String {
+pub fn subject_phrase(operation: &Operation) -> Phrase {
     match operation {
         Operation::SetRegistryValue { target, .. } | Operation::DeleteRegistryValue { target } => {
             match approved_entry_name(target) {
-                Some(name) => format!("startup entry {name}"),
-                None => format!("registry value {target}"),
+                Some(name) => Phrase::new("subject.startupEntry").text("name", name.to_string()),
+                None => Phrase::new("subject.registryValue").text("target", target.to_string()),
             }
         }
         Operation::EnsureRegistryKey { key } | Operation::DeleteRegistryKey { key } => {
-            format!("registry key {key}")
+            Phrase::new("subject.registryKey").text("key", key.to_string())
         }
         Operation::SetServiceStartType { service, .. } => {
-            format!("service {service} start type")
+            Phrase::new("subject.service").text("service", service.to_string())
         }
-        Operation::RunCommand { apply, .. } => format!("command {}", apply.program),
+        Operation::RunCommand { apply, .. } => {
+            Phrase::new("subject.command").text("program", apply.program.to_string())
+        }
     }
 }
 
+/// [`subject_phrase`] in English.
+#[must_use]
+pub fn subject(operation: &Operation) -> String {
+    subject_phrase(operation).english()
+}
+
 /// `Applied <subject> = <redacted new value>`.
-pub(crate) fn applied_summary(operation: &Operation) -> String {
-    let subject = subject(operation);
+pub(crate) fn applied_summary(operation: &Operation) -> Phrase {
     if let Some(summary) = startup_applied_summary(operation) {
         return summary;
     }
+    let applied = |value: Phrase| {
+        Phrase::new("summary.applied")
+            .phrase("subject", subject_phrase(operation))
+            .phrase("value", value)
+    };
     match operation {
-        Operation::SetRegistryValue { value, .. } => {
-            format!("Applied {subject} = {}", redacted_value(value))
-        }
-        Operation::DeleteRegistryValue { .. } => format!("Applied {subject} = (not set)"),
-        Operation::EnsureRegistryKey { .. } => format!("Applied {subject} = exists"),
-        Operation::DeleteRegistryKey { .. } => format!("Applied {subject} = removed"),
+        Operation::SetRegistryValue { value, .. } => applied(value_phrase(value)),
+        Operation::DeleteRegistryValue { .. } => applied(Phrase::new("prior.notSet")),
+        Operation::EnsureRegistryKey { .. } => applied(Phrase::new("value.exists")),
+        Operation::DeleteRegistryKey { .. } => applied(Phrase::new("value.removed")),
         Operation::SetServiceStartType { start_type, .. } => {
-            format!("Applied {subject} = {start_type}")
+            applied(start_type_phrase(*start_type))
         }
-        Operation::RunCommand { .. } => format!("Applied {subject}"),
+        Operation::RunCommand { .. } => {
+            Phrase::new("summary.appliedPlain").phrase("subject", subject_phrase(operation))
+        }
+    }
+}
+
+/// How an entry was put back: on request, or automatically after a later step failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RestoreVerb {
+    /// The user asked for the undo.
+    Reverted,
+    /// A later step of the same plan failed.
+    RolledBack,
+}
+
+impl RestoreVerb {
+    fn done(self) -> Phrase {
+        Phrase::new(match self {
+            Self::Reverted => "verb.reverted",
+            Self::RolledBack => "verb.rolledBack",
+        })
+    }
+
+    /// The infinitive, for a failure: `revert`, `roll back`.
+    pub(crate) fn attempt(self) -> Phrase {
+        Phrase::new(match self {
+            Self::Reverted => "verb.revert",
+            Self::RolledBack => "verb.rollBack",
+        })
     }
 }
 
 /// `Reverted <subject>, restored <redacted prior state>` (or `Rolled back`).
 pub(crate) fn restored_summary(
-    verb: &str,
+    verb: RestoreVerb,
     operation: &Operation,
     prior: &PriorState,
     journal_note: bool,
-) -> String {
-    let mut summary = startup_restored_summary(verb, operation, prior).unwrap_or_else(|| {
-        format!(
-            "{verb} {}, restored {}",
-            subject(operation),
-            redacted_prior(prior)
-        )
-    });
-    if journal_note {
-        summary.push_str(" (the journal entry could not be updated)");
+) -> Phrase {
+    let with_note = |phrase: Phrase| {
+        if journal_note {
+            phrase.phrase("note", Phrase::new("summary.journalNote"))
+        } else {
+            phrase.nothing("note")
+        }
+    };
+    if let Some((name, state)) = startup_restored_state(operation, prior) {
+        return with_note(
+            Phrase::new("summary.startupRestored")
+                .phrase("verb", verb.done())
+                .text("name", name)
+                .phrase("state", state),
+        );
     }
-    summary
+    with_note(
+        Phrase::new("summary.restored")
+            .phrase("verb", verb.done())
+            .phrase("subject", subject_phrase(operation))
+            .phrase("prior", prior_phrase(prior)),
+    )
 }
 
 // ---- startup entries: the same change, said in plain words ---------------------------------
 
 /// `Disabled startup entry: Name` or `Enabled startup entry: Name` for a write of an approval
 /// record (see [`crate::startup::approval`]); `None` for any other operation.
-fn startup_applied_summary(operation: &Operation) -> Option<String> {
+fn startup_applied_summary(operation: &Operation) -> Option<Phrase> {
     let Operation::SetRegistryValue { target, value } = operation else {
         return None;
     };
     let name = approved_entry_name(target)?;
-    match decode_approval(value)? {
-        StartupState::Enabled => Some(format!("Enabled startup entry: {name}")),
-        StartupState::Disabled => Some(format!("Disabled startup entry: {name}")),
-    }
+    let code = match decode_approval(value)? {
+        StartupState::Enabled => "summary.startupEnabled",
+        StartupState::Disabled => "summary.startupDisabled",
+    };
+    Some(Phrase::new(code).text("name", name.to_string()))
 }
 
-/// `Reverted startup entry: Name is enabled again` for the undo of an approval record.
-fn startup_restored_summary(
-    verb: &str,
-    operation: &Operation,
-    prior: &PriorState,
-) -> Option<String> {
+/// The entry and `is enabled again` for the undo of an approval record.
+fn startup_restored_state(operation: &Operation, prior: &PriorState) -> Option<(String, Phrase)> {
     let (Operation::SetRegistryValue { target, .. } | Operation::DeleteRegistryValue { target }) =
         operation
     else {
@@ -386,36 +506,47 @@ fn startup_restored_summary(
     let previous = prior.registry_value()?;
     let now = match previous.map(decode_approval) {
         // No record means Windows starts the entry.
-        None | Some(Some(StartupState::Enabled)) => "is enabled again",
-        Some(Some(StartupState::Disabled)) => "is disabled again",
-        Some(None) => "has its earlier setting back",
+        None | Some(Some(StartupState::Enabled)) => "startup.enabledAgain",
+        Some(Some(StartupState::Disabled)) => "startup.disabledAgain",
+        Some(None) => "startup.earlierBack",
     };
-    Some(format!("{verb} startup entry: {name} {now}"))
+    Some((name.to_string(), Phrase::new(now)))
 }
 
-/// [`redacted_prior`] for a journal entry: a startup approval record reads as `enabled` or
+/// [`prior_phrase`] for a journal entry: a startup approval record reads as `enabled` or
 /// `disabled` instead of `REG_BINARY (12 bytes)`.
 #[must_use]
-pub fn redacted_prior_for(operation: &Operation, prior: &PriorState) -> String {
+pub fn prior_phrase_for(operation: &Operation, prior: &PriorState) -> Phrase {
     match startup_prior_words(operation, prior) {
-        Some(state) => state.to_owned(),
-        None => redacted_prior(prior),
+        Some(state) => Phrase::new(state),
+        None => prior_phrase(prior),
     }
 }
 
-/// [`restore_words`] for a journal entry, with the same startup wording.
+/// [`prior_phrase_for`] in English.
+#[must_use]
+pub fn redacted_prior_for(operation: &Operation, prior: &PriorState) -> String {
+    prior_phrase_for(operation, prior).english()
+}
+
+/// [`restore_phrase`] for a journal entry, with the same startup wording.
+#[must_use]
+pub fn restore_phrase_for(operation: &Operation, prior: &PriorState) -> Phrase {
+    match startup_prior_words(operation, prior) {
+        Some("startup.noRecord") => Phrase::new("restore.startupNoRecord"),
+        Some(state) => Phrase::new("restore.setBack").phrase("to", Phrase::new(state)),
+        None => restore_phrase(prior),
+    }
+}
+
+/// [`restore_phrase_for`] in English.
 #[must_use]
 pub fn restore_words_for(operation: &Operation, prior: &PriorState) -> String {
-    match startup_prior_words(operation, prior) {
-        Some("enabled (it had no record)") => {
-            "set back to enabled (the record Volt wrote is removed)".to_owned()
-        }
-        Some(state) => format!("set back to {state}"),
-        None => restore_words(prior),
-    }
+    restore_phrase_for(operation, prior).english()
 }
 
-/// What a startup approval record held before: `enabled`, `enabled (no record)`, `disabled`.
+/// What a startup approval record held before: `enabled`, `enabled (no record)`, `disabled`, as
+/// the code of the phrase that says it.
 fn startup_prior_words(operation: &Operation, prior: &PriorState) -> Option<&'static str> {
     let (Operation::SetRegistryValue { target, .. } | Operation::DeleteRegistryValue { target }) =
         operation
@@ -425,46 +556,58 @@ fn startup_prior_words(operation: &Operation, prior: &PriorState) -> Option<&'st
     approved_entry_name(target)?;
     let previous = prior.registry_value()?;
     match previous.map(decode_approval) {
-        None => Some("enabled (it had no record)"),
-        Some(Some(StartupState::Enabled)) => Some("enabled"),
-        Some(Some(StartupState::Disabled)) => Some("disabled"),
+        None => Some("startup.noRecord"),
+        Some(Some(StartupState::Enabled)) => Some("startup.enabled"),
+        Some(Some(StartupState::Disabled)) => Some("startup.disabled"),
         Some(None) => None,
     }
 }
 
 /// `Failed to <verb> <subject>: <reason>`.
-pub(crate) fn failure_summary(verb: &str, operation: &Operation, reason: &str) -> String {
-    format!("Failed to {verb} {}: {reason}", subject(operation))
+pub(crate) fn failure_summary(verb: Phrase, operation: &Operation, reason: Phrase) -> Phrase {
+    Phrase::new("summary.failed")
+        .phrase("verb", verb)
+        .phrase("subject", subject_phrase(operation))
+        .phrase("reason", reason)
 }
 
 /// Why applying failed, in words, without any port message.
 #[must_use]
-pub fn exec_reason(error: &ExecError) -> String {
+pub fn exec_phrase(error: &ExecError) -> Phrase {
     match error {
-        ExecError::Detect(e) => format!("could not read the current state ({})", error_class(e)),
-        ExecError::Journal(_) => "could not write the undo journal".to_owned(),
-        ExecError::Apply { error, .. } => format!("the change failed ({})", error_class(error)),
-        ExecError::MarkApplied(_) => {
-            "the change was made but the journal entry could not be updated".to_owned()
+        ExecError::Detect(e) => Phrase::new("reason.detect").phrase("class", error_class_phrase(e)),
+        ExecError::Journal(_) => Phrase::new("reason.journalWrite"),
+        ExecError::Apply { error, .. } => {
+            Phrase::new("reason.applyFailed").phrase("class", error_class_phrase(error))
         }
+        ExecError::MarkApplied(_) => Phrase::new("reason.markApplied"),
     }
+}
+
+/// [`exec_phrase`] in English.
+#[must_use]
+pub fn exec_reason(error: &ExecError) -> String {
+    exec_phrase(error).english()
 }
 
 /// Why reverting failed, in words, without any port message.
 #[must_use]
-pub fn revert_reason(error: &RevertError) -> String {
+pub fn revert_phrase(error: &RevertError) -> Phrase {
     match error {
-        RevertError::Port(e) => format!(
-            "the previous state could not be restored ({})",
-            error_class(e)
-        ),
-        RevertError::Journal(_) => "could not read the undo journal".to_owned(),
-        RevertError::EntryNotFound(_) => "the journal entry was not found".to_owned(),
-        RevertError::NotRevertible(_) => "the entry cannot be reverted".to_owned(),
-        RevertError::MarkReverted(_) => {
-            "the state was restored but the journal entry could not be updated".to_owned()
+        RevertError::Port(e) => {
+            Phrase::new("reason.restoreFailed").phrase("class", error_class_phrase(e))
         }
+        RevertError::Journal(_) => Phrase::new("reason.journalRead"),
+        RevertError::EntryNotFound(_) => Phrase::new("reason.entryNotFound"),
+        RevertError::NotRevertible(_) => Phrase::new("reason.notRevertible"),
+        RevertError::MarkReverted(_) => Phrase::new("reason.markReverted"),
     }
+}
+
+/// [`revert_phrase`] in English.
+#[must_use]
+pub fn revert_reason(error: &RevertError) -> String {
+    revert_phrase(error).english()
 }
 
 #[cfg(test)]

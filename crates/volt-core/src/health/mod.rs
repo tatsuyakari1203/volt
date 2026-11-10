@@ -32,6 +32,7 @@ mod tests;
 
 use crate::activity::error_class;
 use crate::metrics::{DiskSnapshot, MetricsSource, disk_snapshot, memory_snapshot};
+use crate::phrase::Phrase;
 use crate::registry::Registry;
 use crate::startup::{StartupListing, StartupState};
 
@@ -121,7 +122,6 @@ pub const DEDUCTION_IDS: [&str; 8] = [
 ];
 
 const GIB: u64 = 1024 * 1024 * 1024;
-const MIB: u64 = 1024 * 1024;
 
 /// What the user can do about a deduction. A closed set: the UI maps each one to a screen or a
 /// sentence, and a new fix means a new variant that every `match` must handle.
@@ -224,8 +224,13 @@ pub struct Deduction {
     pub points: u8,
     /// A short name for the problem.
     pub title: &'static str,
-    /// One or two sentences, in plain words, saying what was found and why it matters.
+    /// One or two sentences, in plain words, saying what was found and why it matters, in
+    /// English. It is the text of [`Deduction::reason_phrase`] and the fallback of the UI.
     pub reason: String,
+    /// The same reason as a code (`health.disk`, `health.memory`, `health.restart`,
+    /// `health.startup`) and the figures it was built from, so the UI writes it in its own
+    /// language without taking the English apart.
+    pub reason_phrase: Phrase,
     /// What to do about it.
     pub fix: FixAction,
 }
@@ -363,19 +368,21 @@ fn disk_deduction(disk: &DiskSpace) -> Option<Deduction> {
     }
     let (id, points, title) = disk_tier(disk)?;
     let free = disk.free_bytes.min(disk.total_bytes);
+    let reason_phrase = with_share(
+        Phrase::new("health.disk")
+            .bytes("free", free)
+            .bytes("total", disk.total_bytes)
+            .text("mount", disk.mount.trim_end_matches('\\')),
+        free,
+        disk.total_bytes,
+    );
     Some(Deduction {
         id,
         check: HealthCheck::SystemDisk,
         points,
         title,
-        reason: format!(
-            "{} of {} is free on {} ({}). Windows needs room to install updates and to move \
-             memory to disk.",
-            format_bytes(free),
-            format_bytes(disk.total_bytes),
-            disk.mount.trim_end_matches('\\'),
-            format_share(free, disk.total_bytes),
-        ),
+        reason: reason_phrase.english(),
+        reason_phrase,
         fix: FixAction::OpenCleaner,
     })
 }
@@ -392,26 +399,33 @@ fn memory_deduction(used_percent: f32) -> Option<Deduction> {
     } else {
         return None;
     };
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a percentage from 80 to 100, rounded for display"
+    )]
+    let percent = used_percent.round().max(0.0) as u64;
+    let reason_phrase = Phrase::new("health.memory").count("percent", percent);
     Some(Deduction {
         id,
         check: HealthCheck::Memory,
         points,
         title,
-        reason: format!(
-            "{used_percent:.0}% of your memory is in use. When it runs out Windows slows down \
-             and may close programs."
-        ),
+        reason: reason_phrase.english(),
+        reason_phrase,
         fix: FixAction::OpenMemory,
     })
 }
 
 fn restart_deduction() -> Deduction {
+    let reason_phrase = Phrase::new("health.restart");
     Deduction {
         id: "restart.pending",
         check: HealthCheck::PendingRestart,
         points: RESTART_PENDING_POINTS,
         title: "A restart is waiting",
-        reason: "Windows has updates or installs that finish only after a restart.".to_owned(),
+        reason: reason_phrase.english(),
+        reason_phrase,
         fix: FixAction::RestartWindows,
     }
 }
@@ -432,48 +446,35 @@ fn startup_deduction(load: StartupLoad) -> Option<Deduction> {
     } else {
         return None;
     };
+    let reason_phrase = Phrase::new("health.startup").count("count", load.enabled_apps);
     Some(Deduction {
         id,
         check: HealthCheck::Startup,
         points,
         title,
-        reason: format!(
-            "{} startup entries are enabled. Each one starts a program when you sign in, which slows it down.",
-            load.enabled_apps
-        ),
+        reason: reason_phrase.english(),
+        reason_phrase,
         fix: FixAction::OpenStartup,
     })
 }
 
-/// Bytes as the Windows shell shows them: binary units, written GB and MB.
-fn format_bytes(bytes: u64) -> String {
+/// Adds `part` as a share of `whole` for display: one decimal below 10 percent (`5.0`), a whole
+/// percentage from there (`24`).
+fn with_share(phrase: Phrase, part: u64, whole: u64) -> Phrase {
     #[allow(
         clippy::cast_precision_loss,
-        reason = "display only: a byte count above 2^53 is beyond any disk, and one decimal is shown"
-    )]
-    let gib = bytes as f64 / GIB as f64;
-    if bytes >= GIB {
-        if gib >= 100.0 {
-            format!("{gib:.0} GB")
-        } else {
-            format!("{gib:.1} GB")
-        }
-    } else {
-        format!("{} MB", bytes / MIB)
-    }
-}
-
-/// `part` as a whole percentage of `whole`, for display only.
-fn format_share(part: u64, whole: u64) -> String {
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "display only: one decimal of a share"
+        reason = "display only: one decimal of a share between 0 and 100"
     )]
     let share = part as f64 / whole as f64 * 100.0;
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a share between 0 and 100, rounded"
+    )]
     if share < 10.0 {
-        format!("{share:.1}%")
+        phrase.tenths("share", (share * 10.0).round() as u64)
     } else {
-        format!("{share:.0}%")
+        phrase.count("share", share.round() as u64)
     }
 }
 

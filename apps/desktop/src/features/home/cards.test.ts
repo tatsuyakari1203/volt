@@ -122,6 +122,7 @@ describe('messages', () => {
       points: 10,
       title: 't',
       reason: 'r',
+      reasonPhrase: { code: 'health.restart', args: {} },
       fix: 'restartWindows' as const,
     };
     expect(headline({ ...base, level: 'fair', deductions: [one] })).toEqual({

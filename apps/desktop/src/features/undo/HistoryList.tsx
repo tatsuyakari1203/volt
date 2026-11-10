@@ -1,6 +1,6 @@
 import { Ban, Check, Layers, TriangleAlert, Undo2 } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { type MessageKey, t, tNodes } from '../../shared/i18n';
+import { type MessageKey, say, t, tNodes } from '../../shared/i18n';
 import type { ActivityItem, ChangeState } from '../../shared/ipc';
 import { Button, cx, ListRow } from '../../shared/ui';
 import type { HistoryEntry } from './history';
@@ -143,11 +143,17 @@ function Row({
             <time dateTime={item.time}>{formatTime(item.time)}</time>
             {` · ${sourceLabel(item.source)}`}
           </span>
-          <span className="mt-0.5 block break-words text-fg">{item.summary}</span>
+          <span className="mt-0.5 block break-words text-fg">
+            {say(item.summaryPhrase, item.summary)}
+          </span>
           {item.previous !== null ? (
             <span className="mt-0.5 block break-words">
               {tNodes('undo.row.previous', {
-                value: <span className="font-semibold text-fg">{item.previous}</span>,
+                value: (
+                  <span className="font-semibold text-fg">
+                    {say(item.previousPhrase, item.previous)}
+                  </span>
+                ),
               })}
             </span>
           ) : null}
@@ -158,7 +164,9 @@ function Row({
         item.state === 'canUndo' && key !== null ? (
           <Button
             size="sm"
-            aria-label={t('undo.row.undo.label', { summary: item.summary })}
+            aria-label={t('undo.row.undo.label', {
+              summary: say(item.summaryPhrase, item.summary),
+            })}
             loading={busy === key}
             disabled={busy !== null && busy !== key}
             onClick={() => onUndo(item)}

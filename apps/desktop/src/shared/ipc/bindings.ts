@@ -512,7 +512,7 @@ async setBoostConfig(config: BoostConfigView) : Promise<Result<BoostConfigView, 
 }
 },
 /**
- * Tauri command: the saved language setting.
+ * Tauri command: the saved language setting and the display language of Windows.
  */
 async languageSetting() : Promise<Result<LanguageSetting, IpcError>> {
     try {
@@ -523,11 +523,12 @@ async languageSetting() : Promise<Result<LanguageSetting, IpcError>> {
 }
 },
 /**
- * Tauri command: saves the language choice and what `System` resolves to on this PC.
+ * Tauri command: saves the language choice and updates the tray menu at once, so the menu does
+ * not wait for the next start.
  */
-async setLanguage(choice: LanguageChoice, system: Lang) : Promise<Result<LanguageSetting, IpcError>> {
+async setLanguage(choice: LanguageChoice) : Promise<Result<LanguageSetting, IpcError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("set_language", { choice, system }) };
+    return { status: "ok", data: await TAURI_INVOKE("set_language", { choice }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -595,9 +596,15 @@ source: ActivitySource;
  */
 status: ActivityStatus; 
 /**
- * One redacted sentence: names the target and the outcome, never data.
+ * One redacted sentence: names the target and the outcome, never data. English: the text of
+ * `summary_phrase`, or the only text of a record written before phrases existed.
  */
 summary: string; 
+/**
+ * The summary as a code and parameters, for the UI to write in its own language. `null` for
+ * a record written before phrases existed.
+ */
+summaryPhrase: PhraseView | null; 
 /**
  * The tweak id or plan label, when known.
  */
@@ -619,6 +626,10 @@ entry: string | null;
  * and binary data only as kind and length. Only set for a change that was made.
  */
 previous: string | null; 
+/**
+ * `previous` as a code and parameters.
+ */
+previousPhrase: PhraseView | null; 
 /**
  * Whether this line can be undone, was undone, failed and so on.
  */
@@ -781,6 +792,46 @@ export type AreaStatus =
  * It failed; `detail` says how.
  */
 "failed"
+/**
+ * A value of a phrase. Numbers are `f64` because that is what crosses the boundary.
+ */
+export type ArgView = 
+/**
+ * Text that is the same in every language (a name, a path, a registry value).
+ */
+{ kind: "text"; value: string } | 
+/**
+ * A whole number.
+ */
+{ kind: "count"; value: number } | 
+/**
+ * A number in tenths, always shown with one decimal: `35` is 3.5.
+ */
+{ kind: "tenths"; value: number } | 
+/**
+ * A size of files in bytes, shown like `3.4 MB`.
+ */
+{ kind: "size"; value: number } | 
+/**
+ * A memory or disk size in bytes, shown like the Windows shell does (`12.4 GB`).
+ */
+{ kind: "bytes"; value: number } | 
+/**
+ * Another phrase.
+ */
+{ kind: "phrase"; value: PhraseView } | 
+/**
+ * Several phrases one after another, joined by `sep`.
+ */
+{ kind: "list"; value: { 
+/**
+ * What goes between two items.
+ */
+sep: string; 
+/**
+ * The items, in order.
+ */
+items: PhraseView[] } }
 /**
  * What Boost includes.
  */
@@ -1040,9 +1091,16 @@ points: number;
  */
 title: string; 
 /**
- * What was found and why it matters, in plain words.
+ * What was found and why it matters, in plain words, in English: the fallback of
+ * `reason_phrase`.
  */
 reason: string; 
+/**
+ * The reason as a code (`health.disk`, `health.memory`, `health.restart`,
+ * `health.startup`) and the figures it is built from, for the UI to write in its own
+ * language.
+ */
+reasonPhrase: PhraseView; 
 /**
  * What to do about it. `null` only for a fix the UI does not know yet.
  */
@@ -1466,7 +1524,8 @@ export type LanguageSetting = {
  */
 choice: LanguageChoice; 
 /**
- * What `System` resolved to the last time a window ran.
+ * What `System` stands for: the display language of Windows, filled in when the setting is
+ * read (what was stored is not trusted: the user can change Windows between two runs).
  */
 system: Lang }
 /**
@@ -1757,6 +1816,18 @@ export type OperationState =
  */
 "unsupported"
 /**
+ * A sentence, or a part of one, as a code and parameters.
+ */
+export type PhraseView = { 
+/**
+ * Stable code, such as `summary.applied`.
+ */
+code: string; 
+/**
+ * The values, by placeholder name.
+ */
+args: Partial<{ [key in string]: ArgView }> }
+/**
  * One process of an ended app.
  */
 export type ProcessEndView = { 
@@ -1964,9 +2035,17 @@ truncated: boolean;
  */
 skipped: string | null; 
 /**
+ * `skipped` as a code and parameters, for the UI to write in its own language.
+ */
+skippedPhrase: PhraseView | null; 
+/**
  * Why the rule could not be scanned at all, or `null`. The counts are then zero.
  */
 problem: string | null; 
+/**
+ * `problem` as a code and parameters.
+ */
+problemPhrase: PhraseView | null; 
 /**
  * A few of the files, relative to the rule's location (for example `user_temp/sub/a.tmp`).
  * Never a full path.
@@ -1976,7 +2055,11 @@ samples: string[];
  * Set when a program that keeps this rule's files open is running (for example "chrome is
  * running, so the files it has open will be skipped"), or `null`.
  */
-lockedNote: string | null }
+lockedNote: string | null; 
+/**
+ * `locked_note` as a code and parameters.
+ */
+lockedPhrase: PhraseView | null }
 /**
  * A scheduled task that runs when you sign in. Read-only: it has no switch.
  */
@@ -2013,6 +2096,10 @@ export type SkipGroup = {
  * Why they were left where they were.
  */
 reason: string; 
+/**
+ * `reason` as a code and parameters, for the UI to write in its own language.
+ */
+reasonPhrase: PhraseView; 
 /**
  * How many.
  */
@@ -2322,9 +2409,17 @@ entry: string;
  */
 what: string; 
 /**
+ * `what` as a code and parameters, without the capital letter a sentence starts with.
+ */
+whatPhrase: PhraseView | null; 
+/**
  * Why it could not be restored, in words. Never contains command output or data.
  */
-reason: string }
+reason: string; 
+/**
+ * `reason` as a code and parameters.
+ */
+reasonPhrase: PhraseView | null }
 /**
  * A later change an undo would silently overwrite.
  */
@@ -2337,6 +2432,10 @@ entry: string;
  * What the later change touches, in words, without any data.
  */
 what: string; 
+/**
+ * `what` as a code and parameters, without the capital letter a sentence starts with.
+ */
+whatPhrase: PhraseView; 
 /**
  * The later journal entry, as a decimal string.
  */
@@ -2375,10 +2474,18 @@ entry: string;
  */
 what: string; 
 /**
+ * `what` as a code and parameters, without the capital letter a sentence starts with.
+ */
+whatPhrase: PhraseView; 
+/**
  * What undoing does to it, redacted: `set back to REG_DWORD 1`, `removed (it did not exist
  * before)`.
  */
-restore: string }
+restore: string; 
+/**
+ * `restore` as a code and parameters.
+ */
+restorePhrase: PhraseView }
 /**
  * Precise result of [`undo_entry`] and [`undo_batch`].
  */

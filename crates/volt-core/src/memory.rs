@@ -8,9 +8,10 @@
 
 use std::sync::Arc;
 
-use crate::activity::{ActivityLog, ActivityOutcome, NewActivity, error_class};
+use crate::activity::{ActivityLog, ActivityOutcome, NewActivity, error_class, error_class_phrase};
 use crate::error::PortError;
 use crate::journal::Source;
+use crate::phrase::Phrase;
 use crate::ports::{Availability, Memory, MemoryArea, MemoryLists, PurgeOutcome};
 use crate::time::Clock;
 
@@ -154,19 +155,18 @@ impl MemoryCleaner {
         let Some(log) = &self.activity else {
             return true;
         };
-        let activity = NewActivity {
-            timestamp: self.clock.now(),
-            source,
-            outcome: if report.any_purged() {
-                ActivityOutcome::Applied
-            } else {
-                ActivityOutcome::Failed
-            },
-            summary: summary(report, elevated),
-            batch: None,
-            entry: None,
-            label: Some(MEMORY_LABEL.to_owned()),
+        let outcome = if report.any_purged() {
+            ActivityOutcome::Applied
+        } else {
+            ActivityOutcome::Failed
         };
+        let activity = NewActivity::said(
+            self.clock.now(),
+            source,
+            outcome,
+            summary(report, elevated),
+            Some(MEMORY_LABEL.to_owned()),
+        );
         match log.record(activity) {
             Ok(_) => true,
             Err(error) => {
@@ -182,60 +182,52 @@ impl MemoryCleaner {
 
 /// One line for the activity log: what ran, what failed (the error class only, never a port
 /// message) and the change in free memory. It says the run cannot be undone.
-fn summary(report: &MemoryCleanReport, elevated: bool) -> String {
+fn summary(report: &MemoryCleanReport, elevated: bool) -> Phrase {
     let mut done = Vec::new();
     let mut failed = Vec::new();
     for entry in &report.areas {
         match &entry.result {
-            Ok(outcome) if entry.area == MemoryArea::WorkingSets => done.push(format!(
-                "{} ({} processes)",
-                entry.area.name(),
-                outcome.processes_trimmed
-            )),
-            Ok(_) => done.push(entry.area.name().to_owned()),
-            Err(error) => failed.push(format!("{} ({})", entry.area.name(), error_class(error))),
+            Ok(outcome) if entry.area == MemoryArea::WorkingSets => done.push(
+                Phrase::new("summary.memory.trimmed")
+                    .phrase("area", entry.area.phrase())
+                    .count("count", outcome.processes_trimmed),
+            ),
+            Ok(_) => done.push(entry.area.phrase()),
+            Err(error) => failed.push(
+                Phrase::new("summary.memory.areaFailed")
+                    .phrase("area", entry.area.phrase())
+                    .phrase("class", error_class_phrase(error)),
+            ),
         }
     }
-    let head = if elevated {
-        "Cleaned memory as administrator (cannot be undone)"
-    } else {
-        "Cleaned memory (cannot be undone)"
-    };
     // "Cleaned memory (cannot be undone): a, b; could not clean c; free memory ..."
     let mut parts = vec![if done.is_empty() {
-        head.to_owned()
+        Phrase::new(if elevated {
+            "summary.memory.head.admin"
+        } else {
+            "summary.memory.head"
+        })
     } else {
-        format!("{head}: {}", done.join(", "))
+        Phrase::new(if elevated {
+            "summary.memory.headDone.admin"
+        } else {
+            "summary.memory.headDone"
+        })
+        .list("areas", ", ", done)
     }];
     if !failed.is_empty() {
-        parts.push(format!("could not clean {}", failed.join(", ")));
+        parts.push(Phrase::new("summary.memory.couldNot").list("areas", ", ", failed));
     }
     if let (Some(before), Some(after)) = (report.before, report.after) {
-        parts.push(format!(
-            "free memory {} to {}, standby {} to {}",
-            human_bytes(before.free_bytes),
-            human_bytes(after.free_bytes),
-            human_bytes(before.standby_bytes),
-            human_bytes(after.standby_bytes),
-        ));
+        parts.push(
+            Phrase::new("summary.memory.free")
+                .size("before", before.free_bytes)
+                .size("after", after.free_bytes)
+                .size("standbyBefore", before.standby_bytes)
+                .size("standbyAfter", after.standby_bytes),
+        );
     }
-    parts.join("; ")
-}
-
-/// `1.5 GB` style size (powers of 1024, one decimal).
-fn human_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    if bytes < 1024 {
-        return format!("{bytes} B");
-    }
-    #[allow(clippy::cast_precision_loss)] // display only
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
-        unit += 1;
-    }
-    format!("{value:.1} {}", UNITS[unit])
+    Phrase::new("summary.memory").list("parts", "; ", parts)
 }
 
 #[cfg(test)]

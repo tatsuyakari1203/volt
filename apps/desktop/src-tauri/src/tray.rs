@@ -50,6 +50,36 @@ impl Drop for RunningGuard<'_> {
     }
 }
 
+/// The items of the tray menu, kept so that a language change can rewrite their text at once.
+struct TrayItems<R: Runtime> {
+    open: MenuItem<R>,
+    boost: MenuItem<R>,
+    quit: MenuItem<R>,
+}
+
+impl<R: Runtime> TrayItems<R> {
+    fn of(&self, action: TrayAction) -> &MenuItem<R> {
+        match action {
+            TrayAction::Open => &self.open,
+            TrayAction::Boost => &self.boost,
+            TrayAction::Quit => &self.quit,
+        }
+    }
+}
+
+/// Writes the menu item texts in `lang`, at once. Nothing happens before the tray exists.
+pub(crate) fn apply_language<R: Runtime>(app: &AppHandle<R>, lang: Lang) {
+    let Some(items) = app.try_state::<TrayItems<R>>() else {
+        return;
+    };
+    for action in TrayAction::ALL {
+        if let Err(error) = items.of(action).set_text(action.label(lang)) {
+            // A menu that keeps its old text is a nuisance, never a reason to fail.
+            log::warn!("the tray menu text could not be changed: {error}");
+        }
+    }
+}
+
 /// One entry of the tray menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TrayAction {
@@ -112,9 +142,10 @@ pub(crate) fn opens_window(event: &TrayIconEvent) -> bool {
 pub(crate) fn setup(app: &App) -> tauri::Result<()> {
     app.manage(BoostRunning::default());
 
-    // The menu is built once, so a language changed in Settings reaches it at the next start.
+    // The menu starts in the language that is set now; [`apply_language`] rewrites it when the
+    // user changes the language.
     let lang = language::current(&app.state::<AppState>());
-    let items = TrayAction::ALL.map(|action| {
+    let item = |action: TrayAction| {
         MenuItem::with_id(
             app,
             action.menu_id(),
@@ -122,10 +153,15 @@ pub(crate) fn setup(app: &App) -> tauri::Result<()> {
             true,
             None::<&str>,
         )
-    });
-    let [open, boost, quit] = items;
+    };
+    let items = TrayItems {
+        open: item(TrayAction::Open)?,
+        boost: item(TrayAction::Boost)?,
+        quit: item(TrayAction::Quit)?,
+    };
     let separator = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&open?, &boost?, &separator, &quit?])?;
+    let menu = Menu::with_items(app, &[&items.open, &items.boost, &separator, &items.quit])?;
+    app.manage(items);
 
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .tooltip("Volt")

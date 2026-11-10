@@ -44,7 +44,6 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
-pub(crate) use apply::human_bytes;
 pub use apply::{CleanReport, CleanSkip, CleanSkipReason, RuleClean};
 pub use bin::{EmptyReport, RecycleBin, RecycleBinManager, RecycleBinStatus};
 pub use folders::{KnownFolders, Location};

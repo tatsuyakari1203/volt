@@ -1,4 +1,4 @@
-import { getLocale, localeTag, t, tn, tx } from '../../shared/i18n';
+import { getLocale, localeTag, say, sayCapitalised, t, tn, tx } from '../../shared/i18n';
 import type {
   ActivityItem,
   ActivitySource,
@@ -96,7 +96,10 @@ function sentence(text: string): string {
 
 /** Explains how an undo ended. `scope` says whether one change or a whole batch was asked for. */
 export function describeUndo(result: UndoResult, scope: 'change' | 'batch'): Notice {
-  const details = result.failures.map((failure) => `${failure.what}: ${failure.reason}`);
+  const details = result.failures.map(
+    (failure) =>
+      `${sayCapitalised(failure.whatPhrase, failure.what)}: ${say(failure.reasonPhrase, failure.reason)}`,
+  );
   switch (result.status) {
     case 'restored':
       return {
@@ -123,7 +126,9 @@ export function describeUndo(result: UndoResult, scope: 'change' | 'batch'): Not
       return {
         tone: 'problem',
         message: t('undo.needsAcknowledgement'),
-        details: result.overwrites.map((found) => t('undo.changedLater', { what: found.what })),
+        details: result.overwrites.map((found) =>
+          t('undo.changedLater', { what: sayCapitalised(found.whatPhrase, found.what) }),
+        ),
       };
     default:
       return assertNever(result.status);

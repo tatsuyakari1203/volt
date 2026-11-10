@@ -21,9 +21,10 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use crate::activity::{ActivityLog, ActivityOutcome, NewActivity, error_class};
-use crate::clean::{CleanSkipReason, KnownFolders, human_bytes, same_path_ci, starts_with_ci};
+use crate::clean::{CleanSkipReason, KnownFolders, same_path_ci, starts_with_ci};
 use crate::error::PortError;
 use crate::journal::Source;
+use crate::phrase::Phrase;
 use crate::ports::{EntryKind, FileSystem};
 use crate::time::{Clock, Timestamp};
 
@@ -414,34 +415,26 @@ impl LargeFilesFinder {
         if result.moved.is_empty() && result.skipped.is_empty() {
             return true;
         }
-        let plural = |n: usize| if n == 1 { "" } else { "s" };
-        let mut summary = format!(
-            "Moved {} large file{} to the Recycle Bin ({})",
-            result.moved.len(),
-            plural(result.moved.len()),
-            human_bytes(result.moved_bytes()),
+        let phrase = Phrase::new("summary.largeMoved")
+            .count("count", result.moved.len())
+            .size("size", result.moved_bytes());
+        let phrase = phrase.maybe(
+            "left",
+            (!result.skipped.is_empty())
+                .then(|| Phrase::new("summary.largeLeft").count("count", result.skipped.len())),
         );
-        if !result.skipped.is_empty() {
-            summary = format!(
-                "{summary}, left {} file{} in place",
-                result.skipped.len(),
-                plural(result.skipped.len())
-            );
-        }
-        summary.push_str("; space is freed only when the Recycle Bin is emptied");
-        let activity = NewActivity {
-            timestamp: self.clock.now(),
-            source,
-            outcome: if result.moved.is_empty() {
-                ActivityOutcome::Failed
-            } else {
-                ActivityOutcome::Applied
-            },
-            summary,
-            batch: None,
-            entry: None,
-            label: Some(ACTIVITY_LABEL.to_owned()),
+        let outcome = if result.moved.is_empty() {
+            ActivityOutcome::Failed
+        } else {
+            ActivityOutcome::Applied
         };
+        let activity = NewActivity::said(
+            self.clock.now(),
+            source,
+            outcome,
+            phrase,
+            Some(ACTIVITY_LABEL.to_owned()),
+        );
         match log.record(activity) {
             Ok(_) => true,
             Err(error) => {

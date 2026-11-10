@@ -1,5 +1,5 @@
 import { useRef } from 'react';
-import { t } from '../../shared/i18n';
+import { say, sayCapitalised, t } from '../../shared/i18n';
 import type { UndoPreview } from '../../shared/ipc';
 import { Button, Dialog } from '../../shared/ui';
 import { OverwriteWarning } from './OverwriteWarning';
@@ -48,9 +48,11 @@ export function EntryUndoDialog({ target, onClose, onConfirm }: EntryUndoDialogP
           <ul aria-label={t('undo.restore.label')} className="space-y-2">
             {target.preview.items.map((item) => (
               <li key={item.entry} className="text-body">
-                <span className="block break-words font-semibold">{item.what}</span>
+                <span className="block break-words font-semibold">
+                  {sayCapitalised(item.whatPhrase, item.what)}
+                </span>
                 <span className="block text-muted">
-                  {t('undo.restore.will', { restore: item.restore })}
+                  {t('undo.restore.will', { restore: say(item.restorePhrase, item.restore) })}
                 </span>
               </li>
             ))}

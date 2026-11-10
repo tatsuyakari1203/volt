@@ -19,6 +19,7 @@ use thiserror::Error;
 use crate::activity::{ActivityLog, ActivityOutcome, NewActivity, error_class};
 use crate::error::PortError;
 use crate::journal::Source;
+use crate::phrase::Phrase;
 use crate::ports::{ProcessInfo, Processes};
 use crate::time::{Clock, Timestamp};
 
@@ -491,19 +492,18 @@ impl ProcessMonitor {
         let Some(log) = &self.activity else {
             return true;
         };
-        let activity = NewActivity {
-            timestamp: self.clock.now(),
-            source,
-            outcome: if report.ended() > 0 {
-                ActivityOutcome::Applied
-            } else {
-                ActivityOutcome::Failed
-            },
-            summary: summary(report),
-            batch: None,
-            entry: None,
-            label: Some(PROCESS_END_LABEL.to_owned()),
+        let outcome = if report.ended() > 0 {
+            ActivityOutcome::Applied
+        } else {
+            ActivityOutcome::Failed
         };
+        let activity = NewActivity::said(
+            self.clock.now(),
+            source,
+            outcome,
+            summary(report),
+            Some(PROCESS_END_LABEL.to_owned()),
+        );
         match log.record(activity) {
             Ok(_) => true,
             Err(error) => {
@@ -572,27 +572,22 @@ fn volt_pids(list: &[ProcessInfo], own_pid: u32) -> HashSet<u32> {
 
 /// One line for the activity log: the app, what happened to its processes (counts only, never a
 /// port message) and that it cannot be undone.
-fn summary(report: &EndReport) -> String {
-    let total = report.outcomes.len();
-    let mut parts = vec![format!(
-        "Ended {} (cannot be undone): {} of {} processes",
-        report.name,
-        report.ended(),
-        total
-    )];
-    if report.needs_administrator() > 0 {
-        parts.push(format!(
-            "{} need administrator rights",
-            report.needs_administrator()
-        ));
-    }
-    if report.already_gone() > 0 {
-        parts.push(format!("{} had already exited", report.already_gone()));
-    }
-    if report.failed() > 0 {
-        parts.push(format!("{} could not be ended", report.failed()));
-    }
-    parts.join("; ")
+fn summary(report: &EndReport) -> Phrase {
+    let clause =
+        |code: &str, count: u32| (count > 0).then(|| Phrase::new(code).count("count", count));
+    Phrase::new("summary.process")
+        .text("name", report.name.clone())
+        .count("ended", report.ended())
+        .count("total", report.outcomes.len())
+        .maybe(
+            "admin",
+            clause("summary.process.admin", report.needs_administrator()),
+        )
+        .maybe(
+            "gone",
+            clause("summary.process.gone", report.already_gone()),
+        )
+        .maybe("failed", clause("summary.process.failed", report.failed()))
 }
 
 #[cfg(test)]

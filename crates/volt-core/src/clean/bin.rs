@@ -7,10 +7,10 @@
 
 use std::sync::Arc;
 
-use super::apply::human_bytes;
-use crate::activity::{ActivityLog, ActivityOutcome, NewActivity, error_class};
+use crate::activity::{ActivityLog, ActivityOutcome, NewActivity, error_class_phrase};
 use crate::error::PortError;
 use crate::journal::Source;
+use crate::phrase::Phrase;
 use crate::time::Clock;
 
 /// What the Recycle Bin holds, over every drive.
@@ -105,25 +105,22 @@ impl RecycleBinManager {
             });
         }
         let result = self.bin.empty();
-        let (outcome, summary) = match &result {
+        let (outcome, phrase) = match &result {
             Ok(()) => (
                 ActivityOutcome::Applied,
-                format!(
-                    "Emptied the Recycle Bin: {} item{} ({}) permanently deleted. This cannot be undone.",
-                    before.item_count,
-                    if before.item_count == 1 { "" } else { "s" },
-                    human_bytes(before.size_bytes),
-                ),
+                Phrase::new("summary.binEmptied")
+                    .phrase(
+                        "items",
+                        Phrase::new("count.item").count("count", before.item_count),
+                    )
+                    .size("size", before.size_bytes),
             ),
             Err(error) => (
                 ActivityOutcome::Failed,
-                format!(
-                    "Could not empty the Recycle Bin ({}). Items may already have been deleted permanently; that cannot be undone.",
-                    error_class(error)
-                ),
+                Phrase::new("summary.binFailed").phrase("class", error_class_phrase(error)),
             ),
         };
-        let activity_write_failed = self.record(source, outcome, summary);
+        let activity_write_failed = self.record(source, outcome, phrase);
         log::info!(
             "Recycle Bin emptied: {}",
             if result.is_ok() { "done" } else { "failed" }
@@ -135,25 +132,23 @@ impl RecycleBinManager {
         })
     }
 
-    fn record(&self, source: Source, outcome: ActivityOutcome, summary: String) -> bool {
+    fn record(&self, source: Source, outcome: ActivityOutcome, phrase: Phrase) -> bool {
         let Some(log) = &self.activity else {
             return false;
         };
-        let activity = NewActivity {
-            timestamp: self.clock.now(),
+        let activity = NewActivity::said(
+            self.clock.now(),
             source,
             outcome,
-            summary,
-            batch: None,
-            entry: None,
-            label: Some("recycle-bin".to_owned()),
-        };
+            phrase,
+            Some("recycle-bin".to_owned()),
+        );
         match log.record(activity) {
             Ok(_) => false,
             Err(error) => {
                 log::warn!(
                     "could not write the activity record for emptying the Recycle Bin ({})",
-                    error_class(&error)
+                    error_class_phrase(&error).english()
                 );
                 true
             }

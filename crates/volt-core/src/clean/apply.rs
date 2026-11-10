@@ -13,6 +13,7 @@ use super::scan::component_text;
 use crate::activity::{ActivityOutcome, NewActivity, error_class};
 use crate::error::PortError;
 use crate::journal::Source;
+use crate::phrase::{Phrase, class_phrase};
 use crate::ports::{EntryKind, FileSystem};
 
 /// Why an item of a confirmed plan was not moved.
@@ -48,21 +49,29 @@ pub enum CleanSkipReason {
     Failed(&'static str),
 }
 
+impl CleanSkipReason {
+    /// The reason as a phrase, for the UI to write in its own language.
+    #[must_use]
+    pub fn phrase(&self) -> Phrase {
+        match self {
+            Self::RuleUnknown => Phrase::new("skip.ruleUnknown"),
+            Self::RootChanged => Phrase::new("skip.rootChanged"),
+            Self::OutsideRoot => Phrase::new("skip.outsideRoot"),
+            Self::NotAllowedByRule => Phrase::new("skip.notAllowed"),
+            Self::Gone => Phrase::new("skip.gone"),
+            Self::Changed => Phrase::new("skip.changed"),
+            Self::Link => Phrase::new("skip.link"),
+            Self::NotEmpty => Phrase::new("skip.notEmpty"),
+            Self::LockedOrDenied => Phrase::new("skip.locked"),
+            Self::Refused => Phrase::new("skip.refused"),
+            Self::Failed(class) => Phrase::new("skip.failed").phrase("class", class_phrase(class)),
+        }
+    }
+}
+
 impl fmt::Display for CleanSkipReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::RuleUnknown => f.write_str("the rule is not known"),
-            Self::RootChanged => f.write_str("the rule's root changed or is no longer usable"),
-            Self::OutsideRoot => f.write_str("not inside the rule's root"),
-            Self::NotAllowedByRule => f.write_str("the rule does not allow this path"),
-            Self::Gone => f.write_str("already gone"),
-            Self::Changed => f.write_str("changed since the scan"),
-            Self::Link => f.write_str("is, or is behind, a link or other reparse point"),
-            Self::NotEmpty => f.write_str("the folder is not empty"),
-            Self::LockedOrDenied => f.write_str("locked, in use or access denied"),
-            Self::Refused => f.write_str("refused by the file system adapter"),
-            Self::Failed(class) => write!(f, "could not be moved ({class})"),
-        }
+        f.write_str(&self.phrase().english())
     }
 }
 
@@ -170,13 +179,13 @@ impl CleanReport {
     pub fn describe(&self) -> String {
         let mut text = format!(
             "Moved {} to the Recycle Bin ({}).",
-            counted(self.moved_files(), self.moved_directories()),
+            counted(self.moved_files(), self.moved_directories()).english(),
             human_bytes(self.moved_bytes())
         );
         if self.skipped_count() > 0 {
             text = format!(
                 "{text} {} left in place.",
-                counted_items(self.skipped_count())
+                counted_items(self.skipped_count()).english()
             );
         }
         text.push_str(" No disk space is freed until the Recycle Bin is emptied.");
@@ -184,37 +193,26 @@ impl CleanReport {
     }
 }
 
-fn counted_items(count: usize) -> String {
-    format!("{count} item{}", if count == 1 { "" } else { "s" })
+fn counted_items(count: usize) -> Phrase {
+    Phrase::new("count.item").count("count", count)
 }
 
-fn counted(files: usize, directories: usize) -> String {
-    let plural = |n: usize| if n == 1 { "" } else { "s" };
+/// `3 files` or `3 files and 2 empty folders`, as a phrase.
+fn counted(files: usize, directories: usize) -> Phrase {
+    let files = Phrase::new("count.file").count("count", files);
     if directories == 0 {
-        format!("{files} file{}", plural(files))
+        files
     } else {
-        format!(
-            "{files} file{} and {directories} empty folder{}",
-            plural(files),
-            plural(directories)
+        Phrase::new("join.and").phrase("first", files).phrase(
+            "second",
+            Phrase::new("count.emptyFolder").count("count", directories),
         )
     }
 }
 
 /// `1.5 MB` style size (powers of 1024, one decimal).
 pub(crate) fn human_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    if bytes < 1024 {
-        return format!("{bytes} B");
-    }
-    #[allow(clippy::cast_precision_loss)] // display only
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
-        unit += 1;
-    }
-    format!("{value:.1} {}", UNITS[unit])
+    crate::phrase::size_text(bytes)
 }
 
 impl CleanEngine {
@@ -403,33 +401,32 @@ impl CleanEngine {
             if planned == 0 {
                 continue;
             }
-            let mut summary = format!(
-                "Cleaned rule {}: moved {} to the Recycle Bin ({})",
-                rule.rule_id,
-                counted(rule.moved_files(), rule.moved_directories()),
-                human_bytes(rule.moved_bytes()),
+            let phrase = Phrase::new("summary.cleanRule")
+                .text("rule", rule.rule_id.clone())
+                .phrase(
+                    "moved",
+                    counted(rule.moved_files(), rule.moved_directories()),
+                )
+                .size("size", rule.moved_bytes());
+            let phrase = phrase.maybe(
+                "left",
+                (!rule.skipped.is_empty()).then(|| {
+                    Phrase::new("summary.leftItems")
+                        .phrase("items", counted_items(rule.skipped.len()))
+                }),
             );
-            if !rule.skipped.is_empty() {
-                summary = format!(
-                    "{summary}, left {} in place",
-                    counted_items(rule.skipped.len())
-                );
-            }
-            summary.push_str("; space is freed only when the Recycle Bin is emptied");
             let outcome = if rule.moved.is_empty() {
                 ActivityOutcome::Failed
             } else {
                 ActivityOutcome::Applied
             };
-            let activity = NewActivity {
-                timestamp: self.clock.now(),
+            let activity = NewActivity::said(
+                self.clock.now(),
                 source,
                 outcome,
-                summary,
-                batch: None,
-                entry: None,
-                label: Some(rule.rule_id.clone()),
-            };
+                phrase,
+                Some(rule.rule_id.clone()),
+            );
             if let Err(error) = log.record(activity) {
                 failures += 1;
                 log::warn!(

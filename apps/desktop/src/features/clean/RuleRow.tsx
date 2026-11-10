@@ -1,5 +1,5 @@
 import { Lock } from 'lucide-react';
-import { t, tn } from '../../shared/i18n';
+import { say, t, tn } from '../../shared/i18n';
 import type { CleaningRuleInfo, RuleScanView } from '../../shared/ipc';
 import { Badge, Switch } from '../../shared/ui';
 import { findingsLine, ruleDescription, ruleTitle } from './messages';
@@ -41,10 +41,12 @@ export function RuleRow({ rule, view, checked, enabled, onCheckedChange }: RuleR
           </p>
           {view?.skipped ? (
             <p className="text-caption text-muted">
-              {t('clean.rule.leftOut', { reason: view.skipped })}
+              {t('clean.rule.leftOut', { reason: say(view.skippedPhrase, view.skipped) })}
             </p>
           ) : null}
-          {view?.lockedNote ? <p className="text-caption text-muted">{view.lockedNote}</p> : null}
+          {view?.lockedNote ? (
+            <p className="text-caption text-muted">{say(view.lockedPhrase, view.lockedNote)}</p>
+          ) : null}
           {locked ? <p className="text-caption text-muted">{t('clean.rule.cannotClean')}</p> : null}
         </div>
         {view ? (

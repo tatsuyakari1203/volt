@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { t, tn } from '../../shared/i18n';
+import { say, sayCapitalised, t, tn } from '../../shared/i18n';
 import { previewUndoBatch, type UndoPreview } from '../../shared/ipc';
 import { Button, Dialog } from '../../shared/ui';
 import { describeError } from './messages';
@@ -107,9 +107,11 @@ export function BatchUndoDialog({ target, onClose, onConfirm }: BatchUndoDialogP
         <ul aria-label={t('undo.restore.label')} className="max-h-60 space-y-2 overflow-y-auto">
           {items.map((item) => (
             <li key={item.entry} className="text-body">
-              <span className="block break-words font-semibold">{item.what}</span>
+              <span className="block break-words font-semibold">
+                {sayCapitalised(item.whatPhrase, item.what)}
+              </span>
               <span className="block text-muted">
-                {t('undo.restore.will', { restore: item.restore })}
+                {t('undo.restore.will', { restore: say(item.restorePhrase, item.restore) })}
               </span>
             </li>
           ))}

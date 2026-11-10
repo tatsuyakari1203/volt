@@ -1229,6 +1229,7 @@ impl ActivityLog for FakeActivityLog {
             batch: activity.batch,
             entry: activity.entry,
             label: activity.label,
+            phrase: activity.phrase,
         });
         Ok(id)
     }

@@ -1,4 +1,5 @@
 export { I18nProvider, initLanguage, useLanguage } from './I18nProvider';
+export { say, sayCapitalised } from './say';
 export { tNodes } from './tNodes';
 export {
   formatNumber,

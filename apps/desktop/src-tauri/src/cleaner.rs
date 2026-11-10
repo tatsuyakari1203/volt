@@ -21,6 +21,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri_specta::Event;
+use volt_core::Phrase;
 use volt_core::clean::ScanCounts;
 use volt_core::{
     CleanCategory, CleanPlan, CleanReport, CleaningRule, RecycleBinManager, RuleScan, ScanError,
@@ -29,6 +30,7 @@ use volt_core::{
 
 use crate::IpcError;
 use crate::api::{RiskLevel, risk_view};
+use crate::phrase::PhraseView;
 use crate::wiring::AppCore;
 
 /// Sample paths listed per rule.
@@ -142,14 +144,20 @@ pub struct RuleScanView {
     pub truncated: bool,
     /// What was left out and why, in a few words (for example "12 too new"), or `null`.
     pub skipped: Option<String>,
+    /// `skipped` as a code and parameters, for the UI to write in its own language.
+    pub skipped_phrase: Option<PhraseView>,
     /// Why the rule could not be scanned at all, or `null`. The counts are then zero.
     pub problem: Option<String>,
+    /// `problem` as a code and parameters.
+    pub problem_phrase: Option<PhraseView>,
     /// A few of the files, relative to the rule's location (for example `user_temp/sub/a.tmp`).
     /// Never a full path.
     pub samples: Vec<String>,
     /// Set when a program that keeps this rule's files open is running (for example "chrome is
     /// running, so the files it has open will be skipped"), or `null`.
     pub locked_note: Option<String>,
+    /// `locked_note` as a code and parameters.
+    pub locked_phrase: Option<PhraseView>,
 }
 
 /// The result of a scan.
@@ -183,6 +191,8 @@ pub struct CleanScanProgress {
 pub struct SkipGroup {
     /// Why they were left where they were.
     pub reason: String,
+    /// `reason` as a code and parameters, for the UI to write in its own language.
+    pub reason_phrase: PhraseView,
     /// How many.
     pub count: u32,
 }
@@ -346,40 +356,39 @@ pub fn list_cleaning_rules(core: &AppCore) -> Result<Vec<CleaningRuleInfo>, IpcE
 }
 
 /// Why a rule was not scanned, in words that name no folder.
-fn problem_text(failure: &ScanFailure) -> String {
+fn problem_phrase(failure: &ScanFailure) -> Phrase {
     match failure {
-        ScanFailure::Root(_) => "Volt could not use this location, so it was not scanned.",
-        ScanFailure::RootIsLink => "This location is a link, so it was not scanned.",
-        ScanFailure::RootNotDirectory => "This location is not a folder, so it was not scanned.",
-        ScanFailure::RootAccessDenied => "Windows denied access to this location.",
+        ScanFailure::Root(_) => Phrase::new("scan.problem.root"),
+        ScanFailure::RootIsLink => Phrase::new("scan.problem.link"),
+        ScanFailure::RootNotDirectory => Phrase::new("scan.problem.notFolder"),
+        ScanFailure::RootAccessDenied => Phrase::new("scan.problem.denied"),
         ScanFailure::RootUnreadable(class) => {
-            return format!("This location could not be read ({class}).");
+            Phrase::new("scan.problem.unreadable").phrase("class", volt_core::class_phrase(class))
         }
         ScanFailure::MinAgeSettingUnreadable(_) | ScanFailure::MinAgeSettingInvalid => {
-            "The minimum age setting could not be used, so this rule was not scanned."
+            Phrase::new("scan.problem.minAge")
         }
         // `ScanFailure` is non-exhaustive: anything new degrades to a generic line.
-        _ => "This rule could not be scanned.",
+        _ => Phrase::new("scan.problem.generic"),
     }
-    .to_owned()
 }
 
 /// What a scan left out, in a few words, or `None` when it left out nothing worth saying.
-fn skipped_text(counts: &ScanCounts) -> Option<String> {
-    let parts: Vec<String> = [
-        (counts.too_new, "too new"),
-        (counts.age_unknown, "with an unknown age"),
-        (counts.access_denied, "denied by Windows"),
-        (counts.unreadable, "unreadable"),
-        (counts.links, "links left alone"),
-        (counts.beyond_max_depth, "deep folders not entered"),
-        (counts.invalid_name, "with unusual names"),
+fn skipped_phrase(counts: &ScanCounts) -> Option<Phrase> {
+    let parts: Vec<Phrase> = [
+        (counts.too_new, "scan.tooNew"),
+        (counts.age_unknown, "scan.ageUnknown"),
+        (counts.access_denied, "scan.accessDenied"),
+        (counts.unreadable, "scan.unreadable"),
+        (counts.links, "scan.links"),
+        (counts.beyond_max_depth, "scan.deep"),
+        (counts.invalid_name, "scan.oddNames"),
     ]
     .into_iter()
     .filter(|(count, _)| *count > 0)
-    .map(|(count, what)| format!("{count} {what}"))
+    .map(|(count, code)| Phrase::new(code).count("count", count))
     .collect();
-    (!parts.is_empty()).then(|| parts.join(", "))
+    (!parts.is_empty()).then(|| Phrase::new("scan.skipped").list("parts", ", ", parts))
 }
 
 /// A few files of the scan as `location/relative/path`: relative to the rule's location, so the
@@ -404,7 +413,7 @@ fn samples(rule: &CleaningRule, scan: &RuleScan) -> Vec<String> {
 }
 
 /// Names the running programs that hold a rule's files open, or `None` when none runs.
-fn locked_text(running: &[String]) -> Option<String> {
+fn locked_phrase(running: &[String]) -> Option<Phrase> {
     if running.is_empty() {
         return None;
     }
@@ -412,24 +421,30 @@ fn locked_text(running: &[String]) -> Option<String> {
         .iter()
         .map(|name| name.strip_suffix(".exe").unwrap_or(name))
         .collect();
-    let verb = if names.len() == 1 { "is" } else { "are" };
-    Some(format!(
-        "{} {verb} running: files it keeps open are skipped. Close it first to clean everything.",
-        names.join(", ")
-    ))
+    Some(
+        Phrase::new("scan.locked")
+            .text("names", names.join(", "))
+            .count("count", names.len()),
+    )
 }
 
 fn scan_view(rule: &CleaningRule, scan: &RuleScan) -> RuleScanView {
+    let skipped = skipped_phrase(&scan.counts);
+    let problem = scan.failure.as_ref().map(problem_phrase);
+    let locked = locked_phrase(&scan.running_programs);
     RuleScanView {
         rule: CleaningRuleInfo::from(rule),
         files: count32(scan.file_count()),
         folders: count32(scan.directory_count()),
         bytes: count64(scan.total_bytes()),
         truncated: scan.truncated,
-        skipped: skipped_text(&scan.counts),
-        problem: scan.failure.as_ref().map(problem_text),
+        skipped: skipped.as_ref().map(Phrase::english),
+        skipped_phrase: skipped.as_ref().map(PhraseView::from),
+        problem: problem.as_ref().map(Phrase::english),
+        problem_phrase: problem.as_ref().map(PhraseView::from),
         samples: samples(rule, scan),
-        locked_note: locked_text(&scan.running_programs),
+        locked_note: locked.as_ref().map(Phrase::english),
+        locked_phrase: locked.as_ref().map(PhraseView::from),
     }
 }
 
@@ -535,6 +550,20 @@ pub fn cancel_cleaning_scan(core: &AppCore) {
     core.clean_session().cancel_scan();
 }
 
+/// Counts `reason` in the group of items left in place for the same reason, starting one.
+pub(crate) fn add_skip(groups: &mut Vec<SkipGroup>, reason: &volt_core::CleanSkipReason) {
+    let phrase = reason.phrase();
+    let reason = phrase.english();
+    match groups.iter_mut().find(|group| group.reason == reason) {
+        Some(group) => group.count += 1,
+        None => groups.push(SkipGroup {
+            reason,
+            reason_phrase: PhraseView::from(&phrase),
+            count: 1,
+        }),
+    }
+}
+
 fn run_view(core: &AppCore, report: &CleanReport) -> CleanRunResult {
     if report.activity_write_failures > 0 {
         core.note_history_incomplete();
@@ -542,11 +571,7 @@ fn run_view(core: &AppCore, report: &CleanReport) -> CleanRunResult {
     let engine = core.clean_engine();
     let mut groups: Vec<SkipGroup> = Vec::new();
     for skip in report.rules.iter().flat_map(|rule| &rule.skipped) {
-        let reason = skip.reason.to_string();
-        match groups.iter_mut().find(|group| group.reason == reason) {
-            Some(group) => group.count += 1,
-            None => groups.push(SkipGroup { reason, count: 1 }),
-        }
+        add_skip(&mut groups, &skip.reason);
     }
     CleanRunResult {
         moved_files: count32(report.moved_files()),
@@ -655,4 +680,33 @@ pub fn empty_recycle_bin(core: &AppCore) -> Result<EmptyBinResult, IpcError> {
         size_bytes: count64(report.before.size_bytes),
         history_incomplete: report.activity_write_failed,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn what_a_scan_left_out_is_a_phrase_with_counts_and_its_english_is_unchanged() {
+        let counts = ScanCounts {
+            too_new: 12,
+            links: 1,
+            ..ScanCounts::default()
+        };
+        let phrase = skipped_phrase(&counts).expect("something was left out");
+        assert_eq!(phrase.english(), "12 too new, 1 links left alone");
+        assert_eq!(skipped_phrase(&ScanCounts::default()), None);
+    }
+
+    #[test]
+    fn a_running_program_is_named_in_a_phrase_that_agrees_with_the_count() {
+        let one = locked_phrase(&["chrome.exe".to_owned()]).expect("one");
+        assert_eq!(
+            one.english(),
+            "chrome is running: files it keeps open are skipped. Close it first to clean everything."
+        );
+        let two = locked_phrase(&["a.exe".to_owned(), "b.exe".to_owned()]).expect("two");
+        assert!(two.english().starts_with("a, b are running:"));
+        assert_eq!(locked_phrase(&[]), None);
+    }
 }

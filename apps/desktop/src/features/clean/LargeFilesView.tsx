@@ -1,6 +1,6 @@
 import { FolderOpen, FolderSearch, Loader2, TriangleAlert } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { formatNumber, t, tn } from '../../shared/i18n';
+import { formatNumber, say, t, tn } from '../../shared/i18n';
 import {
   cancelLargeFilesScan,
   IpcCommandError,
@@ -233,7 +233,7 @@ export function LargeFilesView({ onMoved }: { onMoved?: () => void }) {
                 <li key={skip.reason}>
                   {t('clean.result.group', {
                     items: tn('count.file', skip.count),
-                    reason: skip.reason,
+                    reason: say(skip.reasonPhrase, skip.reason),
                   })}
                 </li>
               ))}

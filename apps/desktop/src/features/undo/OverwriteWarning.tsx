@@ -1,4 +1,4 @@
-import { t, tn } from '../../shared/i18n';
+import { sayCapitalised, t, tn } from '../../shared/i18n';
 import type { UndoOverwrite } from '../../shared/ipc';
 import { formatTime, sourceLabel } from './messages';
 
@@ -15,7 +15,7 @@ export function OverwriteWarning({ overwrites }: { overwrites: UndoOverwrite[] }
         {overwrites.map((overwrite) => (
           <li key={`${overwrite.entry}:${overwrite.laterEntry}`} className="break-words">
             {t('undo.overwrite.line', {
-              what: overwrite.what,
+              what: sayCapitalised(overwrite.whatPhrase, overwrite.what),
               time: formatTime(overwrite.laterTime),
               source: sourceLabel(overwrite.laterSource),
             })}

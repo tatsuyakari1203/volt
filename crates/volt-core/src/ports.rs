@@ -192,6 +192,18 @@ impl MemoryArea {
             Self::FileCache => "system file cache",
         }
     }
+
+    /// [`MemoryArea::name`] as a phrase, for the UI to write in its own language.
+    #[must_use]
+    pub fn phrase(self) -> crate::phrase::Phrase {
+        crate::phrase::Phrase::new(match self {
+            Self::WorkingSets => "area.workingSets",
+            Self::StandbyList => "area.standbyList",
+            Self::StandbyListLowPriority => "area.standbyListLowPriority",
+            Self::ModifiedList => "area.modifiedList",
+            Self::FileCache => "area.fileCache",
+        })
+    }
 }
 
 /// Physical memory split by the lists Windows keeps pages on, in bytes. The four parts add up to
