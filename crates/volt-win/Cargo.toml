@@ -17,10 +17,12 @@ volt-core.workspace = true
 log.workspace = true
 windows = { workspace = true, features = [
     "Win32_Foundation",
+    "Win32_Globalization",
     "Win32_Graphics_Dxgi",
     "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_Com",
+    "Win32_System_JobObjects",
     "Win32_System_Performance",
     "Win32_System_Registry",
     "Win32_System_Services",
@@ -31,3 +33,4 @@ windows = { workspace = true, features = [
 
 [dev-dependencies]
 volt-core = { workspace = true, features = ["fakes"] }
+tempfile.workspace = true

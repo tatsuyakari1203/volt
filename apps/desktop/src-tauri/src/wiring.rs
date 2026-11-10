@@ -20,11 +20,11 @@ use volt_core::{
     ReconcileReport, Resolution, Settings, SystemClock, TweakEngine,
 };
 use volt_store::{CorruptionRecovery, OpenOutcome, Store, StoreError};
-use volt_win::{WinFileSystem, WinRegistry, WinServices};
+use volt_win::{WinCommands, WinFileSystem, WinRegistry, WinServices};
 
 use crate::IpcError;
 use crate::catalogue::EMBEDDED_CATALOGUE;
-use crate::unsupported::{UnsupportedCommands, UnsupportedMemory, UnsupportedProcesses};
+use crate::unsupported::{UnsupportedMemory, UnsupportedProcesses};
 
 /// File name of the database inside the app data directory.
 pub const STORE_FILE_NAME: &str = "volt.db";
@@ -183,8 +183,8 @@ pub fn build_core(
 }
 
 /// The ports of the real machine: the Windows adapters of `volt-win`, plus
-/// [`Unsupported`](PortError::Unsupported) stand-ins for the three ports that have no adapter
-/// yet (processes, memory and commands).
+/// [`Unsupported`](PortError::Unsupported) stand-ins for the two ports that have no adapter
+/// yet (processes and memory).
 #[must_use]
 pub fn windows_ports() -> Ports {
     Ports {
@@ -193,7 +193,7 @@ pub fn windows_ports() -> Ports {
         services: Arc::new(WinServices::new()),
         processes: Arc::new(UnsupportedProcesses),
         memory: Arc::new(UnsupportedMemory),
-        commands: Arc::new(UnsupportedCommands),
+        commands: Arc::new(WinCommands::new()),
     }
 }
 

@@ -31,7 +31,6 @@ use volt_desktop_lib::api::{
     list_tweaks, revert_tweak,
 };
 use volt_desktop_lib::catalogue::EMBEDDED_CATALOGUE;
-use volt_desktop_lib::unsupported::UnsupportedCommands;
 use volt_desktop_lib::wiring::{AppCore, StartupReport, build_core, windows_ports};
 use volt_store::Store;
 use volt_win::WinRegistry;
@@ -427,13 +426,25 @@ fn an_unknown_tweak_is_not_found_for_both_commands() {
     ));
 }
 
+/// A commands port whose every call fails, like a machine where the program cannot be run.
+struct FailingCommands;
+
+impl volt_core::Commands for FailingCommands {
+    fn run(
+        &self,
+        _command: &volt_core::Command,
+    ) -> Result<volt_core::CommandOutput, volt_core::PortError> {
+        Err(volt_core::PortError::Unsupported("no commands here".into()))
+    }
+}
+
 #[test]
 fn a_state_that_cannot_be_read_is_listed_as_unreadable_and_cannot_be_applied() {
     let dir = TempDir::new().expect("temp dir");
     let system = FakeSystem::new();
-    // The commands port is the shell's unsupported stand-in, as in the real app.
+    // A commands port that cannot run anything, so command state cannot be read.
     let ports = Ports {
-        commands: Arc::new(UnsupportedCommands),
+        commands: Arc::new(FailingCommands),
         ..system.ports()
     };
     let catalogue = r#"
