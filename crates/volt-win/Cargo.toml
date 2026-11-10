@@ -16,6 +16,7 @@ workspace = true
 volt-core.workspace = true
 log.workspace = true
 windows = { workspace = true, features = [
+    "Wdk_Graphics_Direct3D",
     "Wdk_System_SystemInformation",
     "Win32_Foundation",
     "Win32_Globalization",
@@ -31,7 +32,6 @@ windows = { workspace = true, features = [
     "Win32_System_JobObjects",
     "Win32_System_LibraryLoader",
     "Win32_System_Memory",
-    "Win32_System_Performance",
     "Win32_System_Pipes",
     "Win32_System_ProcessStatus",
     "Win32_System_Registry",
