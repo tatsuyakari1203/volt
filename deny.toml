@@ -41,9 +41,6 @@ allow = [
   "BSL-1.0",
 ]
 
-[licenses.private]
-ignore = true
-
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"

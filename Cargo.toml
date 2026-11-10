@@ -10,6 +10,7 @@ rust-version = "1.89"
 authors = ["tatsuyakari1203"]
 repository = "https://github.com/tatsuyakari1203/volt"
 publish = false
+license = "MIT"
 
 [workspace.dependencies]
 volt-core = { path = "crates/volt-core" }
