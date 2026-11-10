@@ -135,7 +135,7 @@ fn read_cpu_times() -> Result<CpuTimes, PortError> {
     })
 }
 
-fn read_memory() -> Result<MemoryStatus, PortError> {
+pub(crate) fn read_memory() -> Result<MemoryStatus, PortError> {
     let mut status = MEMORYSTATUSEX {
         #[allow(
             clippy::cast_possible_truncation,

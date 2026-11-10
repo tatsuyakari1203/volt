@@ -18,19 +18,20 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use tauri::{AppHandle, Manager as _};
 use volt_core::{
     ActivityLog, Catalogue, CatalogueError, CleanEngine, CleaningRules, Clock, Executor,
-    FilePublisher, Journal, KnownFolders, PortError, Ports, ReconcileReport, RecycleBinManager,
-    Resolution, RulesError, Settings, StartupManager, StartupSources, SystemClock, TweakEngine,
+    FilePublisher, Journal, KnownFolders, MemoryCleaner, PortError, Ports, ReconcileReport,
+    RecycleBinManager, Resolution, RulesError, Settings, StartupManager, StartupSources,
+    SystemClock, TweakEngine,
 };
 use volt_store::{CorruptionRecovery, OpenOutcome, Store, StoreError};
 use volt_win::{
-    WinCommands, WinFilePublisher, WinFileSystem, WinKnownFolders, WinRecycleBin, WinRegistry,
-    WinServices,
+    WinCommands, WinFilePublisher, WinFileSystem, WinKnownFolders, WinMemory, WinRecycleBin,
+    WinRegistry, WinServices,
 };
 
 use crate::IpcError;
 use crate::catalogue::{EMBEDDED_CATALOGUE, EMBEDDED_CLEANING_RULES};
 use crate::cleaner::CleanSession;
-use crate::unsupported::{UnsupportedMemory, UnsupportedProcesses};
+use crate::unsupported::UnsupportedProcesses;
 
 /// File name of the database inside the app data directory.
 pub const STORE_FILE_NAME: &str = "volt.db";
@@ -109,6 +110,7 @@ pub struct AppCore {
     clean: Option<CleanEngine>,
     clean_session: CleanSession,
     recycle_bin: Option<RecycleBinManager>,
+    memory_cleaner: Option<MemoryCleaner>,
 }
 
 impl fmt::Debug for AppCore {
@@ -143,6 +145,7 @@ impl AppCore {
             clean: None,
             clean_session: CleanSession::default(),
             recycle_bin: None,
+            memory_cleaner: None,
         }
     }
 
@@ -179,6 +182,23 @@ impl AppCore {
     #[must_use]
     pub fn clean_session(&self) -> &CleanSession {
         &self.clean_session
+    }
+
+    /// The same core with the memory cleaner attached. [`build_core`] always does; a core
+    /// assembled by hand has none until this is called.
+    #[must_use]
+    pub fn with_memory_cleaner(mut self, cleaner: MemoryCleaner) -> Self {
+        self.memory_cleaner = Some(cleaner);
+        self
+    }
+
+    /// The memory cleaner, or the error the memory commands return without one.
+    pub fn memory_cleaner(&self) -> Result<&MemoryCleaner, IpcError> {
+        self.memory_cleaner
+            .as_ref()
+            .ok_or_else(|| IpcError::Unsupported {
+                message: "memory cleaning is not available in this build".to_owned(),
+            })
     }
 
     /// The same core with the startup apps manager attached. [`build_core_with`] does this;
@@ -354,6 +374,9 @@ fn build_core_inner(
     .with_activity_log(activity.clone())
     .with_settings(settings.clone());
 
+    let memory_cleaner =
+        MemoryCleaner::new(ports.memory.clone(), clock.clone()).with_activity_log(activity.clone());
+
     let (registry, file_system) = (ports.registry.clone(), ports.file_system.clone());
     let startup_clock = clock.clone();
     let engine = TweakEngine::new(catalogue, ports, journal.clone(), clock)
@@ -381,7 +404,8 @@ fn build_core_inner(
             reconcile,
         },
     )
-    .with_clean_engine(clean);
+    .with_clean_engine(clean)
+    .with_memory_cleaner(memory_cleaner);
     Ok(match startup_apps {
         Some(manager) => core.with_startup_apps(manager),
         None => core,
@@ -389,8 +413,8 @@ fn build_core_inner(
 }
 
 /// The ports of the real machine: the Windows adapters of `volt-win`, plus
-/// [`Unsupported`](PortError::Unsupported) stand-ins for the two ports that have no adapter
-/// yet (processes and memory).
+/// an [`Unsupported`](PortError::Unsupported) stand-in for the processes port, which has no
+/// adapter yet.
 #[must_use]
 pub fn windows_ports() -> Ports {
     Ports {
@@ -398,7 +422,7 @@ pub fn windows_ports() -> Ports {
         file_system: Arc::new(WinFileSystem::new()),
         services: Arc::new(WinServices::new()),
         processes: Arc::new(UnsupportedProcesses),
-        memory: Arc::new(UnsupportedMemory),
+        memory: Arc::new(WinMemory::new()),
         commands: Arc::new(WinCommands::new()),
     }
 }

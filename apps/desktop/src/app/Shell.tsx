@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { CleanScreen } from '../features/clean/CleanScreen';
 import { HomeScreen } from '../features/home/HomeScreen';
+import { MemoryScreen } from '../features/memory/MemoryScreen';
 import { StartupScreen } from '../features/startup/StartupScreen';
 import { TweaksScreen } from '../features/tweaks/TweaksScreen';
 import { UndoScreen } from '../features/undo/UndoScreen';
@@ -18,6 +19,8 @@ function Screen({ id, onNavigate }: { id: SectionId; onNavigate: (id: SectionId)
       return <HomeScreen onNavigate={onNavigate} />;
     case 'clean':
       return <CleanScreen />;
+    case 'memory':
+      return <MemoryScreen />;
     case 'tweaks':
       return <TweaksScreen />;
     case 'startup':

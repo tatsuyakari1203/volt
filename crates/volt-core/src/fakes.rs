@@ -16,8 +16,8 @@ use crate::error::PortError;
 use crate::executor::Executor;
 use crate::journal::{BatchId, EntryId, EntryState, Journal, JournalEntry, NewEntry};
 use crate::ports::{
-    DirEntry, EntryInfo, EntryKind, FileStat, FileSystem, Memory, MemoryArea, MemoryStatus, Ports,
-    ProcessInfo, Processes, Services,
+    Availability, DirEntry, EntryInfo, EntryKind, FileStat, FileSystem, Memory, MemoryArea,
+    MemoryLists, MemoryStatus, Ports, ProcessInfo, Processes, PurgeOutcome, Services,
 };
 use crate::registry::{
     NamedValue, Registry, RegistryHive, RegistryKeyRef, RegistryValue, RegistryValueRef,
@@ -603,31 +603,37 @@ impl Processes for FakeProcesses {
     }
 }
 
-/// In-memory [`Memory`].
+const GIB: u64 = 1 << 30;
+
+/// In-memory [`Memory`]: 16 GiB with 8 GiB in use, 4 GiB standby, 1 GiB modified and 3 GiB
+/// free. A purge moves pages between the lists the way Windows does (see [`FakeMemory::purge`]),
+/// so a test can check a before and after.
 #[derive(Debug)]
 pub struct FakeMemory {
-    status: Mutex<MemoryStatus>,
+    lists: Mutex<MemoryLists>,
     purged: Mutex<Vec<MemoryArea>>,
+    unavailable: Mutex<HashMap<MemoryArea, Availability>>,
+    failures: Mutex<HashMap<MemoryArea, PortError>>,
+    lists_fail: Mutex<Option<PortError>>,
     log: EventLog,
 }
 
 impl FakeMemory {
-    /// 16 GiB total, 8 GiB available, own event log.
+    /// The default split, own event log.
     #[must_use]
     pub fn new() -> Self {
         Self::with_log(EventLog::default())
     }
 
-    /// 16 GiB total, 8 GiB available, reporting to a shared event log.
+    /// The default split, reporting to a shared event log.
     #[must_use]
     pub fn with_log(log: EventLog) -> Self {
-        const GIB: u64 = 1 << 30;
         Self {
-            status: Mutex::new(MemoryStatus {
-                total_physical_bytes: 16 * GIB,
-                available_physical_bytes: 8 * GIB,
-            }),
+            lists: Mutex::new(MemoryLists::from_lists(16 * GIB, 4 * GIB, GIB, 3 * GIB)),
             purged: Mutex::new(Vec::new()),
+            unavailable: Mutex::new(HashMap::new()),
+            failures: Mutex::new(HashMap::new()),
+            lists_fail: Mutex::new(None),
             log,
         }
     }
@@ -636,6 +642,23 @@ impl FakeMemory {
     #[must_use]
     pub fn purged(&self) -> Vec<MemoryArea> {
         lock(&self.purged).clone()
+    }
+
+    /// Reports `area` as not available, and makes a purge of it fail the way the real adapter
+    /// does: [`PortError::AccessDenied`] for [`Availability::NeedsAdministrator`], otherwise
+    /// [`PortError::Unsupported`].
+    pub fn make_unavailable(&self, area: MemoryArea, why: Availability) {
+        lock(&self.unavailable).insert(area, why);
+    }
+
+    /// Makes a purge of `area` fail with `error` (the area stays reported as available).
+    pub fn fail_purge(&self, area: MemoryArea, error: PortError) {
+        lock(&self.failures).insert(area, error);
+    }
+
+    /// Makes reading the lists fail with `error`.
+    pub fn fail_lists(&self, error: PortError) {
+        *lock(&self.lists_fail) = Some(error);
     }
 }
 
@@ -647,13 +670,81 @@ impl Default for FakeMemory {
 
 impl Memory for FakeMemory {
     fn status(&self) -> Result<MemoryStatus, PortError> {
-        Ok(*lock(&self.status))
+        let lists = *lock(&self.lists);
+        Ok(MemoryStatus {
+            total_physical_bytes: lists.total_bytes,
+            available_physical_bytes: lists.standby_bytes + lists.free_bytes,
+        })
     }
 
-    fn purge(&self, area: MemoryArea) -> Result<(), PortError> {
+    fn lists(&self) -> Result<MemoryLists, PortError> {
+        match &*lock(&self.lists_fail) {
+            Some(error) => Err(error.clone()),
+            None => Ok(*lock(&self.lists)),
+        }
+    }
+
+    fn availability(&self, area: MemoryArea) -> Availability {
+        lock(&self.unavailable)
+            .get(&area)
+            .copied()
+            .unwrap_or(Availability::Available)
+    }
+
+    /// Working sets: 1 GiB of in-use pages becomes standby (two processes trimmed, one
+    /// skipped). Standby: all standby pages become free. Low-priority standby: 1 GiB of the
+    /// standby pages becomes free. Modified: all modified pages become standby. File cache:
+    /// nothing moves.
+    fn purge(&self, area: MemoryArea) -> Result<PurgeOutcome, PortError> {
+        match self.availability(area) {
+            Availability::Available => {}
+            Availability::NeedsAdministrator => {
+                return Err(PortError::AccessDenied(format!(
+                    "{} needs administrator rights",
+                    area.name()
+                )));
+            }
+            _ => {
+                return Err(PortError::Unsupported(format!(
+                    "{} is not supported",
+                    area.name()
+                )));
+            }
+        }
+        if let Some(error) = lock(&self.failures).get(&area) {
+            return Err(error.clone());
+        }
+        let mut lists = lock(&self.lists);
+        let mut outcome = PurgeOutcome::default();
+        match area {
+            MemoryArea::WorkingSets => {
+                let moved = GIB.min(lists.in_use_bytes);
+                lists.in_use_bytes -= moved;
+                lists.standby_bytes += moved;
+                outcome = PurgeOutcome {
+                    processes_trimmed: 2,
+                    processes_skipped: 1,
+                };
+            }
+            MemoryArea::StandbyList => {
+                lists.free_bytes += lists.standby_bytes;
+                lists.standby_bytes = 0;
+            }
+            MemoryArea::StandbyListLowPriority => {
+                let moved = GIB.min(lists.standby_bytes);
+                lists.standby_bytes -= moved;
+                lists.free_bytes += moved;
+            }
+            MemoryArea::ModifiedList => {
+                lists.standby_bytes += lists.modified_bytes;
+                lists.modified_bytes = 0;
+            }
+            _ => {}
+        }
+        drop(lists);
         lock(&self.purged).push(area);
         self.log.push(Event::MemoryPurged(area));
-        Ok(())
+        Ok(outcome)
     }
 }
 
@@ -1305,6 +1396,7 @@ mod tests {
         let status = memory.status().expect("status");
         assert!(status.available_physical_bytes < status.total_physical_bytes);
         memory.purge(MemoryArea::StandbyList).expect("purge");
+        assert_eq!(memory.lists().expect("lists").standby_bytes, 0);
         assert_eq!(memory.purged(), [MemoryArea::StandbyList]);
     }
 

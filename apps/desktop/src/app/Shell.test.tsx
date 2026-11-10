@@ -81,10 +81,10 @@ it('navigates by keyboard and moves focus to the content', async () => {
 it('shows a placeholder that says what will live in an unbuilt section', async () => {
   const user = userEvent.setup();
   renderShell();
-  await user.click(screen.getByRole('button', { name: 'Memory' }));
-  expect(screen.getByRole('heading', { level: 1, name: 'Memory' })).toBeTruthy();
+  await user.click(screen.getByRole('button', { name: 'Health' }));
+  expect(screen.getByRole('heading', { level: 1, name: 'Health' })).toBeTruthy();
   expect(screen.getByText('Coming soon')).toBeTruthy();
-  expect(screen.getByText(/what Windows can spare/)).toBeTruthy();
+  expect(screen.getByText(/disk, battery and system health/)).toBeTruthy();
 });
 
 it('contains the Rust-core failure inside the About block in Settings', async () => {
@@ -162,6 +162,15 @@ it('shows the real Startup screen, and explains that it cannot load here', async
   await user.click(screen.getByRole('button', { name: 'Startup' }));
   expect(screen.getByRole('heading', { level: 1, name: 'Startup' })).toBeTruthy();
   expect(await screen.findByText('Startup entries could not be loaded')).toBeTruthy();
+  expect(screen.queryByText('Coming soon')).toBeNull();
+});
+
+it('shows the real Memory screen, and explains that it cannot load here', async () => {
+  const user = userEvent.setup();
+  renderShell();
+  await user.click(screen.getByRole('button', { name: 'Memory' }));
+  expect(screen.getByRole('heading', { level: 1, name: 'Memory' })).toBeTruthy();
+  expect(await screen.findByText('Memory could not be read')).toBeTruthy();
   expect(screen.queryByText('Coming soon')).toBeNull();
 });
 

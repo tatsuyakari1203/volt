@@ -36,6 +36,11 @@
 //! is read-only and returns a plan, and only a confirmed plan can be cleaned,
 //! always into the Recycle Bin.
 //!
+//! Memory cleaning is the [`memory`] module: each purge (working sets, the standby, low-priority
+//! standby and modified lists, the file cache) is a separate operation over the `Memory` port, a run
+//! reports memory by list before and after, and it is recorded as an activity that cannot be
+//! undone (it releases reclaimable memory; there is no earlier value to restore).
+//!
 //! # Fakes
 //!
 //! In-memory fakes of every port live in the `fakes` module, compiled for this
@@ -51,6 +56,7 @@ pub mod executor;
 pub mod health;
 pub mod journal;
 pub mod label;
+pub mod memory;
 pub mod metrics;
 pub mod operation;
 pub mod plan;
@@ -86,6 +92,7 @@ pub use health::{
 };
 pub use journal::{BatchId, EntryId, EntryState, Journal, JournalEntry, NewEntry, Source};
 pub use label::{Evidence, Risk};
+pub use memory::{AreaReport, MEMORY_LABEL, MemoryCleanReport, MemoryCleaner};
 pub use metrics::{
     CpuTimes, DiskReading, DiskSnapshot, GpuReading, GpuSnapshot, MemorySnapshot, MetricsSnapshot,
     MetricsSource, MetricsTracker, RawSample,
@@ -93,8 +100,8 @@ pub use metrics::{
 pub use operation::{Operation, PriorState};
 pub use plan::{OperationRequest, Plan, PlanItem, Preview};
 pub use ports::{
-    DirEntry, EntryInfo, EntryKind, FileStat, FileSystem, Memory, MemoryArea, MemoryStatus, Ports,
-    ProcessInfo, Processes, Services,
+    Availability, DirEntry, EntryInfo, EntryKind, FileStat, FileSystem, Memory, MemoryArea,
+    MemoryLists, MemoryStatus, Ports, ProcessInfo, Processes, PurgeOutcome, Services,
 };
 pub use registry::{
     NamedValue, Registry, RegistryHive, RegistryKeyRef, RegistryValue, RegistryValueRef,

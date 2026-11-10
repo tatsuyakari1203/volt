@@ -274,6 +274,30 @@ async emptyRecycleBin() : Promise<Result<EmptyBinResult, IpcError>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Tauri command: memory by list now and which operations can run. Reads the system only.
+ */
+async memoryState() : Promise<Result<MemoryState, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("memory_state") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: runs the selected memory operations and returns the report. This cannot be
+ * undone (it only releases memory Windows can get back), so it is recorded in the activity log
+ * but not in the undo journal.
+ */
+async cleanMemory(areas: MemoryAreaView[]) : Promise<Result<MemoryCleanResult, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("clean_memory", { areas }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -477,6 +501,50 @@ export type ApplyStatus =
  * A step failed and the system may differ from before; the user has to look.
  */
 "needsAttention"
+/**
+ * One operation of a run.
+ */
+export type AreaResult = { 
+/**
+ * Which operation.
+ */
+area: MemoryAreaView; 
+/**
+ * How it ended.
+ */
+status: AreaStatus; 
+/**
+ * Working sets only: how many processes were trimmed.
+ */
+processesTrimmed: number; 
+/**
+ * Working sets only: how many processes could not be opened and were left alone.
+ */
+processesSkipped: number; 
+/**
+ * What went wrong, when `status` is `failed` or `unsupported`.
+ */
+detail: string | null }
+/**
+ * How one operation of a run ended.
+ */
+export type AreaStatus = 
+/**
+ * It ran.
+ */
+"done" | 
+/**
+ * It needs administrator rights, so nothing was changed.
+ */
+"needsAdministrator" | 
+/**
+ * This Windows build does not support it, so nothing was changed.
+ */
+"unsupported" | 
+/**
+ * It failed; `detail` says how.
+ */
+"failed"
 /**
  * Where an activity line stands with respect to undo. The Undo page shows it on every row.
  */
@@ -869,6 +937,106 @@ export type IpcError =
  */
 { kind: "other"; message: string }
 /**
+ * One memory cleaning operation. Mirrors [`volt_core::MemoryArea`].
+ */
+export type MemoryAreaView = 
+/**
+ * Trim the working sets of the processes the user can open.
+ */
+"workingSets" | 
+/**
+ * Flush the standby list.
+ */
+"standbyList" | 
+/**
+ * Flush the low-priority part of the standby list.
+ */
+"standbyListLowPriority" | 
+/**
+ * Flush the modified list.
+ */
+"modifiedList" | 
+/**
+ * Trim the system file cache.
+ */
+"fileCache"
+/**
+ * The report of one run: memory by list before and after, and what each operation did.
+ */
+export type MemoryCleanResult = { 
+/**
+ * Memory by list before the run, or `null` when it could not be read.
+ */
+before: MemoryListsView | null; 
+/**
+ * Memory by list after the run, or `null` when it could not be read.
+ */
+after: MemoryListsView | null; 
+/**
+ * One entry per selected operation, in the order they ran.
+ */
+areas: AreaResult[]; 
+/**
+ * Whether the run was written to the activity log (as a change that cannot be undone).
+ */
+recorded: boolean }
+/**
+ * Physical memory by list, in bytes. The four parts add up to the total.
+ */
+export type MemoryListsView = { 
+/**
+ * Installed physical memory.
+ */
+totalBytes: number; 
+/**
+ * Memory in use by programs, drivers and the kernel.
+ */
+inUseBytes: number; 
+/**
+ * Cached pages Windows gives back by itself when something needs memory.
+ */
+standbyBytes: number; 
+/**
+ * Pages waiting to be written to disk.
+ */
+modifiedBytes: number; 
+/**
+ * Free memory.
+ */
+freeBytes: number }
+/**
+ * An operation on the Memory page and whether it can run.
+ */
+export type MemoryOperationView = { 
+/**
+ * Which operation.
+ */
+area: MemoryAreaView; 
+/**
+ * Whether it can run now.
+ */
+state: OperationState; 
+/**
+ * When it cannot run, one sentence saying why.
+ */
+reason: string | null }
+/**
+ * What the Memory page shows when it opens.
+ */
+export type MemoryState = { 
+/**
+ * Memory by list now, or `null` when it could not be read (`problem` says why).
+ */
+lists: MemoryListsView | null; 
+/**
+ * Why the lists could not be read.
+ */
+problem: string | null; 
+/**
+ * The operations in the order a run performs them, each with whether it can run.
+ */
+operations: MemoryOperationView[] }
+/**
  * Physical memory.
  */
 export type MemoryView = { 
@@ -919,6 +1087,22 @@ disks: DiskView[];
  * The primary GPU, or `null` on a machine without a (readable) GPU, which is normal.
  */
 gpu: GpuView | null }
+/**
+ * Whether an operation can run now.
+ */
+export type OperationState = 
+/**
+ * It can run.
+ */
+"available" | 
+/**
+ * It needs administrator rights, which Volt does not have in this session.
+ */
+"needsAdministrator" | 
+/**
+ * This Windows build cannot do it.
+ */
+"unsupported"
 /**
  * What the Recycle Bin holds.
  */

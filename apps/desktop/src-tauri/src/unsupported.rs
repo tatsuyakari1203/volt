@@ -1,14 +1,14 @@
 //! Ports that have no Windows adapter yet.
 //!
-//! The processes and memory ports are part of [`volt_core::Ports`] because the core models them,
-//! but `volt-win` does not implement them yet. The composition root still has to
+//! The processes port is part of [`volt_core::Ports`] because the core models it, but `volt-win`
+//! does not implement it yet (the memory port has its adapter, `WinMemory`). The composition root still has to
 //! hand the executor a complete bundle, so it passes these small adapters. Every call fails with
 //! [`PortError::Unsupported`] and says why, which the UI shows as "not supported". Nothing here
 //! touches the system.
 //!
-//! The one tweak in the catalogue today is a registry value, so none of these are reached.
+//! The one tweak in the catalogue today is a registry value, so this is not reached.
 
-use volt_core::{Memory, MemoryArea, MemoryStatus, PortError, ProcessInfo, Processes};
+use volt_core::{PortError, ProcessInfo, Processes};
 
 fn unsupported(what: &str) -> PortError {
     PortError::Unsupported(format!("{what} has no Windows adapter yet"))
@@ -28,20 +28,6 @@ impl Processes for UnsupportedProcesses {
     }
 }
 
-/// The memory port without an adapter: reading memory totals and purging are unsupported.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct UnsupportedMemory;
-
-impl Memory for UnsupportedMemory {
-    fn status(&self) -> Result<MemoryStatus, PortError> {
-        Err(unsupported("reading memory totals"))
-    }
-
-    fn purge(&self, _area: MemoryArea) -> Result<(), PortError> {
-        Err(unsupported("purging memory"))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -57,16 +43,6 @@ mod tests {
         assert!(
             UnsupportedProcesses
                 .terminate(1)
-                .is_err_and(|e| is_unsupported(&e))
-        );
-        assert!(
-            UnsupportedMemory
-                .status()
-                .is_err_and(|e| is_unsupported(&e))
-        );
-        assert!(
-            UnsupportedMemory
-                .purge(MemoryArea::WorkingSets)
                 .is_err_and(|e| is_unsupported(&e))
         );
     }

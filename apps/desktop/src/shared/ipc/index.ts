@@ -18,6 +18,9 @@ import {
   events,
   type HealthView,
   type IpcError,
+  type MemoryAreaView,
+  type MemoryCleanResult,
+  type MemoryState,
   type MetricsView,
   type RecycleBinView,
   type Result,
@@ -39,6 +42,8 @@ export type {
   ApplyResult,
   ApplyStatus,
   AppReady,
+  AreaResult,
+  AreaStatus,
   ChangeState,
   CleanCategoryView,
   CleaningRuleInfo,
@@ -56,8 +61,14 @@ export type {
   HealthLevelView,
   HealthView,
   IpcError,
+  MemoryAreaView,
+  MemoryCleanResult,
+  MemoryListsView,
+  MemoryOperationView,
+  MemoryState,
   MemoryView,
   MetricsView,
+  OperationState,
   RecycleBinView,
   RestartKind,
   RevertResult,
@@ -340,4 +351,21 @@ export async function getRecycleBinStatus(): Promise<RecycleBinView> {
 /** Permanently deletes everything in the Recycle Bin. Cannot be undone: confirm with the user first. */
 export async function emptyRecycleBin(): Promise<EmptyBinResult> {
   return call(() => commands.emptyRecycleBin());
+}
+
+/**
+ * Memory by list (in use, standby, modified, free) and which cleaning operations can run now.
+ * Reads only. An operation that needs administrator rights comes back with its reason.
+ */
+export async function getMemoryState(): Promise<MemoryState> {
+  return call(() => commands.memoryState());
+}
+
+/**
+ * Runs the selected memory operations and resolves with memory by list before and after and how
+ * each operation ended. An operation that could not run is a result with a status, not a
+ * rejection. It cannot be undone; the shell records it in the activity history.
+ */
+export async function cleanMemory(areas: MemoryAreaView[]): Promise<MemoryCleanResult> {
+  return call(() => commands.cleanMemory(areas));
 }
