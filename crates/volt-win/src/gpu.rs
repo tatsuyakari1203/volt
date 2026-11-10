@@ -30,9 +30,12 @@ use std::time::{Duration, Instant};
 
 use volt_core::{GpuReading, PortError};
 use windows::Wdk::Graphics::Direct3D::{
-    D3DKMT_QUERYSTATISTICS, D3DKMT_QUERYSTATISTICS_ADAPTER, D3DKMT_QUERYSTATISTICS_NODE,
-    D3DKMT_QUERYSTATISTICS_QUERY_NODE, D3DKMT_QUERYSTATISTICS_QUERY_SEGMENT,
-    D3DKMT_QUERYSTATISTICS_SEGMENT, D3DKMT_QUERYSTATISTICS_TYPE, D3DKMTQueryStatistics,
+    D3DKMT_ADAPTERADDRESS, D3DKMT_CLOSEADAPTER, D3DKMT_OPENADAPTERFROMLUID,
+    D3DKMT_QUERYADAPTERINFO, D3DKMT_QUERYSTATISTICS, D3DKMT_QUERYSTATISTICS_ADAPTER,
+    D3DKMT_QUERYSTATISTICS_NODE, D3DKMT_QUERYSTATISTICS_QUERY_NODE,
+    D3DKMT_QUERYSTATISTICS_QUERY_SEGMENT, D3DKMT_QUERYSTATISTICS_SEGMENT,
+    D3DKMT_QUERYSTATISTICS_TYPE, D3DKMTCloseAdapter, D3DKMTOpenAdapterFromLuid,
+    D3DKMTQueryAdapterInfo, D3DKMTQueryStatistics, KMTQAITYPE_ADAPTERADDRESS,
 };
 use windows::Win32::Foundation::LUID;
 use windows::Win32::Graphics::Dxgi::{
@@ -64,6 +67,82 @@ pub(crate) struct Adapter {
     pub name: String,
     /// Installed dedicated video memory in bytes.
     pub dedicated_total_bytes: u64,
+    /// Where the card sits on the PCI bus, `None` when the driver does not say.
+    pub location: Option<PciLocation>,
+    /// Whether the video memory manager gives statistics for this LUID.
+    pub queryable: bool,
+}
+
+/// The PCI bus, device and function of a card: unique per physical card, shared by every
+/// adapter entry Windows lists for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PciLocation {
+    pub bus: u32,
+    pub device: u32,
+    pub function: u32,
+}
+
+/// Keeps one adapter per physical card, in the order the cards first appear.
+///
+/// Windows can list one card as several DXGI adapters (different LUIDs, same name and memory).
+/// The key is the PCI location, not name plus memory: two real identical cards share name and
+/// memory but never a slot, while every listing of one card shares its slot. An adapter whose
+/// location is unknown is never merged (a wrong merge would hide a real card). Of the listings
+/// of one card the one with statistics and then the most dedicated memory is kept.
+fn one_per_card(adapters: Vec<Adapter>) -> Vec<Adapter> {
+    let mut kept: Vec<Adapter> = Vec::with_capacity(adapters.len());
+    for adapter in adapters {
+        let twin = adapter
+            .location
+            .and_then(|at| kept.iter().position(|k| k.location == Some(at)));
+        match twin {
+            Some(index) => {
+                let better = (adapter.queryable, adapter.dedicated_total_bytes)
+                    > (kept[index].queryable, kept[index].dedicated_total_bytes);
+                if better {
+                    kept[index] = adapter;
+                }
+            }
+            None => kept.push(adapter),
+        }
+    }
+    kept
+}
+
+/// The PCI location of an adapter, `None` when it cannot be read.
+fn pci_location(luid: u64) -> Option<PciLocation> {
+    let mut open = D3DKMT_OPENADAPTERFROMLUID {
+        AdapterLuid: LUID {
+            LowPart: u32::try_from(luid & 0xFFFF_FFFF).unwrap_or(0),
+            HighPart: u32::try_from(luid >> 32).unwrap_or(0).cast_signed(),
+        },
+        ..Default::default()
+    };
+    // SAFETY: `open` is a fully initialised input that lives for the call; the call fills
+    // `hAdapter` on success.
+    if unsafe { D3DKMTOpenAdapterFromLuid(&raw mut open) }.0 < 0 {
+        return None;
+    }
+    let mut address = D3DKMT_ADAPTERADDRESS::default();
+    let mut query = D3DKMT_QUERYADAPTERINFO {
+        hAdapter: open.hAdapter,
+        Type: KMTQAITYPE_ADAPTERADDRESS,
+        pPrivateDriverData: (&raw mut address).cast(),
+        PrivateDriverDataSize: u32::try_from(size_of::<D3DKMT_ADAPTERADDRESS>()).unwrap_or(0),
+    };
+    // SAFETY: `query` names the adapter just opened, and its data pointer and size describe
+    // `address`, which is alive for the call and is the type this query type writes.
+    let status = unsafe { D3DKMTQueryAdapterInfo(&raw mut query) };
+    let close = D3DKMT_CLOSEADAPTER {
+        hAdapter: open.hAdapter,
+    };
+    // SAFETY: `close` holds the handle opened above, closed exactly once.
+    let _ = unsafe { D3DKMTCloseAdapter(&raw const close) };
+    (status.0 >= 0).then_some(PciLocation {
+        bus: address.BusNumber,
+        device: address.DeviceNumber,
+        function: address.FunctionNumber,
+    })
 }
 
 /// Combines the two halves of a LUID into one key.
@@ -311,16 +390,19 @@ pub(crate) fn enumerate_adapters() -> Result<Vec<Adapter>, PortError> {
             .iter()
             .position(|&unit| unit == 0)
             .unwrap_or(desc.Description.len());
+        let luid = luid_key(
+            desc.AdapterLuid.HighPart.cast_unsigned(),
+            desc.AdapterLuid.LowPart,
+        );
         adapters.push(Adapter {
-            luid: luid_key(
-                desc.AdapterLuid.HighPart.cast_unsigned(),
-                desc.AdapterLuid.LowPart,
-            ),
+            luid,
+            location: pci_location(luid),
+            queryable: D3dkmt.shape(luid).is_some(),
             name: String::from_utf16_lossy(&desc.Description[..name_len]),
             dedicated_total_bytes: u64::try_from(desc.DedicatedVideoMemory).unwrap_or(u64::MAX),
         });
     }
-    Ok(adapters)
+    Ok(one_per_card(adapters))
 }
 
 #[cfg(test)]
@@ -354,7 +436,47 @@ mod tests {
             luid: 7,
             name: "Test GPU".into(),
             dedicated_total_bytes: 4_000,
+            location: None,
+            queryable: true,
         }
+    }
+
+    fn at(luid: u64, slot: Option<u32>, queryable: bool, memory: u64) -> Adapter {
+        Adapter {
+            luid,
+            name: "RTX".into(),
+            dedicated_total_bytes: memory,
+            location: slot.map(|bus| PciLocation {
+                bus,
+                device: 0,
+                function: 0,
+            }),
+            queryable,
+        }
+    }
+
+    #[test]
+    fn a_card_listed_twice_is_kept_once_preferring_the_one_with_statistics() {
+        let listed = vec![
+            at(1, Some(1), false, 12_000),
+            at(2, Some(1), true, 12_000),
+            at(3, Some(1), true, 0),
+        ];
+        let kept = one_per_card(listed);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].luid, 2);
+    }
+
+    #[test]
+    fn two_identical_cards_in_different_slots_stay_two_and_unknown_slots_are_never_merged() {
+        let kept = one_per_card(vec![
+            at(1, Some(1), true, 12_000),
+            at(2, Some(2), true, 12_000),
+            at(3, None, true, 12_000),
+            at(4, None, true, 12_000),
+        ]);
+        let luids: Vec<u64> = kept.iter().map(|a| a.luid).collect();
+        assert_eq!(luids, [1, 2, 3, 4]);
     }
 
     #[test]

@@ -98,6 +98,7 @@ impl ShortcutResolver for FakeShortcuts {
 #[derive(Debug)]
 pub struct FakeLogonTasks {
     answer: Mutex<Result<Vec<LogonTask>, PortError>>,
+    calls: std::sync::atomic::AtomicUsize,
 }
 
 impl FakeLogonTasks {
@@ -106,6 +107,7 @@ impl FakeLogonTasks {
     pub fn new(tasks: Vec<LogonTask>) -> Self {
         Self {
             answer: Mutex::new(Ok(tasks)),
+            calls: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -114,12 +116,20 @@ impl FakeLogonTasks {
     pub fn failing(error: PortError) -> Self {
         Self {
             answer: Mutex::new(Err(error)),
+            calls: std::sync::atomic::AtomicUsize::new(0),
         }
+    }
+
+    /// How many times the tasks were asked for.
+    #[must_use]
+    pub fn calls(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
 impl LogonTasks for FakeLogonTasks {
     fn logon_tasks(&self) -> Result<Vec<LogonTask>, PortError> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         lock(&self.answer).clone()
     }
 }

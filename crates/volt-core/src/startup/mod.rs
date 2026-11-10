@@ -322,9 +322,18 @@ impl StartupManager {
         self
     }
 
-    /// Lists everything that starts with Windows. Read-only.
+    /// Lists everything that starts with Windows, scheduled tasks included. Read-only.
     #[must_use]
     pub fn list(&self) -> StartupListing {
+        let mut listing = self.list_entries();
+        self.read_tasks(&mut listing);
+        listing
+    }
+
+    /// Lists the switchable entries only. It never asks the task source, so a caller that
+    /// needs a count (the health check) does not pay for a Task Scheduler enumeration.
+    #[must_use]
+    pub fn list_entries(&self) -> StartupListing {
         let mut listing = StartupListing::default();
         for source in &self.sources.runs {
             match self.read_run_source(source) {
@@ -341,6 +350,10 @@ impl StartupManager {
         listing
             .entries
             .sort_by_cached_key(|entry| (entry.name.to_lowercase(), entry.origin.id()));
+        listing
+    }
+
+    fn read_tasks(&self, listing: &mut StartupListing) {
         if let Some(tasks) = &self.tasks {
             match tasks.logon_tasks() {
                 Ok(found) => {
@@ -352,7 +365,6 @@ impl StartupManager {
                 Err(error) => listing.tasks_problem = Some(error_class(&error)),
             }
         }
-        listing
     }
 
     fn task_entry(&self, task: &LogonTask) -> ScheduledTaskEntry {
