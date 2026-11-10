@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { t, useLanguage } from '../i18n';
 import { Button } from './Button';
 
 /** What to show in a toast. */
@@ -52,6 +53,8 @@ const MAX_VISIBLE = 3;
  * pause their timer while hovered or focused, and can carry an action such as Undo.
  */
 export function ToastProvider({ children }: { children: ReactNode }) {
+  // Subscribes to the language, so the labels of the region and of Dismiss follow it.
+  useLanguage();
   const [toasts, setToasts] = useState<ToastEntry[]>([]);
   const nextId = useRef(1);
 
@@ -71,7 +74,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     <ToastContext.Provider value={api}>
       {children}
       <section
-        aria-label="Notifications"
+        aria-label={t('toast.region')}
         aria-live="polite"
         // Starts after the navigation rail so a toast never covers it.
         className="pointer-events-none fixed inset-x-0 bottom-4 z-50 pl-rail wide:pl-rail-wide"
@@ -124,7 +127,7 @@ function ToastItem({ toast, onDismiss }: { toast: ToastEntry; onDismiss: (id: nu
       <Button
         variant="ghost"
         size="sm"
-        aria-label="Dismiss notification"
+        aria-label={t('toast.dismiss')}
         className="w-8 px-0! text-toast-fg! hover:bg-toast-fg/10! active:bg-toast-fg/15!"
         onClick={() => onDismiss(id)}
       >

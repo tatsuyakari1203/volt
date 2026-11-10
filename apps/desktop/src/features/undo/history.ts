@@ -1,18 +1,18 @@
+import { t } from '../../shared/i18n';
 import type { ActivityItem } from '../../shared/ipc';
+import { activityTitle } from './messages';
 
 /** One top-level entry of the history list: a single row, or changes made together as a batch. */
 export type HistoryEntry =
   | { kind: 'row'; item: ActivityItem }
   | { kind: 'group'; batch: string; title: string; items: ActivityItem[] };
 
-/** Shown when a batch has no tweak title or label to name it by. */
-const UNNAMED_BATCH = 'Changes made together';
-
 function groupTitle(items: ActivityItem[]): string {
   return (
-    items.find((item) => item.title)?.title ??
+    items.map(activityTitle).find((title) => title) ??
     items.find((item) => item.label)?.label ??
-    UNNAMED_BATCH
+    // Shown when a batch has no tweak title or label to name it by.
+    t('undo.batch.unnamed')
   );
 }
 

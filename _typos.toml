@@ -1,5 +1,6 @@
 [files]
-extend-exclude = ["pnpm-lock.yaml", "Cargo.lock", ".backlog/config.yml"]
+# The Vietnamese locale files are not English: an English spell checker has nothing to say about them.
+extend-exclude = ["pnpm-lock.yaml", "Cargo.lock", ".backlog/config.yml", "apps/desktop/src/shared/i18n/locales/vi*.json"]
 
 [default.extend-identifiers]
 # Win32 IFileOperation flag names (FOF_* / FOFX_*), used by volt-win.

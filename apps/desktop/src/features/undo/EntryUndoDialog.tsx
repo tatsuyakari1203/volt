@@ -1,4 +1,5 @@
 import { useRef } from 'react';
+import { t } from '../../shared/i18n';
 import type { UndoPreview } from '../../shared/ipc';
 import { Button, Dialog } from '../../shared/ui';
 import { OverwriteWarning } from './OverwriteWarning';
@@ -27,16 +28,16 @@ export function EntryUndoDialog({ target, onClose, onConfirm }: EntryUndoDialogP
     <Dialog
       open={target !== null}
       onClose={onClose}
-      title="Undo this change?"
-      description="Volt will put back the value it saved before it made this change."
+      title={t('undo.entry.title')}
+      description={t('undo.entry.description')}
       initialFocusRef={cancelRef}
       footer={
         <>
           <Button ref={cancelRef} onClick={onClose}>
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button variant="primary" onClick={() => target && onConfirm(target)}>
-            Undo anyway
+            {t('undo.entry.confirm')}
           </Button>
         </>
       }
@@ -44,11 +45,13 @@ export function EntryUndoDialog({ target, onClose, onConfirm }: EntryUndoDialogP
       {target ? (
         <>
           <OverwriteWarning overwrites={target.preview.overwrites} />
-          <ul aria-label="What will be restored" className="space-y-2">
+          <ul aria-label={t('undo.restore.label')} className="space-y-2">
             {target.preview.items.map((item) => (
               <li key={item.entry} className="text-body">
                 <span className="block break-words font-semibold">{item.what}</span>
-                <span className="block text-muted">Will be {item.restore}.</span>
+                <span className="block text-muted">
+                  {t('undo.restore.will', { restore: item.restore })}
+                </span>
               </li>
             ))}
           </ul>

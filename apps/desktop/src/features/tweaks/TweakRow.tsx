@@ -1,7 +1,8 @@
 import { ChevronDown, ChevronRight } from 'lucide-react';
+import { t } from '../../shared/i18n';
 import type { TweakInfo, TweakPlanView, TweakStepView } from '../../shared/ipc';
 import { Badge, Button, ListRow, Switch } from '../../shared/ui';
-import { restartNote } from './messages';
+import { restartNote, tweakDescription, tweakEvidence, tweakTitle } from './messages';
 
 /** What a tweak changes, loaded when the user asks for it. */
 export type PlanLoad =
@@ -21,7 +22,7 @@ export function StepList({ steps, label }: { steps: TweakStepView[]; label: stri
           <code className="block break-all font-mono text-caption text-fg">{step.subject}</code>
           <span className="block text-caption text-muted">
             {step.current} <span aria-hidden>{'->'}</span>
-            <span className="sr-only">changes to</span> {step.target}
+            <span className="sr-only">{t('tweaks.row.changesTo')}</span> {step.target}
           </span>
         </li>
       ))}
@@ -30,24 +31,25 @@ export function StepList({ steps, label }: { steps: TweakStepView[]; label: stri
 }
 
 function evidenceLine(tweak: TweakInfo): string {
-  const label = tweak.evidence === 'measured' ? 'Measured' : 'Anecdotal';
-  return `Evidence: ${label}. ${tweak.evidenceNote}${restartNote(tweak.restart)}`;
+  return t('tweaks.row.evidence', {
+    level: t(tweak.evidence === 'measured' ? 'tweaks.row.measured' : 'tweaks.row.anecdotal'),
+    note: tweakEvidence(tweak),
+    restart: restartNote(tweak.restart),
+  });
 }
 
 function stateLine(tweak: TweakInfo, busy: Busy | undefined): string | null {
-  if (busy === 'applying') return 'Turning on...';
-  if (busy === 'undoing') return 'Working...';
-  if (tweak.needsAdmin) return 'Needs administrator rights. It cannot be changed from here yet.';
+  if (busy === 'applying') return t('tweaks.row.turningOn');
+  if (busy === 'undoing') return t('tweaks.row.working');
+  if (tweak.needsAdmin) return t('tweaks.row.needsAdmin');
   const state = tweak.state;
   switch (state.kind) {
     case 'applied':
-      return tweak.appliedByVolt
-        ? null
-        : 'Already on, but Volt did not turn it on, so it has no earlier value to restore.';
+      return tweak.appliedByVolt ? null : t('tweaks.row.alreadyOn');
     case 'partial':
-      return 'Only partly on. Turn it on to finish, or use Undo to put things back.';
+      return t('tweaks.row.partial');
     case 'unreadable':
-      return `Could not read the current setting. ${state.message}`;
+      return t('tweaks.row.unreadable', { message: state.message });
     default:
       return null;
   }
@@ -79,11 +81,11 @@ export function TweakRow({
   const open = plan !== undefined;
   return (
     <ListRow
-      title={tweak.title}
+      title={tweakTitle(tweak)}
       badge={detailed ? <Badge risk={tweak.risk} /> : undefined}
       description={
         <>
-          <span className="block">{tweak.description}</span>
+          <span className="block">{tweakDescription(tweak)}</span>
           {detailed ? <span className="mt-0.5 block">{evidenceLine(tweak)}</span> : null}
           {status ? <span className="mt-0.5 block font-semibold text-fg">{status}</span> : null}
           {detailed ? (
@@ -91,7 +93,7 @@ export function TweakRow({
               <button
                 type="button"
                 aria-expanded={open}
-                aria-label={`What ${tweak.title} changes`}
+                aria-label={t('tweaks.row.whatChanges.label', { title: tweakTitle(tweak) })}
                 className="mt-1 inline-flex items-center gap-1 rounded-sm font-semibold text-accent-text hover:underline"
                 onClick={() => onShowPlan(tweak, !open)}
               >
@@ -100,12 +102,17 @@ export function TweakRow({
                 ) : (
                   <ChevronRight aria-hidden size={14} />
                 )}
-                What it changes
+                {t('tweaks.row.whatChanges')}
               </button>
-              {plan?.status === 'loading' ? <span className="block">Reading...</span> : null}
+              {plan?.status === 'loading' ? (
+                <span className="block">{t('tweaks.row.reading')}</span>
+              ) : null}
               {plan?.status === 'error' ? <span className="block">{plan.message}</span> : null}
               {plan?.status === 'ready' ? (
-                <StepList steps={plan.plan.steps} label={`Changes of ${tweak.title}`} />
+                <StepList
+                  steps={plan.plan.steps}
+                  label={t('tweaks.row.changesOf', { title: tweakTitle(tweak) })}
+                />
               ) : null}
             </>
           ) : null}
@@ -116,15 +123,15 @@ export function TweakRow({
           {tweak.state.kind === 'partial' && !tweak.needsAdmin ? (
             <Button
               size="sm"
-              aria-label={`Undo ${tweak.title}`}
+              aria-label={t('tweaks.row.undo.label', { title: tweakTitle(tweak) })}
               disabled={busy !== undefined}
               onClick={() => onUndo(tweak)}
             >
-              Undo
+              {t('common.undo')}
             </Button>
           ) : null}
           <Switch
-            aria-label={tweak.title}
+            aria-label={tweakTitle(tweak)}
             aria-busy={busy !== undefined}
             checked={tweak.state.kind === 'applied'}
             disabled={busy !== undefined || tweak.needsAdmin || tweak.state.kind === 'unreadable'}

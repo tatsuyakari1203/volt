@@ -1,5 +1,6 @@
 import { CircleCheck, Loader2, RefreshCw, ShieldAlert, TriangleAlert } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { t, tNodes } from '../../shared/i18n';
 import {
   cleanMemory,
   getMemoryState,
@@ -14,6 +15,7 @@ import {
   formatChange,
   listRows,
   operationText,
+  reasonText,
 } from '../../shared/text/memory';
 import { formatBytes } from '../../shared/text/size';
 import { Badge, Button, Card, ListGroup, ListRow, PageHeader } from '../../shared/ui';
@@ -28,11 +30,15 @@ function share(part: number, total: number): number {
 }
 
 function ListsCard({ lists }: { lists: MemoryListsView }) {
-  const summary = listRows.map((row) => `${row.label} ${formatBytes(lists[row.key])}`).join(', ');
+  const summary = listRows
+    .map((row) => `${t(row.label)} ${formatBytes(lists[row.key])}`)
+    .join(', ');
   return (
-    <Card as="section" aria-label="Memory by list" className="flex flex-col gap-3">
+    <Card as="section" aria-label={t('memory.lists.label')} className="flex flex-col gap-3">
       <p className="text-body">
-        <span className="font-semibold">{formatBytes(lists.totalBytes)}</span> installed
+        {tNodes('memory.installed', {
+          size: <span className="font-semibold">{formatBytes(lists.totalBytes)}</span>,
+        })}
       </p>
       <div
         role="img"
@@ -56,10 +62,10 @@ function ListsCard({ lists }: { lists: MemoryListsView }) {
             />
             <div className="min-w-0 flex-1">
               <div className="flex justify-between gap-2">
-                <dt className="font-semibold">{row.label}</dt>
+                <dt className="font-semibold">{t(row.label)}</dt>
                 <dd className="tabular-nums">{formatBytes(lists[row.key])}</dd>
               </div>
-              <p className="text-caption text-muted">{row.hint}</p>
+              <p className="text-caption text-muted">{t(row.hint)}</p>
             </div>
           </div>
         ))}
@@ -71,23 +77,23 @@ function ListsCard({ lists }: { lists: MemoryListsView }) {
 function ReportCard({ report }: { report: MemoryCleanResult }) {
   const { before, after } = report;
   return (
-    <Card as="section" aria-label="Result of the last run" className="flex flex-col gap-3">
-      <h2 className="text-subtitle font-semibold">Result of the last run</h2>
+    <Card as="section" aria-label={t('memory.report.title')} className="flex flex-col gap-3">
+      <h2 className="text-subtitle font-semibold">{t('memory.report.title')}</h2>
       {before && after ? (
         <table className="w-full text-body">
           <thead>
             <tr className="text-left text-caption text-muted">
               <th scope="col" className="font-semibold">
-                List
+                {t('memory.report.list')}
               </th>
               <th scope="col" className="text-right font-semibold">
-                Before
+                {t('memory.report.before')}
               </th>
               <th scope="col" className="text-right font-semibold">
-                After
+                {t('memory.report.after')}
               </th>
               <th scope="col" className="text-right font-semibold">
-                Change
+                {t('memory.report.change')}
               </th>
             </tr>
           </thead>
@@ -95,7 +101,7 @@ function ReportCard({ report }: { report: MemoryCleanResult }) {
             {listRows.map((row) => (
               <tr key={row.key}>
                 <th scope="row" className="py-0.5 text-left font-normal">
-                  {row.label}
+                  {t(row.label)}
                 </th>
                 <td className="text-right tabular-nums">{formatBytes(before[row.key])}</td>
                 <td className="text-right tabular-nums">{formatBytes(after[row.key])}</td>
@@ -107,7 +113,7 @@ function ReportCard({ report }: { report: MemoryCleanResult }) {
           </tbody>
         </table>
       ) : (
-        <p className="text-body text-muted">Memory by list could not be read for this run.</p>
+        <p className="text-body text-muted">{t('memory.report.noLists')}</p>
       )}
       <ul className="flex flex-col gap-1">
         {report.areas.map((result) => (
@@ -118,17 +124,15 @@ function ReportCard({ report }: { report: MemoryCleanResult }) {
               <TriangleAlert aria-hidden size={16} className="mt-0.5 shrink-0" />
             )}
             <span>
-              <span className="font-semibold">{operationText[result.area].title}.</span>{' '}
+              <span className="font-semibold">{operationText(result.area).title}.</span>{' '}
               {describeArea(result)}
             </span>
           </li>
         ))}
       </ul>
       <p className="text-caption text-muted">
-        This cannot be undone, and there is nothing to restore: Windows reloads what it needs.
-        {report.recorded
-          ? ' It is listed on the Undo page as a change that cannot be undone.'
-          : ' It could not be written to the activity history.'}
+        {t('memory.report.footer')}{' '}
+        {report.recorded ? t('memory.report.recorded') : t('memory.report.notRecorded')}
       </p>
     </Card>
   );
@@ -136,19 +140,15 @@ function ReportCard({ report }: { report: MemoryCleanResult }) {
 
 function GuidanceCard() {
   return (
-    <Card as="section" aria-label="When cleaning helps" className="flex flex-col gap-2">
-      <h2 className="text-subtitle font-semibold">When cleaning helps, and when it does not</h2>
+    <Card as="section" aria-label={t('memory.guide.label')} className="flex flex-col gap-2">
+      <h2 className="text-subtitle font-semibold">{t('memory.guide.title')}</h2>
       <p className="text-body">
-        <span className="font-semibold">It helps</span> right after a game, an editor or an AI model
-        that held a lot of memory has closed and something else needs a large amount at once, or
-        when you want a clean starting point to measure from.
+        <span className="font-semibold">{t('memory.guide.helps.lead')}</span>{' '}
+        {t('memory.guide.helps.body')}
       </p>
       <p className="text-body">
-        <span className="font-semibold">It does not help</span> just because the standby number is
-        large. Standby memory is a cache: Windows gives it back by itself the moment a program asks
-        for memory, so it is not wasted. Emptying it makes the next things you open load from disk,
-        which is slower. Cleaning also does not speed up a PC that has too little memory for what it
-        runs, and it does not fix a program that keeps growing.
+        <span className="font-semibold">{t('memory.guide.doesNot.lead')}</span>{' '}
+        {t('memory.guide.doesNot.body')}
       </p>
     </Card>
   );
@@ -208,8 +208,8 @@ export function MemoryScreen() {
   return (
     <>
       <PageHeader
-        title="Memory"
-        description="See how memory is used and release what Windows can spare. Each operation runs on its own, with a before and after."
+        title={t('nav.memory')}
+        description={t('memory.description')}
         actions={
           <Button
             size="sm"
@@ -217,7 +217,7 @@ export function MemoryScreen() {
             disabled={running !== null || load.status === 'loading'}
             onClick={() => read(true)}
           >
-            Refresh
+            {t('common.refresh')}
           </Button>
         }
       />
@@ -234,7 +234,7 @@ export function MemoryScreen() {
               className="shrink-0 rounded-sm px-2 py-1 font-semibold underline hover:no-underline"
               onClick={() => setNotice(null)}
             >
-              Dismiss
+              {t('common.dismiss')}
             </button>
           </div>
         ) : null}
@@ -242,30 +242,32 @@ export function MemoryScreen() {
         {load.status === 'loading' ? (
           <Card role="status" className="flex items-center justify-center gap-2 py-10 text-muted">
             <Loader2 aria-hidden size={18} className="animate-spin motion-reduce:animate-none" />
-            <p>Reading memory...</p>
+            <p>{t('memory.reading')}</p>
           </Card>
         ) : null}
 
         {load.status === 'error' ? (
           <Card role="alert" className="flex flex-col items-center gap-3 py-10 text-center">
             <TriangleAlert aria-hidden size={24} className="text-muted" />
-            <p className="font-semibold">Memory could not be read</p>
+            <p className="font-semibold">{t('memory.error')}</p>
             <p className="max-w-xs text-body text-muted">{load.message}</p>
-            <Button onClick={() => read()}>Try again</Button>
+            <Button onClick={() => read()}>{t('common.tryAgain')}</Button>
           </Card>
         ) : null}
 
         {state?.lists ? <ListsCard lists={state.lists} /> : null}
         {state && !state.lists ? (
           <Card role="status" className="text-body text-muted">
-            Memory by list could not be read{state.problem ? `: ${state.problem}` : '.'}
+            {state.problem
+              ? t('memory.listsFailedWithProblem', { problem: state.problem })
+              : t('memory.listsFailed')}
           </Card>
         ) : null}
 
         {state ? (
-          <ListGroup aria-label="Cleaning operations">
+          <ListGroup aria-label={t('memory.operations')}>
             {state.operations.map((operation) => {
-              const text = operationText[operation.area];
+              const text = operationText(operation.area);
               const available = operation.state === 'available';
               return (
                 <ListRow
@@ -276,8 +278,8 @@ export function MemoryScreen() {
                       <Badge>
                         <ShieldAlert aria-hidden size={12} />
                         {operation.state === 'needsAdministrator'
-                          ? 'Needs administrator rights'
-                          : 'Not supported'}
+                          ? t('common.needsAdmin')
+                          : t('common.notSupported')}
                       </Badge>
                     )
                   }
@@ -286,7 +288,7 @@ export function MemoryScreen() {
                       <span className="block">{text.description}</span>
                       {operation.reason ? (
                         <span className="mt-0.5 block font-semibold text-fg">
-                          {operation.reason}
+                          {reasonText(operation.state, operation.reason)}
                         </span>
                       ) : null}
                     </>
@@ -294,12 +296,12 @@ export function MemoryScreen() {
                   trailing={
                     <Button
                       size="sm"
-                      aria-label={`Run: ${text.title}`}
+                      aria-label={t('memory.run.label', { title: text.title })}
                       loading={running === operation.area}
                       disabled={!available || (running !== null && running !== operation.area)}
                       onClick={() => void run(operation.area)}
                     >
-                      {running === operation.area ? 'Running...' : 'Run'}
+                      {running === operation.area ? t('memory.running') : t('memory.run')}
                     </Button>
                   }
                 />

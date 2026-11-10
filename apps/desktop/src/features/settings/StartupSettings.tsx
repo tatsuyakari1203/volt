@@ -1,5 +1,6 @@
 import { Power } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { t } from '../../shared/i18n';
 import { getAutostartEnabled, setAutostartEnabled } from '../../shared/ipc';
 import { Card, ListGroup, ListRow, Muted, Switch } from '../../shared/ui';
 
@@ -23,7 +24,7 @@ export function StartupSettings() {
         if (alive) setEnabled(value);
       })
       .catch((e: unknown) => {
-        if (alive) setError(`Could not read the setting: ${String(e)}`);
+        if (alive) setError(t('settings.startup.readError', { message: String(e) }));
       });
     return () => {
       alive = false;
@@ -35,23 +36,23 @@ export function StartupSettings() {
     setError(null);
     setAutostartEnabled(next)
       .then(setEnabled)
-      .catch((e: unknown) => setError(`Could not change the setting: ${String(e)}`))
+      .catch((e: unknown) => setError(t('settings.startup.changeError', { message: String(e) })))
       .finally(() => setBusy(false));
   }
 
   return (
     <Card as="section" aria-labelledby="settings-startup" padding="none">
       <h2 id="settings-startup" className="px-4 pt-4 pb-3 text-subtitle font-semibold">
-        Startup
+        {t('settings.startup.title')}
       </h2>
       <ListGroup className="rounded-none border-x-0 border-b-0 shadow-none">
         <ListRow
           icon={<Power aria-hidden size={18} />}
-          title="Start with Windows"
-          description="Opens Volt in the tray when you sign in. Needs no administrator approval."
+          title={t('settings.startup.withWindows')}
+          description={t('settings.startup.withWindows.description')}
           trailing={
             <Switch
-              aria-label="Start with Windows"
+              aria-label={t('settings.startup.withWindows')}
               checked={enabled === true}
               disabled={enabled === null || busy}
               onCheckedChange={change}

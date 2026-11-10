@@ -1,5 +1,6 @@
 import { Recycle, ShieldAlert } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { t } from '../../shared/i18n';
 import {
   type BoostConfigView,
   getBoostConfig,
@@ -28,7 +29,7 @@ export function BoostSettings() {
         if (alive) setConfig(value);
       })
       .catch((e: unknown) => {
-        if (alive) setError(`Could not read the Boost settings: ${describeError(e)}`);
+        if (alive) setError(t('settings.boost.readError', { message: describeError(e) }));
       });
     getMemoryState()
       .then((state) => {
@@ -47,7 +48,7 @@ export function BoostSettings() {
     setError(null);
     setBoostConfig(next)
       .then(setConfig)
-      .catch((e: unknown) => setError(`Could not save the Boost settings: ${describeError(e)}`))
+      .catch((e: unknown) => setError(t('settings.boost.saveError', { message: describeError(e) })))
       .finally(() => setBusy(false));
   }
 
@@ -60,18 +61,15 @@ export function BoostSettings() {
   return (
     <Card as="section" aria-labelledby="settings-boost" padding="none">
       <h2 id="settings-boost" className="px-4 pt-4 pb-1 text-subtitle font-semibold">
-        Boost
+        {t('settings.boost.title')}
       </h2>
-      <p className="px-4 pb-3 text-caption text-muted">
-        What the Boost button on Home and the Boost item in the tray menu include. Boost always
-        looks for junk files without changing anything.
-      </p>
+      <p className="px-4 pb-3 text-caption text-muted">{t('settings.boost.intro')}</p>
       <ListGroup
-        aria-label="Memory operations in Boost"
+        aria-label={t('settings.boost.operations')}
         className="rounded-none border-x-0 border-b-0 shadow-none"
       >
         {operations.map((operation) => {
-          const text = operationText[operation.area];
+          const text = operationText(operation.area);
           const available = operation.state === 'available';
           return (
             <ListRow
@@ -82,8 +80,8 @@ export function BoostSettings() {
                   <Badge>
                     <ShieldAlert aria-hidden size={12} />
                     {operation.state === 'needsAdministrator'
-                      ? 'Needs administrator rights'
-                      : 'Not supported'}
+                      ? t('common.needsAdmin')
+                      : t('common.notSupported')}
                   </Badge>
                 )
               }
@@ -101,11 +99,11 @@ export function BoostSettings() {
         })}
         <ListRow
           icon={<Recycle aria-hidden size={18} />}
-          title="Also move temp files to the Recycle Bin"
-          description="Moves the temporary files the Temporary files rule finds to the Recycle Bin during Boost. This skips the preview you get on the Clean page. Nothing is deleted for good, and the files can be restored from the Recycle Bin. Disk space is freed only when you empty it."
+          title={t('settings.boost.temp.title')}
+          description={t('settings.boost.temp.description')}
           trailing={
             <Switch
-              aria-label="Also move temp files to the Recycle Bin"
+              aria-label={t('settings.boost.temp.title')}
               checked={config?.moveTempToRecycleBin === true}
               disabled={config === null || busy}
               onCheckedChange={(on) => {

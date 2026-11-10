@@ -1,12 +1,13 @@
-import {
-  describeIpcError,
-  type FixActionView,
-  type HealthCheckView,
-  type HealthLevelView,
-  type HealthView,
-  IpcCommandError,
-  IpcUnavailableError,
+import { getLocale, type MessageKey, t, tn } from '../../shared/i18n';
+import type {
+  DeductionView,
+  FixActionView,
+  HealthCheckView,
+  HealthLevelView,
+  HealthView,
 } from '../../shared/ipc';
+
+export { describeError } from '../../shared/text/errors';
 
 /** The sections Home can send the user to. A subset of the shell's sections. */
 export type HomeTarget = 'clean' | 'memory' | 'startup';
@@ -26,11 +27,11 @@ export function fixLink(fix: FixActionView | null): FixLink | null {
   if (fix === null) return null;
   switch (fix) {
     case 'openCleaner':
-      return { target: 'clean', label: 'Open Cleaner' };
+      return { target: 'clean', label: t('home.fix.openCleaner') };
     case 'openMemory':
-      return { target: 'memory', label: 'Open Memory' };
+      return { target: 'memory', label: t('home.fix.openMemory') };
     case 'openStartup':
-      return { target: 'startup', label: 'Open Startup' };
+      return { target: 'startup', label: t('home.fix.openStartup') };
     case 'restartWindows':
       return null;
     default:
@@ -40,20 +41,20 @@ export function fixLink(fix: FixActionView | null): FixLink | null {
 
 /** A sentence that stands in for the button of a fix that has none. */
 export function fixHint(fix: FixActionView | null): string | null {
-  return fix === 'restartWindows' ? 'Restart Windows when you are ready to clear it.' : null;
+  return fix === 'restartWindows' ? t('home.fix.restartHint') : null;
 }
 
 /** The name of a check, for the line that says which checks could not run. */
 export function checkName(check: HealthCheckView): string {
   switch (check) {
     case 'systemDisk':
-      return 'free disk space';
+      return t('home.check.systemDisk');
     case 'memory':
-      return 'memory use';
+      return t('home.check.memory');
     case 'pendingRestart':
-      return 'pending restarts';
+      return t('home.check.pendingRestart');
     case 'startup':
-      return 'startup apps';
+      return t('home.check.startup');
     default:
       return assertNever(check);
   }
@@ -63,13 +64,13 @@ export function checkName(check: HealthCheckView): string {
 export function levelLabel(level: HealthLevelView): string {
   switch (level) {
     case 'good':
-      return 'Good';
+      return t('home.level.good');
     case 'fair':
-      return 'Fair';
+      return t('home.level.fair');
     case 'poor':
-      return 'Poor';
+      return t('home.level.poor');
     case 'unknown':
-      return 'Not checked';
+      return t('home.level.unknown');
     default:
       return assertNever(level);
   }
@@ -78,36 +79,75 @@ export function levelLabel(level: HealthLevelView): string {
 /** The headline and the sentence under it, from the grade and the number of deductions. */
 export function headline(report: HealthView): { title: string; detail: string } {
   const count = report.deductions.length;
-  const lowering =
-    count === 0
-      ? 'Nothing is lowering the score.'
-      : `${count} ${count === 1 ? 'thing lowers' : 'things lower'} the score. Each one is listed below.`;
+  const lowering = count === 0 ? t('home.lowering.none') : tn('home.lowering', count);
   switch (report.level) {
     case 'good':
-      return { title: 'Your PC is in good shape', detail: lowering };
+      return { title: t('home.headline.good'), detail: lowering };
     case 'fair':
-      return { title: 'Your PC could be better', detail: lowering };
+      return { title: t('home.headline.fair'), detail: lowering };
     case 'poor':
-      return { title: 'Your PC needs attention', detail: lowering };
+      return { title: t('home.headline.poor'), detail: lowering };
     case 'unknown':
-      return {
-        title: 'Your PC could not be checked',
-        detail: 'Volt could not read what it needs to give a score.',
-      };
+      return { title: t('home.headline.unknown'), detail: t('home.headline.unknown.detail') };
     default:
       return assertNever(report.level);
   }
 }
 
-/** One sentence for any error that reached the UI. */
-export function describeError(error: unknown): string {
-  if (error instanceof IpcUnavailableError) {
-    return 'This is only available inside the Volt app.';
+const TITLE_KEYS: Readonly<Record<string, MessageKey>> = {
+  'disk.critical': 'health.title.disk.critical',
+  'disk.low': 'health.title.disk.low',
+  'disk.watch': 'health.title.disk.watch',
+  'memory.critical': 'health.title.memory.critical',
+  'memory.high': 'health.title.memory.high',
+  'restart.pending': 'health.title.restart.pending',
+  'startup.many': 'health.title.startup.lots',
+  'startup.some': 'health.title.startup.some',
+};
+
+/**
+ * The name of a deduction. The core writes it in English and keeps it as the source; the
+ * other languages are looked up by the deduction's stable id.
+ */
+export function deductionTitle(deduction: DeductionView): string {
+  const key = TITLE_KEYS[deduction.id];
+  return key && getLocale() !== 'en' ? t(key) : deduction.title;
+}
+
+/** `12.4` as `12,4` where the language writes a decimal comma. */
+function localDecimals(text: string): string {
+  return getLocale() === 'vi' ? text.replace(/(\d)\.(\d)/g, '$1,$2') : text;
+}
+
+/**
+ * The reason of a deduction. The core writes one English sentence with the figures in it; in
+ * another language the figures are read back out of that sentence and set into the translated
+ * one. A sentence this does not recognise is shown as the core wrote it.
+ */
+export function deductionReason(deduction: DeductionView): string {
+  const { id, reason } = deduction;
+  if (getLocale() === 'en') return reason;
+  if (id.startsWith('disk.')) {
+    const found = /^(.+?) of (.+?) is free on (.+?) \((.+?)\)\./.exec(reason);
+    if (found) {
+      const [, free = '', total = '', mount = '', share = ''] = found;
+      return t('health.reason.disk', {
+        free: localDecimals(free),
+        total: localDecimals(total),
+        mount,
+        share: localDecimals(share),
+      });
+    }
+  } else if (id.startsWith('memory.')) {
+    const found = /^(\d+)%/.exec(reason);
+    if (found) return t('health.reason.memory', { percent: found[1] ?? '' });
+  } else if (id === 'restart.pending') {
+    return t('health.reason.restart');
+  } else if (id.startsWith('startup.')) {
+    const found = /^(\d+) startup entries/.exec(reason);
+    if (found) return tn('health.reason.startup', Number(found[1]));
   }
-  if (error instanceof IpcCommandError) {
-    return describeIpcError(error.error);
-  }
-  return error instanceof Error ? error.message : String(error);
+  return reason;
 }
 
 function assertNever(value: never): never {

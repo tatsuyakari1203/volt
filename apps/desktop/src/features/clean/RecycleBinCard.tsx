@@ -1,7 +1,8 @@
 import { Loader2, Trash2, TriangleAlert } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { t, tn } from '../../shared/i18n';
 import { emptyRecycleBin, getRecycleBinStatus, type RecycleBinView } from '../../shared/ipc';
-import { countOf, formatSize } from '../../shared/text/size';
+import { formatSize } from '../../shared/text/size';
 import { Button, Card, Dialog, useToast } from '../../shared/ui';
 import { describeError } from './messages';
 
@@ -12,8 +13,11 @@ type Load =
 
 function holdsText(bin: RecycleBinView): string {
   return bin.itemCount === 0
-    ? 'The Recycle Bin is empty.'
-    : `${countOf(bin.itemCount, 'item')}, ${formatSize(bin.sizeBytes)}. These still use disk space.`;
+    ? t('clean.bin.isEmpty')
+    : t('clean.bin.holds', {
+        items: tn('count.item', bin.itemCount),
+        size: formatSize(bin.sizeBytes),
+      });
 }
 
 /**
@@ -59,14 +63,15 @@ export function RecycleBinCard({ refreshKey }: { refreshKey: number }) {
       const result = await emptyRecycleBin();
       toast.show({
         message: result.emptied
-          ? `The Recycle Bin was emptied. ${countOf(result.itemCount, 'item')} (${formatSize(result.sizeBytes)}) were permanently deleted.`
-          : 'The Recycle Bin was already empty.',
+          ? t('clean.bin.emptied', {
+              items: tn('count.item', result.itemCount),
+              size: formatSize(result.sizeBytes),
+            })
+          : t('clean.bin.alreadyEmpty'),
       });
     } catch (error) {
       if (alive.current) {
-        setNotice(
-          `The Recycle Bin could not be emptied. ${describeError(error)} Some items may already have been deleted.`,
-        );
+        setNotice(t('clean.bin.emptyFailed', { error: describeError(error) }));
       }
     } finally {
       if (alive.current) setEmptying(false);
@@ -76,7 +81,7 @@ export function RecycleBinCard({ refreshKey }: { refreshKey: number }) {
 
   const bin = load.status === 'ready' ? load.bin : null;
   return (
-    <Card as="section" aria-label="Recycle Bin" className="flex flex-col gap-3">
+    <Card as="section" aria-label={t('clean.bin.title')} className="flex flex-col gap-3">
       <div className="flex items-center gap-3">
         <span
           aria-hidden
@@ -85,21 +90,23 @@ export function RecycleBinCard({ refreshKey }: { refreshKey: number }) {
           <Trash2 size={18} />
         </span>
         <div className="min-w-0 flex-1">
-          <h2 className="font-semibold">Recycle Bin</h2>
+          <h2 className="font-semibold">{t('clean.bin.title')}</h2>
           {load.status === 'loading' ? (
             <p role="status" className="flex items-center gap-2 text-caption text-muted">
               <Loader2 aria-hidden size={12} className="animate-spin motion-reduce:animate-none" />
-              Reading the Recycle Bin...
+              {t('clean.bin.reading')}
             </p>
           ) : null}
           {bin ? <p className="text-caption text-muted">{holdsText(bin)}</p> : null}
           {load.status === 'error' ? (
-            <p className="text-caption text-muted">Could not read it. {load.message}</p>
+            <p className="text-caption text-muted">
+              {t('clean.bin.readFailed', { message: load.message })}
+            </p>
           ) : null}
         </div>
         {load.status === 'error' ? (
           <Button size="sm" onClick={() => read()}>
-            Try again
+            {t('common.tryAgain')}
           </Button>
         ) : (
           <Button
@@ -108,14 +115,11 @@ export function RecycleBinCard({ refreshKey }: { refreshKey: number }) {
             disabled={!bin || bin.itemCount === 0}
             onClick={() => setConfirming(true)}
           >
-            Empty Recycle Bin
+            {t('clean.bin.emptyButton')}
           </Button>
         )}
       </div>
-      <p className="text-caption text-muted">
-        Cleaning moves files here and does not free space. Emptying the Recycle Bin deletes
-        everything in it for good, including what was there before Volt.
-      </p>
+      <p className="text-caption text-muted">{t('clean.bin.note')}</p>
       {notice ? (
         <div
           role="alert"
@@ -128,17 +132,20 @@ export function RecycleBinCard({ refreshKey }: { refreshKey: number }) {
       <Dialog
         open={confirming}
         onClose={() => setConfirming(false)}
-        title="Empty the Recycle Bin for good?"
+        title={t('clean.bin.confirm.title')}
         description={
           bin
-            ? `This permanently deletes ${countOf(bin.itemCount, 'item')} (${formatSize(bin.sizeBytes)}), including anything that was already there before Volt. This cannot be undone, and Volt cannot bring the files back.`
+            ? t('clean.bin.confirm.description', {
+                items: tn('count.item', bin.itemCount),
+                size: formatSize(bin.sizeBytes),
+              })
             : undefined
         }
         footer={
           <>
-            <Button onClick={() => setConfirming(false)}>Cancel</Button>
+            <Button onClick={() => setConfirming(false)}>{t('common.cancel')}</Button>
             <Button variant="primary" onClick={() => void empty()}>
-              Delete permanently
+              {t('clean.bin.confirm.delete')}
             </Button>
           </>
         }

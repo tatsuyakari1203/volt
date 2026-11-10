@@ -14,6 +14,7 @@ use tauri_plugin_notification::NotificationExt;
 use tauri_specta::Event as _;
 
 use crate::boost::{self, BoostFinished};
+use crate::language::{self, Lang};
 use crate::window;
 use crate::wiring::AppState;
 
@@ -74,13 +75,15 @@ impl TrayAction {
         }
     }
 
-    /// The label shown in the menu.
+    /// The label shown in the menu, in the language the app is set to.
     #[must_use]
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::Open => "Open",
-            Self::Boost => "Boost",
-            Self::Quit => "Quit",
+    pub(crate) const fn label(self, lang: Lang) -> &'static str {
+        match (self, lang) {
+            (Self::Open, Lang::English) => "Open",
+            (Self::Open, Lang::Vietnamese) => "Mở",
+            (Self::Boost, _) => "Boost",
+            (Self::Quit, Lang::English) => "Quit",
+            (Self::Quit, Lang::Vietnamese) => "Thoát",
         }
     }
 
@@ -109,8 +112,17 @@ pub(crate) fn opens_window(event: &TrayIconEvent) -> bool {
 pub(crate) fn setup(app: &App) -> tauri::Result<()> {
     app.manage(BoostRunning::default());
 
-    let items = TrayAction::ALL
-        .map(|action| MenuItem::with_id(app, action.menu_id(), action.label(), true, None::<&str>));
+    // The menu is built once, so a language changed in Settings reaches it at the next start.
+    let lang = language::current(&app.state::<AppState>());
+    let items = TrayAction::ALL.map(|action| {
+        MenuItem::with_id(
+            app,
+            action.menu_id(),
+            action.label(lang),
+            true,
+            None::<&str>,
+        )
+    });
     let [open, boost, quit] = items;
     let separator = PredefinedMenuItem::separator(app)?;
     let menu = Menu::with_items(app, &[&open?, &boost?, &separator, &quit?])?;
@@ -160,9 +172,10 @@ fn start_boost<R: Runtime>(app: &AppHandle<R>) {
             .state::<AppState>()
             .core()
             .and_then(|core| boost::boost_of(&core));
+        let lang = language::current(&app.state::<AppState>());
         if let Some(tray) = app.tray_by_id(TRAY_ID) {
             // A failed tooltip update changes nothing that matters.
-            let _ = tray.set_tooltip(Some(boost::tooltip_line(&outcome)));
+            let _ = tray.set_tooltip(Some(boost::tooltip_line(&outcome, lang)));
         }
         if app.get_webview_window(window::MAIN_WINDOW).is_none() {
             // With a window open the report is on Home; with none, this is the only feedback.
@@ -171,7 +184,7 @@ fn start_boost<R: Runtime>(app: &AppHandle<R>) {
                 .notification()
                 .builder()
                 .title("Volt Boost")
-                .body(boost::notification_body(&outcome))
+                .body(boost::notification_body(&outcome, lang))
                 .show();
         }
         if let Ok(result) = outcome {
@@ -194,8 +207,14 @@ mod tests {
 
     #[test]
     fn the_menu_offers_open_boost_and_quit_in_that_order() {
-        let labels = TrayAction::ALL.map(TrayAction::label);
+        let labels = TrayAction::ALL.map(|action| action.label(Lang::English));
         assert_eq!(labels, ["Open", "Boost", "Quit"]);
+    }
+
+    #[test]
+    fn the_menu_has_a_vietnamese_form_with_the_same_items() {
+        let labels = TrayAction::ALL.map(|action| action.label(Lang::Vietnamese));
+        assert_eq!(labels, ["Mở", "Boost", "Thoát"]);
     }
 
     #[test]

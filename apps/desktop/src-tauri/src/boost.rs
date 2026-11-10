@@ -17,6 +17,7 @@ use volt_core::{Availability, BoostConfig, BoostReport, MemoryArea, Source, run_
 use crate::IpcError;
 use crate::cleaner::{count32, count64};
 use crate::commands::blocking;
+use crate::language::Lang;
 use crate::memory::{
     AreaResult, MemoryAreaView, MemoryListsView, OperationState, area_result, reason_for, state_for,
 };
@@ -208,16 +209,27 @@ pub fn boost_of(core: &AppCore) -> Result<BoostResult, IpcError> {
 
 /// A short line for the tray tooltip, in plain words. The text never says space was freed.
 #[must_use]
-pub fn tooltip_line(outcome: &Result<BoostResult, IpcError>) -> String {
-    match outcome {
-        Err(_) => "Volt: Boost could not run".to_owned(),
-        Ok(result) => match (result.available_before, result.available_after) {
-            (Some(before), Some(after)) => format!(
-                "Volt: Boost done, memory available {} to {}",
-                gib(before),
-                gib(after)
-            ),
-            _ => "Volt: Boost done".to_owned(),
+pub fn tooltip_line(outcome: &Result<BoostResult, IpcError>, lang: Lang) -> String {
+    match (outcome, lang) {
+        (Err(_), Lang::English) => "Volt: Boost could not run".to_owned(),
+        (Err(_), Lang::Vietnamese) => "Volt: Boost không chạy được".to_owned(),
+        (Ok(result), _) => match (result.available_before, result.available_after) {
+            (Some(before), Some(after)) => match lang {
+                Lang::English => format!(
+                    "Volt: Boost done, memory available {} to {}",
+                    gib(before, lang),
+                    gib(after, lang)
+                ),
+                Lang::Vietnamese => format!(
+                    "Volt: Boost xong, bộ nhớ khả dụng {} lên {}",
+                    gib(before, lang),
+                    gib(after, lang)
+                ),
+            },
+            _ => match lang {
+                Lang::English => "Volt: Boost done".to_owned(),
+                Lang::Vietnamese => "Volt: Boost xong".to_owned(),
+            },
         },
     }
 }
@@ -225,30 +237,51 @@ pub fn tooltip_line(outcome: &Result<BoostResult, IpcError>) -> String {
 /// The text of the notification a tray Boost shows when no window is open. It says what ran and
 /// how memory changed; it never claims disk space was freed.
 #[must_use]
-pub fn notification_body(outcome: &Result<BoostResult, IpcError>) -> String {
+pub fn notification_body(outcome: &Result<BoostResult, IpcError>, lang: Lang) -> String {
     match outcome {
-        Err(_) => "Boost could not run.".to_owned(),
+        Err(_) => match lang {
+            Lang::English => "Boost could not run.".to_owned(),
+            Lang::Vietnamese => "Boost không chạy được.".to_owned(),
+        },
         Ok(result) => {
             let mut parts = Vec::new();
             match (result.available_before, result.available_after) {
-                (Some(before), Some(after)) => parts.push(format!(
-                    "Memory available {} to {}.",
-                    gib(before),
-                    gib(after)
-                )),
-                _ => parts.push("Boost done.".to_owned()),
+                (Some(before), Some(after)) => parts.push(match lang {
+                    Lang::English => format!(
+                        "Memory available {} to {}.",
+                        gib(before, lang),
+                        gib(after, lang)
+                    ),
+                    Lang::Vietnamese => format!(
+                        "Bộ nhớ khả dụng {} lên {}.",
+                        gib(before, lang),
+                        gib(after, lang)
+                    ),
+                }),
+                _ => parts.push(match lang {
+                    Lang::English => "Boost done.".to_owned(),
+                    Lang::Vietnamese => "Boost xong.".to_owned(),
+                }),
             }
             if let Some(moved) = &result.moved_to_bin {
-                parts.push(format!(
-                    "{} moved to the Recycle Bin.",
-                    count_files(moved.files)
-                ));
+                parts.push(match lang {
+                    Lang::English => {
+                        format!("{} moved to the Recycle Bin.", count_files(moved.files))
+                    }
+                    Lang::Vietnamese => {
+                        format!("Đã chuyển {} tệp vào Thùng rác.", moved.files)
+                    }
+                });
             }
             if !result.skipped.is_empty() {
-                parts.push(format!(
-                    "{} skipped: open Volt to see why.",
-                    result.skipped.len()
-                ));
+                parts.push(match lang {
+                    Lang::English => {
+                        format!("{} skipped: open Volt to see why.", result.skipped.len())
+                    }
+                    Lang::Vietnamese => {
+                        format!("Đã bỏ qua {}: mở Volt để xem lý do.", result.skipped.len())
+                    }
+                });
             }
             parts.join(" ")
         }
@@ -263,8 +296,13 @@ fn count_files(files: u32) -> String {
     }
 }
 
-fn gib(bytes: f64) -> String {
-    format!("{:.1} GB", bytes / f64::from(1u32 << 30))
+/// Bytes as gibibytes with one decimal, written with the decimal mark of the language.
+fn gib(bytes: f64, lang: Lang) -> String {
+    let text = format!("{:.1} GB", bytes / f64::from(1u32 << 30));
+    match lang {
+        Lang::English => text,
+        Lang::Vietnamese => text.replace('.', ","),
+    }
 }
 
 /// Tauri command: runs Boost as saved and returns the before and after report.
@@ -328,18 +366,21 @@ mod tests {
             moved_to_bin: None,
             recorded: true,
         };
-        let line = tooltip_line(&Ok(result.clone()));
+        let line = tooltip_line(&Ok(result.clone()), Lang::English);
         assert_eq!(line, "Volt: Boost done, memory available 4.0 GB to 5.5 GB");
         assert!(!line.contains("freed"));
         let unread = BoostResult {
             available_before: None,
             ..result
         };
-        assert_eq!(tooltip_line(&Ok(unread)), "Volt: Boost done");
+        assert_eq!(tooltip_line(&Ok(unread), Lang::English), "Volt: Boost done");
         let error = IpcError::Other {
             message: "x".into(),
         };
-        assert_eq!(tooltip_line(&Err(error)), "Volt: Boost could not run");
+        assert_eq!(
+            tooltip_line(&Err(error), Lang::English),
+            "Volt: Boost could not run"
+        );
     }
 
     #[test]
@@ -363,7 +404,7 @@ mod tests {
             }),
             recorded: true,
         };
-        let body = notification_body(&Ok(result));
+        let body = notification_body(&Ok(result), Lang::English);
         assert_eq!(
             body,
             "Memory available 4.0 GB to 5.5 GB. 1 file moved to the Recycle Bin. 1 skipped: open Volt to see why."
@@ -372,6 +413,47 @@ mod tests {
         let error = IpcError::Other {
             message: "x".into(),
         };
-        assert_eq!(notification_body(&Err(error)), "Boost could not run.");
+        assert_eq!(
+            notification_body(&Err(error), Lang::English),
+            "Boost could not run."
+        );
+    }
+
+    #[test]
+    fn the_vietnamese_tray_text_says_the_same_things_with_a_decimal_comma() {
+        let result = BoostResult {
+            memory_before: None,
+            memory_after: None,
+            available_before: Some(4.0 * f64::from(1u32 << 30)),
+            available_after: Some(5.5 * f64::from(1u32 << 30)),
+            areas: Vec::new(),
+            skipped: vec![SkippedOperationView {
+                area: MemoryAreaView::StandbyList,
+                state: OperationState::NeedsAdministrator,
+                reason: "x".into(),
+            }],
+            junk: None,
+            moved_to_bin: Some(MovedToBinView {
+                files: 3,
+                bytes: 10.0,
+                skipped: 0,
+            }),
+            recorded: true,
+        };
+        assert_eq!(
+            tooltip_line(&Ok(result.clone()), Lang::Vietnamese),
+            "Volt: Boost xong, bộ nhớ khả dụng 4,0 GB lên 5,5 GB"
+        );
+        assert_eq!(
+            notification_body(&Ok(result), Lang::Vietnamese),
+            "Bộ nhớ khả dụng 4,0 GB lên 5,5 GB. Đã chuyển 3 tệp vào Thùng rác. Đã bỏ qua 1: mở Volt để xem lý do."
+        );
+        let error = IpcError::Other {
+            message: "x".into(),
+        };
+        assert_eq!(
+            tooltip_line(&Err(error), Lang::Vietnamese),
+            "Volt: Boost không chạy được"
+        );
     }
 }

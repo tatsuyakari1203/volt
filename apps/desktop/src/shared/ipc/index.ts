@@ -2,6 +2,8 @@
 // `bindings.ts`, which is generated from Rust (see docs/architecture.md): never hand-write a
 // transfer type or call `invoke` directly. This file adds ergonomics on top of the generated
 // module and nothing else.
+
+import { t } from '../i18n/translate';
 import {
   type ActivityExport,
   type ActivityPage,
@@ -23,6 +25,9 @@ import {
   type HealthView,
   type HistoryStatus,
   type IpcError,
+  type Lang,
+  type LanguageChoice,
+  type LanguageSetting,
   type MemoryAreaView,
   type MemoryCleanResult,
   type MemoryState,
@@ -75,6 +80,9 @@ export type {
   HealthView,
   IpcError,
   JunkView,
+  Lang,
+  LanguageChoice,
+  LanguageSetting,
   MemoryAreaView,
   MemoryCleanResult,
   MemoryListsView,
@@ -131,15 +139,15 @@ export class IpcCommandError extends Error {
 export function describeIpcError(error: IpcError): string {
   switch (error.kind) {
     case 'notFound':
-      return `Not found: ${error.message}`;
+      return t('ipc.notFound', { message: error.message });
     case 'accessDenied':
-      return `Access denied: ${error.message}`;
+      return t('ipc.accessDenied', { message: error.message });
     case 'unsupported':
-      return `Not supported: ${error.message}`;
+      return t('ipc.unsupported', { message: error.message });
     case 'invalidInput':
-      return `Invalid input: ${error.message}`;
+      return t('ipc.invalidInput', { message: error.message });
     case 'timedOut':
-      return `Timed out: ${error.message}`;
+      return t('ipc.timedOut', { message: error.message });
     case 'other':
       return error.message;
     default:
@@ -460,4 +468,20 @@ export async function listProcesses(): Promise<ProcessListView> {
  */
 export async function endApp(id: string): Promise<EndAppResult> {
   return call(() => commands.endApp(id));
+}
+
+/** The saved language choice and what System resolved to on this PC the last time. */
+export async function getLanguageSetting(): Promise<LanguageSetting> {
+  return call(() => commands.languageSetting());
+}
+
+/**
+ * Saves the language choice. `system` is what the choice System means on this PC, so the tray
+ * menu and the Boost notification can use it while no window is open.
+ */
+export async function saveLanguageSetting(
+  choice: LanguageChoice,
+  system: Lang,
+): Promise<LanguageSetting> {
+  return call(() => commands.setLanguage(choice, system));
 }

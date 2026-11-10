@@ -9,6 +9,7 @@ pub mod cleaner;
 mod commands;
 pub mod health;
 mod ipc;
+pub mod language;
 mod logging;
 pub mod memory;
 pub mod metrics;

@@ -100,7 +100,11 @@ Volt edits registries, services, files and memory on real machines. Treat that a
 
 ## Conventions
 
-- English for code, comments, commits, docs and UI strings.
+- English is the source language for code, comments, commits, docs and UI strings. Other languages
+  live only in locale files (`apps/desktop/src/shared/i18n/locales`): UI text comes from there
+  through `t`, and adding a string means adding its key to `en.json` and `vi.json`, nothing else
+  (`pnpm check` fails when they differ). Text the core writes stays English in the core; Vietnamese
+  for a tweak or cleaning rule goes in `vi.catalogue.json`, filed under its id.
 - Rust 2024 edition, toolchain pinned in `rust-toolchain.toml`. Lints live in the workspace
   `Cargo.toml`; do not silence them with `#[allow]` without a reason in a comment.
 - No `unwrap()` outside tests. Errors are typed values that reach the UI.

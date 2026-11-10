@@ -413,6 +413,28 @@ async setBoostConfig(config: BoostConfigView) : Promise<Result<BoostConfigView, 
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Tauri command: the saved language setting.
+ */
+async languageSetting() : Promise<Result<LanguageSetting, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("language_setting") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: saves the language choice and what `System` resolves to on this PC.
+ */
+async setLanguage(choice: LanguageChoice, system: Lang) : Promise<Result<LanguageSetting, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_language", { choice, system }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -1230,6 +1252,46 @@ bytes: number;
  * Whether the figures are a lower bound (a rule stopped at its item cap).
  */
 truncated: boolean }
+/**
+ * A language the app is written in.
+ */
+export type Lang = 
+/**
+ * English, the source language and the fallback.
+ */
+"en" | 
+/**
+ * Vietnamese.
+ */
+"vi"
+/**
+ * What the user chose in Settings.
+ */
+export type LanguageChoice = 
+/**
+ * Follow the language of Windows.
+ */
+"system" | 
+/**
+ * Always English.
+ */
+"en" | 
+/**
+ * Always Vietnamese.
+ */
+"vi"
+/**
+ * The stored language setting.
+ */
+export type LanguageSetting = { 
+/**
+ * What the user chose.
+ */
+choice: LanguageChoice; 
+/**
+ * What `System` resolved to the last time a window ran.
+ */
+system: Lang }
 /**
  * One memory cleaning operation. Mirrors [`volt_core::MemoryArea`].
  */

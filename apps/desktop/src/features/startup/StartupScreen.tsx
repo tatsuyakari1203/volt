@@ -1,5 +1,6 @@
 import { Loader2, Power, SearchX, ShieldAlert, TriangleAlert } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { t, tn } from '../../shared/i18n';
 import {
   listStartupEntries,
   type StartupEntryView,
@@ -23,6 +24,7 @@ import {
   describeError,
   describeProblems,
   shortenCommand,
+  sourceName,
 } from './messages';
 
 type Load =
@@ -34,13 +36,14 @@ type Load =
 type Busy = 'turning-on' | 'turning-off';
 
 function publisherLine(entry: StartupEntryView): string {
-  return entry.publisher ? `Publisher: ${entry.publisher}` : 'Publisher unknown';
+  return entry.publisher
+    ? t('startup.publisher', { name: entry.publisher })
+    : t('startup.publisher.unknown');
 }
 
 function summaryLine(entries: readonly StartupEntryView[]): string {
   const on = entries.filter((entry) => entry.enabled).length;
-  const count = entries.length === 1 ? '1 entry' : `${entries.length} entries`;
-  return `${count}, ${on} on`;
+  return t('startup.summary', { entries: tn('count.entry', entries.length), on });
 }
 
 function CommandText({ entry }: { entry: StartupEntryView }) {
@@ -54,7 +57,10 @@ function CommandText({ entry }: { entry: StartupEntryView }) {
     <button
       type="button"
       aria-expanded={open}
-      aria-label={`Command of ${entry.name}: ${open ? 'show less' : 'show the full command'}`}
+      aria-label={t('startup.command.label', {
+        name: entry.name,
+        state: open ? t('startup.command.showLess') : t('startup.command.showFull'),
+      })}
       title={entry.command}
       onClick={() => setOpen((value) => !value)}
       className="mt-0.5 block w-full rounded-sm text-left hover:bg-hover"
@@ -164,10 +170,7 @@ export function StartupScreen() {
 
   return (
     <>
-      <PageHeader
-        title="Startup"
-        description="Programs that start when you sign in. Turning one off keeps it listed, so you can turn it back on."
-      />
+      <PageHeader title={t('nav.startup')} description={t('startup.description')} />
       <div className="flex flex-col gap-3">
         {notice ? (
           <div
@@ -181,7 +184,7 @@ export function StartupScreen() {
               className="shrink-0 rounded-sm px-2 py-1 font-semibold underline hover:no-underline"
               onClick={() => setNotice(null)}
             >
-              Dismiss
+              {t('common.dismiss')}
             </button>
           </div>
         ) : null}
@@ -199,40 +202,38 @@ export function StartupScreen() {
         {load.status === 'loading' ? (
           <Card role="status" className="flex items-center justify-center gap-2 py-10 text-muted">
             <Loader2 aria-hidden size={18} className="animate-spin motion-reduce:animate-none" />
-            <p>Reading what starts with Windows...</p>
+            <p>{t('startup.loading')}</p>
           </Card>
         ) : null}
 
         {load.status === 'error' ? (
           <Card role="alert" className="flex flex-col items-center gap-3 py-10 text-center">
             <TriangleAlert aria-hidden size={24} className="text-muted" />
-            <p className="font-semibold">Startup entries could not be loaded</p>
+            <p className="font-semibold">{t('startup.error')}</p>
             <p className="max-w-xs text-body text-muted">{load.message}</p>
-            <Button onClick={() => read()}>Try again</Button>
+            <Button onClick={() => read()}>{t('common.tryAgain')}</Button>
           </Card>
         ) : null}
 
         {load.status === 'ready' && entries.length === 0 ? (
           <Card className="flex flex-col items-center gap-2 py-10 text-center">
             <Power aria-hidden size={24} className="text-muted" />
-            <p className="font-semibold">Nothing starts with Windows</p>
-            <p className="max-w-xs text-body text-muted">
-              No program is registered to start when you sign in, in the places Volt looks at.
-            </p>
+            <p className="font-semibold">{t('startup.empty.title')}</p>
+            <p className="max-w-xs text-body text-muted">{t('startup.empty.description')}</p>
           </Card>
         ) : null}
 
         {load.status === 'ready' && entries.length > 0 ? (
           <>
             <SearchField
-              label="Search startup entries"
-              placeholder="Search startup entries"
+              label={t('startup.search')}
+              placeholder={t('startup.search')}
               value={query}
               onValueChange={setQuery}
             />
             <p className="text-caption text-muted">{summaryLine(entries)}</p>
             {visible.length > 0 ? (
-              <ListGroup aria-label="Startup entries">
+              <ListGroup aria-label={t('startup.list.label')}>
                 {visible.map((entry) => {
                   const working = busy[entry.id];
                   return (
@@ -241,11 +242,11 @@ export function StartupScreen() {
                       title={entry.name}
                       badge={
                         <>
-                          <Badge>{entry.sourceLabel}</Badge>
+                          <Badge>{sourceName(entry.source, entry.sourceLabel)}</Badge>
                           {entry.needsAdmin ? (
                             <Badge>
                               <ShieldAlert aria-hidden size={12} />
-                              Needs administrator rights
+                              {t('common.needsAdmin')}
                             </Badge>
                           ) : null}
                         </>
@@ -256,7 +257,9 @@ export function StartupScreen() {
                           <CommandText entry={entry} />
                           {working ? (
                             <span className="mt-0.5 block font-semibold text-fg">
-                              {working === 'turning-on' ? 'Turning on...' : 'Turning off...'}
+                              {working === 'turning-on'
+                                ? t('startup.turningOn')
+                                : t('startup.turningOff')}
                             </span>
                           ) : null}
                         </>
@@ -277,8 +280,10 @@ export function StartupScreen() {
             ) : (
               <Card className="flex flex-col items-center gap-2 py-10 text-center">
                 <SearchX aria-hidden size={24} className="text-muted" />
-                <p className="font-semibold">No startup entries match "{query.trim()}"</p>
-                <p className="text-body text-muted">Try a different word.</p>
+                <p className="font-semibold">
+                  {t('startup.noMatch.title', { query: query.trim() })}
+                </p>
+                <p className="text-body text-muted">{t('startup.noMatch.hint')}</p>
               </Card>
             )}
           </>

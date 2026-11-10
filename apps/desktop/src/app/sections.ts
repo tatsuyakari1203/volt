@@ -9,6 +9,7 @@ import {
   Sparkles,
   Undo2,
 } from 'lucide-react';
+import type { MessageKey } from '../shared/i18n';
 
 /** Identifier of a top-level section. Navigation is plain local state, not a router. */
 export type SectionId =
@@ -23,24 +24,25 @@ export type SectionId =
 
 export interface Section {
   id: SectionId;
-  label: string;
+  /** Key of the name shown in the navigation rail and as the title of the page. */
+  label: MessageKey;
   icon: LucideIcon;
 }
 
 /** Sections in the upper part of the navigation rail. */
 export const mainSections: readonly Section[] = [
-  { id: 'home', label: 'Home', icon: House },
-  { id: 'clean', label: 'Clean', icon: Sparkles },
-  { id: 'memory', label: 'Memory', icon: MemoryStick },
-  { id: 'tweaks', label: 'Tweaks', icon: SlidersHorizontal },
-  { id: 'startup', label: 'Startup', icon: Power },
-  { id: 'processes', label: 'Processes', icon: Cpu },
+  { id: 'home', label: 'nav.home', icon: House },
+  { id: 'clean', label: 'nav.clean', icon: Sparkles },
+  { id: 'memory', label: 'nav.memory', icon: MemoryStick },
+  { id: 'tweaks', label: 'nav.tweaks', icon: SlidersHorizontal },
+  { id: 'startup', label: 'nav.startup', icon: Power },
+  { id: 'processes', label: 'nav.processes', icon: Cpu },
 ];
 
 /** Sections pinned to the bottom of the rail. */
 export const footerSections: readonly Section[] = [
-  { id: 'settings', label: 'Settings', icon: Settings },
-  { id: 'undo', label: 'Undo', icon: Undo2 },
+  { id: 'settings', label: 'nav.settings', icon: Settings },
+  { id: 'undo', label: 'nav.undo', icon: Undo2 },
 ];
 
 /**

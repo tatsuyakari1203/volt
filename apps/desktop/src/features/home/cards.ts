@@ -1,3 +1,4 @@
+import { t } from '../../shared/i18n';
 import type { MetricsView } from '../../shared/ipc';
 import { formatBytes } from '../../shared/text/size';
 import { driveName, formatPercent } from './format';
@@ -35,12 +36,18 @@ export function buildCards(metrics: MetricsView, systemMount?: string): MetricCa
 function cpuCard(metrics: MetricsView): MetricCardSpec {
   const cpu = metrics.cpuPercent;
   return cpu === null
-    ? { id: 'cpu', label: 'CPU', value: NO_VALUE, lines: ['No reading yet'], empty: true }
+    ? {
+        id: 'cpu',
+        label: t('home.card.cpu'),
+        value: NO_VALUE,
+        lines: [t('home.card.cpu.none')],
+        empty: true,
+      }
     : {
         id: 'cpu',
-        label: 'CPU',
+        label: t('home.card.cpu'),
         value: formatPercent(cpu),
-        lines: ['Busy right now'],
+        lines: [t('home.card.cpu.busy')],
         empty: false,
       };
 }
@@ -49,9 +56,14 @@ function memoryCard(metrics: MetricsView): MetricCardSpec {
   const { memory } = metrics;
   return {
     id: 'memory',
-    label: 'Memory',
+    label: t('home.card.memory'),
     value: formatPercent(memory.usedPercent),
-    lines: [`${formatBytes(memory.usedBytes)} of ${formatBytes(memory.totalBytes)} in use`],
+    lines: [
+      t('home.card.memory.inUse', {
+        used: formatBytes(memory.usedBytes),
+        total: formatBytes(memory.totalBytes),
+      }),
+    ],
     empty: false,
   };
 }
@@ -59,21 +71,30 @@ function memoryCard(metrics: MetricsView): MetricCardSpec {
 function gpuCard(metrics: MetricsView): MetricCardSpec {
   const { gpu } = metrics;
   if (gpu === null) {
-    return { id: 'gpu', label: 'GPU', value: NO_VALUE, lines: ['No GPU detected'], empty: true };
+    return {
+      id: 'gpu',
+      label: t('home.card.gpu'),
+      value: NO_VALUE,
+      lines: [t('home.card.gpu.none')],
+      empty: true,
+    };
   }
   const lines = [gpu.name];
   if (gpu.vramUsedBytes !== null && gpu.vramTotalBytes !== null) {
     lines.push(
-      `${formatBytes(gpu.vramUsedBytes)} of ${formatBytes(gpu.vramTotalBytes)} video memory`,
+      t('home.card.gpu.vram', {
+        used: formatBytes(gpu.vramUsedBytes),
+        total: formatBytes(gpu.vramTotalBytes),
+      }),
     );
   }
   if (gpu.utilisationPercent === null) {
-    lines.push('Usage is not available');
-    return { id: 'gpu', label: 'GPU', value: NO_VALUE, lines, empty: true };
+    lines.push(t('home.card.gpu.noUsage'));
+    return { id: 'gpu', label: t('home.card.gpu'), value: NO_VALUE, lines, empty: true };
   }
   return {
     id: 'gpu',
-    label: 'GPU',
+    label: t('home.card.gpu'),
     value: formatPercent(gpu.utilisationPercent),
     lines,
     empty: false,
@@ -88,17 +109,22 @@ function diskCard(metrics: MetricsView, systemMount?: string): MetricCardSpec {
   if (!disk) {
     return {
       id: 'disk',
-      label: 'Disk space',
+      label: t('home.card.disk'),
       value: NO_VALUE,
-      lines: ['No disk reading'],
+      lines: [t('home.card.disk.none')],
       empty: true,
     };
   }
   return {
     id: 'disk',
-    label: 'Disk space',
+    label: t('home.card.disk'),
     value: formatBytes(disk.freeBytes),
-    lines: [`Free of ${formatBytes(disk.totalBytes)} on ${driveName(disk.mount)}`],
+    lines: [
+      t('home.card.disk.free', {
+        total: formatBytes(disk.totalBytes),
+        drive: driveName(disk.mount),
+      }),
+    ],
     empty: false,
   };
 }

@@ -16,6 +16,7 @@
     "check:ui": "pnpm --filter @volt/desktop typecheck && pnpm --filter @volt/desktop test && pnpm --filter @volt/desktop boundaries",
     "check": "pwsh -NoProfile -File scripts/check.ps1",
     "check:arch": "node scripts/check-arch.mjs",
+    "check:i18n": "node --test scripts/check-i18n.test.mjs && node scripts/check-i18n.mjs",
     "check:privacy": "node --test scripts/check-privacy.test.mjs && node scripts/check-privacy.mjs",
     "bindings": "pwsh -NoProfile -File scripts/bindings.ps1",
     "bindings:check": "pwsh -NoProfile -File scripts/bindings.ps1 -Check",

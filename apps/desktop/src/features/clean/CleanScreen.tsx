@@ -1,5 +1,6 @@
 import { Loader2, Sparkles, TriangleAlert } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { t, tNodes, tn } from '../../shared/i18n';
 import {
   type CleaningRuleInfo,
   type CleanRunResult,
@@ -11,9 +12,17 @@ import {
   onCleanScanProgress,
   scanCleaning,
 } from '../../shared/ipc';
-import { countOf, formatSize } from '../../shared/text/size';
+import { formatSize } from '../../shared/text/size';
 import { Button, Card, Dialog, ListGroup, PageHeader } from '../../shared/ui';
-import { describeError, selectionOf, selectionText, tickedByDefault } from './messages';
+import {
+  categoryName,
+  describeError,
+  resultMessage,
+  ruleTitle,
+  selectionOf,
+  selectionText,
+  tickedByDefault,
+} from './messages';
 import { RecycleBinCard } from './RecycleBinCard';
 import { RuleRow } from './RuleRow';
 
@@ -30,7 +39,7 @@ function groupByCategory(rules: readonly CleaningRuleInfo[]) {
   for (const rule of rules) {
     const group = groups.find((candidate) => candidate.key === rule.category);
     if (group) group.rules.push(rule);
-    else groups.push({ key: rule.category, label: rule.categoryLabel, rules: [rule] });
+    else groups.push({ key: rule.category, label: categoryName(rule), rules: [rule] });
   }
   return groups;
 }
@@ -48,7 +57,7 @@ function Notice({ message, onDismiss }: { message: string; onDismiss: () => void
         className="shrink-0 rounded-sm px-2 py-1 font-semibold underline hover:no-underline"
         onClick={onDismiss}
       >
-        Dismiss
+        {t('common.dismiss')}
       </button>
     </div>
   );
@@ -56,38 +65,43 @@ function Notice({ message, onDismiss }: { message: string; onDismiss: () => void
 
 function ResultCard({ result, onScanAgain }: { result: CleanRunResult; onScanAgain: () => void }) {
   return (
-    <Card as="section" aria-label="Clean result" className="flex flex-col gap-3">
-      <h2 className="font-semibold">Moved to the Recycle Bin</h2>
-      <p>{result.message}</p>
+    <Card as="section" aria-label={t('clean.result.label')} className="flex flex-col gap-3">
+      <h2 className="font-semibold">{t('clean.result.title')}</h2>
+      <p>{resultMessage(result)}</p>
       {result.rules.length > 0 ? (
         <ul className="flex flex-col gap-1 text-caption text-muted">
           {result.rules.map((rule) => (
             <li key={rule.id}>
-              {rule.title}: {countOf(rule.movedFiles, 'file')} ({formatSize(rule.movedBytes)})
-              {rule.skipped > 0 ? `, ${countOf(rule.skipped, 'item')} left in place` : ''}
+              {t(rule.skipped > 0 ? 'clean.result.ruleLeft' : 'clean.result.rule', {
+                title: ruleTitle(rule.id, rule.title),
+                files: tn('count.file', rule.movedFiles),
+                size: formatSize(rule.movedBytes),
+                items: tn('count.item', rule.skipped),
+              })}
             </li>
           ))}
         </ul>
       ) : null}
       {result.skipped.length > 0 ? (
         <div className="text-caption text-muted">
-          <p className="font-semibold">Left in place</p>
+          <p className="font-semibold">{t('clean.result.leftInPlace')}</p>
           <ul>
             {result.skipped.map((group) => (
               <li key={group.reason}>
-                {countOf(group.count, 'item')}: {group.reason}
+                {t('clean.result.group', {
+                  items: tn('count.item', group.count),
+                  reason: group.reason,
+                })}
               </li>
             ))}
           </ul>
         </div>
       ) : null}
       {result.historyIncomplete ? (
-        <p className="text-caption text-muted">
-          The activity history could not be written, so this clean is missing from it.
-        </p>
+        <p className="text-caption text-muted">{t('clean.result.historyIncomplete')}</p>
       ) : null}
       <div>
-        <Button onClick={onScanAgain}>Scan again</Button>
+        <Button onClick={onScanAgain}>{t('clean.scanAgain')}</Button>
       </div>
     </Card>
   );
@@ -158,7 +172,7 @@ export function CleanScreen() {
       setPhase('idle');
     } catch (error) {
       if (alive.current) {
-        setNotice(`The scan could not run. ${describeError(error)}`);
+        setNotice(t('clean.scan.failed', { error: describeError(error) }));
         setPhase('idle');
       }
     } finally {
@@ -195,7 +209,7 @@ export function CleanScreen() {
       setBinKey((key) => key + 1);
     } catch (error) {
       if (!alive.current) return;
-      setNotice(`Nothing was moved. ${describeError(error)}`);
+      setNotice(t('clean.move.failed', { error: describeError(error) }));
       if (error instanceof IpcCommandError && error.error.kind === 'notFound') setScan(null);
     } finally {
       if (alive.current) setPhase('idle');
@@ -217,10 +231,7 @@ export function CleanScreen() {
 
   return (
     <>
-      <PageHeader
-        title="Clean"
-        description="Find junk files and send them to the Recycle Bin. Nothing is deleted for good until you empty the Recycle Bin."
-      />
+      <PageHeader title={t('nav.clean')} description={t('clean.description')} />
       <div className="flex flex-col gap-3">
         {notice ? <Notice message={notice} onDismiss={() => setNotice(null)} /> : null}
 
@@ -234,18 +245,21 @@ export function CleanScreen() {
               />
               <p className="min-w-0 flex-1">
                 {cancelling
-                  ? 'Stopping after this rule...'
+                  ? t('clean.scan.stopping')
                   : progress
-                    ? `Checking rule ${Math.min(progress.done + 1, progress.total)} of ${progress.total}...`
-                    : 'Starting the scan...'}
+                    ? t('clean.scan.progress', {
+                        current: Math.min(progress.done + 1, progress.total),
+                        total: progress.total,
+                      })
+                    : t('clean.scan.starting')}
               </p>
               <Button size="sm" disabled={cancelling} onClick={cancelScan}>
-                Cancel
+                {t('common.cancel')}
               </Button>
             </div>
             <div
               role="progressbar"
-              aria-label="Scan progress"
+              aria-label={t('clean.scan.progressLabel')}
               aria-valuemin={0}
               aria-valuemax={progress?.total ?? 1}
               aria-valuenow={progress?.done ?? 0}
@@ -258,9 +272,7 @@ export function CleanScreen() {
                 }}
               />
             </div>
-            <p className="text-caption text-muted">
-              Looking only. Nothing is changed while Volt scans.
-            </p>
+            <p className="text-caption text-muted">{t('clean.scan.readonly')}</p>
           </Card>
         ) : null}
 
@@ -271,28 +283,26 @@ export function CleanScreen() {
         {!scan && !result && !scanning && rulesLoad.status === 'ready' ? (
           <Card className="flex flex-col items-center gap-3 py-8 text-center">
             <Sparkles aria-hidden size={24} className="text-muted" />
-            <p className="font-semibold">Scan for junk files</p>
-            <p className="max-w-xs text-body text-muted">
-              Volt looks, and lists what it finds with sizes. You choose what goes before anything
-              moves.
-            </p>
+            <p className="font-semibold">{t('clean.empty.title')}</p>
+            <p className="max-w-xs text-body text-muted">{t('clean.empty.description')}</p>
             <Button variant="primary" onClick={() => void startScan()}>
-              Scan
+              {t('clean.scan.button')}
             </Button>
           </Card>
         ) : null}
 
         {scan && !scanning ? (
-          <Card as="section" aria-label="Selection" className="flex flex-col gap-3">
+          <Card
+            as="section"
+            aria-label={t('clean.selection.label')}
+            className="flex flex-col gap-3"
+          >
             <p>
-              {nothingSelected ? (
-                'Nothing is selected to move.'
-              ) : (
-                <>
-                  <span className="font-semibold">{selectionText(selection)}</span> selected. They
-                  will be moved to the Recycle Bin, not deleted.
-                </>
-              )}
+              {nothingSelected
+                ? t('clean.selection.none')
+                : tNodes('clean.selection.some', {
+                    selection: <span className="font-semibold">{selectionText(selection)}</span>,
+                  })}
             </p>
             <div className="flex flex-wrap gap-2">
               <Button
@@ -301,10 +311,10 @@ export function CleanScreen() {
                 loading={cleaning}
                 onClick={() => setConfirming(true)}
               >
-                Clean selected
+                {t('clean.cleanSelected')}
               </Button>
               <Button disabled={cleaning} onClick={() => void startScan()}>
-                Scan again
+                {t('clean.scanAgain')}
               </Button>
             </div>
           </Card>
@@ -313,16 +323,16 @@ export function CleanScreen() {
         {rulesLoad.status === 'loading' ? (
           <Card role="status" className="flex items-center justify-center gap-2 py-10 text-muted">
             <Loader2 aria-hidden size={18} className="animate-spin motion-reduce:animate-none" />
-            <p>Reading the cleaning rules...</p>
+            <p>{t('clean.rules.loading')}</p>
           </Card>
         ) : null}
 
         {rulesLoad.status === 'error' ? (
           <Card role="alert" className="flex flex-col items-center gap-3 py-10 text-center">
             <TriangleAlert aria-hidden size={24} className="text-muted" />
-            <p className="font-semibold">The cleaning rules could not be loaded</p>
+            <p className="font-semibold">{t('clean.rules.error')}</p>
             <p className="max-w-xs text-body text-muted">{rulesLoad.message}</p>
-            <Button onClick={readRules}>Try again</Button>
+            <Button onClick={readRules}>{t('common.tryAgain')}</Button>
           </Card>
         ) : null}
 
@@ -352,13 +362,13 @@ export function CleanScreen() {
       <Dialog
         open={confirming}
         onClose={() => setConfirming(false)}
-        title="Move these files to the Recycle Bin?"
-        description={`${selectionText(selection)} will be moved to the Recycle Bin. Nothing is deleted for good, and the files keep using disk space until you empty the Recycle Bin. You can restore them from there.`}
+        title={t('clean.confirm.title')}
+        description={t('clean.confirm.description', { selection: selectionText(selection) })}
         footer={
           <>
-            <Button onClick={() => setConfirming(false)}>Cancel</Button>
+            <Button onClick={() => setConfirming(false)}>{t('common.cancel')}</Button>
             <Button variant="primary" onClick={() => void clean()}>
-              Move to Recycle Bin
+              {t('clean.confirm.move')}
             </Button>
           </>
         }

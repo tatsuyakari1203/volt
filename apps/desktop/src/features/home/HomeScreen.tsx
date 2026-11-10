@@ -1,4 +1,5 @@
 import { Rocket, TriangleAlert } from 'lucide-react';
+import { t } from '../../shared/i18n';
 import type { BoostResult } from '../../shared/ipc';
 import { Button, PageHeader } from '../../shared/ui';
 import { BoostReport } from './BoostReport';
@@ -34,8 +35,8 @@ export function HomeScreen({
   return (
     <>
       <PageHeader
-        title="Home"
-        description="Your PC at a glance."
+        title={t('nav.home')}
+        description={t('home.description')}
         actions={
           <Button
             variant="primary"
@@ -43,7 +44,7 @@ export function HomeScreen({
             loading={boost.running}
             onClick={boost.run}
           >
-            {boost.running ? 'Boosting...' : 'Boost'}
+            {boost.running ? t('home.boosting') : t('home.boost')}
           </Button>
         }
       />

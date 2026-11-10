@@ -1,4 +1,5 @@
 import { TriangleAlert } from 'lucide-react';
+import { t, tn } from '../../shared/i18n';
 import type { ProcessGroupView } from '../../shared/ipc';
 import { Button, Dialog } from '../../shared/ui';
 import { processesText } from './processes';
@@ -25,19 +26,19 @@ export function EndDialog({ group, ending, onCancel, onConfirm }: EndDialogProps
       onClose={() => {
         if (!ending) onCancel();
       }}
-      title={group ? `End ${group.name}?` : ''}
+      title={group ? t('processes.dialog.title', { name: group.name }) : ''}
       description={
         group
-          ? `${processesText(count)} of ${group.name} will end at once. Anything you have not saved in it is lost. This cannot be undone.`
+          ? t('processes.dialog.description', { processes: processesText(count), name: group.name })
           : undefined
       }
       footer={
         <>
           <Button onClick={onCancel} disabled={ending}>
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button variant="primary" loading={ending} onClick={onConfirm}>
-            {ending ? 'Ending...' : `End ${count === 1 ? 'process' : `${count} processes`}`}
+            {ending ? t('processes.dialog.ending') : tn('processes.dialog.end', count)}
           </Button>
         </>
       }
@@ -45,10 +46,7 @@ export function EndDialog({ group, ending, onCancel, onConfirm }: EndDialogProps
       {group?.endability === 'explorer' ? (
         <div className="flex items-start gap-3 rounded-md bg-caution p-3 text-body text-caution-fg">
           <TriangleAlert aria-hidden size={18} className="mt-0.5 shrink-0" />
-          <p>
-            This is Windows Explorer. Ending it closes the taskbar, the desktop and every File
-            Explorer window until Windows starts it again, which it normally does within seconds.
-          </p>
+          <p>{t('processes.dialog.explorer')}</p>
         </div>
       ) : null}
     </Dialog>
