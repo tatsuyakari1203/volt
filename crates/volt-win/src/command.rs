@@ -688,7 +688,11 @@ mod tests {
             None
         });
 
+        let started = std::time::Instant::now();
         let result = short.run_inner(&helper("helper_tree", &[&file.to_string_lossy()]), |_| {});
+        // The grandchild sleeps for 120 s: finishing early means the tree was killed, not waited
+        // out.
+        assert!(started.elapsed() < Duration::from_secs(30));
         assert!(
             matches!(result, Err(CommandError::TimedOut { .. })),
             "{result:?}"
