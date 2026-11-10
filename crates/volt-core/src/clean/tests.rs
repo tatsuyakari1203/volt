@@ -1648,14 +1648,73 @@ fn an_observed_scan_reports_each_rule_and_returns_the_same_plan() {
 }
 
 #[test]
-fn cancelling_between_rules_stops_the_scan_and_yields_no_plan() {
+fn cancelling_between_rules_returns_the_rules_already_scanned_as_cancelled() {
     let fx = Fixture::new();
     let engine = fx.engine(&two_rules());
     let watcher = Watcher::new(1);
-    let result = engine.scan_observed(&["one", "two"], &watcher);
-    assert_eq!(result, Err(ScanError::Cancelled));
-    assert_eq!(watcher.seen(), [(0, 2)], "the second rule never started");
+    let plan = engine
+        .scan_observed(&["one", "two"], &watcher)
+        .expect("a cancelled scan is a partial plan");
+    assert!(plan.cancelled);
+    assert_eq!(plan.rules.len(), 1, "the second rule never started");
+    assert!(!plan.rules[0].truncated, "nothing was left unwalked");
+    assert_eq!(watcher.seen(), [(0, 2)]);
     assert!(fx.fs.trash_attempts().is_empty());
+}
+
+/// Says "cancelled" from the n-th question on, counting every call.
+struct CancelAtCheck {
+    asked: std::sync::atomic::AtomicUsize,
+    from: usize,
+}
+
+impl ScanObserver for CancelAtCheck {
+    fn progress(&self, _done: usize, _total: usize) {}
+
+    fn is_cancelled(&self) -> bool {
+        self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1 >= self.from
+    }
+}
+
+#[test]
+fn cancelling_inside_a_rule_keeps_what_was_found_and_marks_the_rule_partial() {
+    let fx = Fixture::new();
+    for n in 0..10 {
+        fx.fs
+            .add_file_at(temp().join(format!("f{n}.tmp")), 10, ago(5));
+    }
+    let engine = fx.engine(&two_rules());
+    // Check 1 is before the first rule, checks 2 to 4 are before the first
+    // three entries: the fourth entry's check cancels.
+    let observer = CancelAtCheck {
+        asked: std::sync::atomic::AtomicUsize::new(0),
+        from: 5,
+    };
+    let plan = engine
+        .scan_observed(&["one", "two"], &observer)
+        .expect("scan");
+    assert!(plan.cancelled);
+    assert_eq!(plan.rules.len(), 1, "the second rule never started");
+    let scan = &plan.rules[0];
+    assert!(scan.truncated);
+    assert_eq!(scan.items.len(), 3, "the entries before the cancel stay");
+
+    // What is listed can still be cleaned, and only that.
+    let report = engine.clean(&plan.confirm(), Source::Manual);
+    assert_eq!(report.moved_files(), 3);
+    assert_eq!(fx.fs.trashed().len(), 3);
+}
+
+#[test]
+fn a_scan_that_is_not_cancelled_is_not_marked_partial() {
+    let fx = Fixture::new();
+    fx.fs.add_file_at(temp().join("a.tmp"), 7, ago(5));
+    let engine = fx.engine(&two_rules());
+    let plan = engine
+        .scan_observed(&["one", "two"], &Watcher::new(usize::MAX))
+        .expect("scan");
+    assert!(!plan.cancelled);
+    assert!(plan.rules.iter().all(|r| !r.truncated));
 }
 
 #[test]

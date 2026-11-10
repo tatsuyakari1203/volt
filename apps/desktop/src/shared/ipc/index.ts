@@ -402,15 +402,24 @@ export async function listCleaningRules(): Promise<CleaningRuleInfo[]> {
 /**
  * Scans every cleaning rule (read-only) and resolves with counts and sizes per rule and the id of
  * the scan, which `cleanSelectedRules` needs. Runs in the background: listen with
- * `onCleanScanProgress` for how far it is and call `cancelCleaningScan` to stop it between rules
- * (the result then has `cancelled: true`). Results carry rule-relative sample paths, never a full
+ * `onCleanScanProgress` for how far it is and call `cancelCleaningScan` to stop it, even inside a
+ * rule (the result then has `cancelled: true` and lists the rules it reached, the last of them
+ * possibly `truncated`; with no rule reached the earlier scan stands). Results carry rule-relative sample paths, never a full
  * path.
  */
 export async function scanCleaning(): Promise<CleanScanResult> {
   return call(() => commands.scanCleaning());
 }
 
-/** Asks the running scan to stop before its next rule. Does nothing when no scan runs. */
+/**
+ * Scans only the chosen rules (read-only), like `scanCleaning`: how to continue with the rest of a
+ * rule whose scan was truncated. Resolves with a new scan id; nothing moves until it is cleaned.
+ */
+export async function scanCleaningRules(ruleIds: readonly string[]): Promise<CleanScanResult> {
+  return call(() => commands.scanCleaningRules([...ruleIds]));
+}
+
+/** Asks the running scan to stop, inside the rule it is walking or before the next. */
 export async function cancelCleaningScan(): Promise<void> {
   await call(() => commands.cancelCleaningScan());
 }

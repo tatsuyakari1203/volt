@@ -90,6 +90,7 @@ fn generated_bindings_describe_the_cleaner_commands_progress_event_and_results()
     for name in [
         "listCleaningRules",
         "scanCleaning",
+        "scanCleaningRules",
         "cancelCleaningScan",
         "cleanSelectedRules",
         "recycleBinStatus",

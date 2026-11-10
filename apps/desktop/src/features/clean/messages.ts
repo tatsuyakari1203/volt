@@ -56,6 +56,36 @@ export function findingsLine(view: RuleScanView): string {
   return second === undefined ? first : t('clean.findings.join', { first, second });
 }
 
+/**
+ * The ticked rules, cleanable on this page, whose scan stopped at the limit or was cancelled: a
+ * clean moves only a part of them, so the page offers to scan the rest once it is done.
+ */
+export function truncatedRuleIds(
+  views: readonly RuleScanView[],
+  ticked: ReadonlySet<string>,
+): string[] {
+  return views
+    .filter((view) => view.truncated && ticked.has(view.rule.id) && !view.rule.needsAdministrator)
+    .map((view) => view.rule.id);
+}
+
+/**
+ * The ticked browser rules whose browser is running now: a clean skips the files a running browser
+ * keeps open, and the confirmation says so.
+ */
+export function runningBrowserRules(
+  views: readonly RuleScanView[],
+  ticked: ReadonlySet<string>,
+): RuleScanView[] {
+  return views.filter(
+    (view) =>
+      ticked.has(view.rule.id) &&
+      view.rule.category === 'browserCache' &&
+      !view.rule.needsAdministrator &&
+      view.lockedNote !== null,
+  );
+}
+
 /** The totals of the ticked rules. */
 export interface Selection {
   files: number;

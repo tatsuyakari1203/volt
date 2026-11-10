@@ -11,6 +11,7 @@ const ipc = vi.hoisted(() => ({
   listCleaningRules: vi.fn(),
   scanCleaning: vi.fn(),
   cancelCleaningScan: vi.fn(),
+  scanCleaningRules: vi.fn(),
   onCleanScanProgress: vi.fn(),
   cleanSelectedRules: vi.fn(),
   getRecycleBinStatus: vi.fn(),

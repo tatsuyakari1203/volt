@@ -19,6 +19,7 @@ const ipc = vi.hoisted(() => ({
   listCleaningRules: vi.fn(),
   scanCleaning: vi.fn(),
   cancelCleaningScan: vi.fn(),
+  scanCleaningRules: vi.fn(),
   onCleanScanProgress: vi.fn(),
   cleanSelectedRules: vi.fn(),
   getRecycleBinStatus: vi.fn(),
@@ -68,6 +69,16 @@ const machine: CleaningRuleInfo = {
   risk: 'caution',
   needsAdministrator: true,
   minAgeDays: 7,
+};
+const chrome: CleaningRuleInfo = {
+  id: 'chrome-cache',
+  title: 'Chrome cache',
+  description: 'Pages Chrome saved.',
+  category: 'browserCache',
+  categoryLabel: 'Browser caches',
+  risk: 'safe',
+  needsAdministrator: false,
+  minAgeDays: 1,
 };
 const allRules = [temp, machine, thumbs, careful];
 
@@ -241,11 +252,34 @@ describe('scanning', () => {
     await user.click(await screen.findByRole('button', { name: 'Scan' }));
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(ipc.cancelCleaningScan).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole('status').textContent).toContain('Stopping after this rule');
+    expect(screen.getByRole('status').textContent).toContain('Stopping');
 
     pending.resolve({ planId: '', cancelled: true, rules: [] });
     expect(await screen.findByRole('button', { name: 'Scan' })).toBeTruthy();
     expect(screen.queryByRole('region', { name: 'Selection' })).toBeNull();
+  });
+
+  it('a scan cancelled inside a rule shows what it reached and says it is partial', async () => {
+    const user = userEvent.setup();
+    const pending = deferred<CleanScanResult>();
+    ipc.scanCleaning.mockReturnValue(pending.promise);
+    renderScreen();
+    await user.click(await screen.findByRole('button', { name: 'Scan' }));
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    pending.resolve({
+      planId: 'scan-2',
+      cancelled: true,
+      rules: [view(temp, { files: 7, bytes: 7 * 1024, truncated: true })],
+    });
+    const summary = await screen.findByRole('region', { name: 'Selection' });
+    expect(summary.textContent).toContain('The scan was stopped: 1 of 4 rules were looked at');
+    expect(screen.getByText(/there is more than this scan lists/)).toBeTruthy();
+    // What was reached can be cleaned after the usual confirmation.
+    expect(
+      (within(summary).getByRole('button', { name: 'Clean selected' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
   });
 
   it('says so when the scan fails', async () => {
@@ -303,6 +337,82 @@ describe('choosing and cleaning', () => {
     expect(screen.queryByRole('region', { name: 'Selection' })).toBeNull();
     // The Recycle Bin card re-reads the bin.
     await waitFor(() => expect(ipc.getRecycleBinStatus).toHaveBeenCalledTimes(2));
+  });
+
+  it('after cleaning a truncated rule it offers the rest, and scans only that rule', async () => {
+    const user = userEvent.setup();
+    renderScreen();
+    ipc.scanCleaning.mockResolvedValue({
+      ...scanned,
+      rules: [
+        view(temp, { files: 1000, bytes: 1024, truncated: true }),
+        view(thumbs, { files: 1, bytes: 2048 }),
+      ],
+    });
+    await user.click(await screen.findByRole('button', { name: 'Scan' }));
+    await screen.findByRole('region', { name: 'Selection' });
+    ipc.cleanSelectedRules.mockResolvedValue(cleaned);
+    await user.click(screen.getByRole('button', { name: 'Clean selected' }));
+    await user.click(
+      within(screen.getByRole('dialog')).getByRole('button', { name: 'Move to Recycle Bin' }),
+    );
+    const result = await screen.findByRole('region', { name: 'Clean result' });
+    expect(result.textContent).toContain('nothing moves until you confirm');
+
+    ipc.scanCleaningRules.mockResolvedValue({
+      planId: 'scan-3',
+      cancelled: false,
+      rules: [view(temp, { files: 40, bytes: 4096 })],
+    });
+    await user.click(within(result).getByRole('button', { name: 'Scan the rest' }));
+    const summary = await screen.findByRole('region', { name: 'Selection' });
+    expect(ipc.scanCleaningRules).toHaveBeenCalledWith(['user-temp']);
+    // A scan, not a clean: the files wait for the confirmation.
+    expect(ipc.cleanSelectedRules).toHaveBeenCalledTimes(1);
+    expect(summary.textContent).toContain('40 files');
+  });
+
+  it('offers no rest after a clean of rules that were fully listed', async () => {
+    const user = userEvent.setup();
+    renderScreen();
+    await scanNow(user);
+    ipc.cleanSelectedRules.mockResolvedValue(cleaned);
+    await user.click(screen.getByRole('button', { name: 'Clean selected' }));
+    await user.click(
+      within(screen.getByRole('dialog')).getByRole('button', { name: 'Move to Recycle Bin' }),
+    );
+    await screen.findByRole('region', { name: 'Clean result' });
+    expect(screen.queryByRole('button', { name: 'Scan the rest' })).toBeNull();
+  });
+
+  it('the confirmation repeats that a running browser keeps files open, only when it applies', async () => {
+    const user = userEvent.setup();
+    ipc.listCleaningRules.mockResolvedValue([...allRules, chrome]);
+    renderScreen();
+    ipc.scanCleaning.mockResolvedValue({
+      ...scanned,
+      rules: [
+        ...scanned.rules,
+        view(chrome, {
+          files: 9,
+          bytes: 9000,
+          lockedNote: 'chrome is running: files it keeps open are skipped.',
+        }),
+      ],
+    });
+    await user.click(await screen.findByRole('button', { name: 'Scan' }));
+    await screen.findByRole('region', { name: 'Selection' });
+
+    // Browser caches are not ticked by default: no note while the browser rule is off.
+    await user.click(screen.getByRole('button', { name: 'Clean selected' }));
+    expect(screen.queryByRole('note')).toBeNull();
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }));
+
+    await user.click(screen.getByRole('switch', { name: 'Include Chrome cache' }));
+    await user.click(screen.getByRole('button', { name: 'Clean selected' }));
+    const note = within(screen.getByRole('dialog')).getByRole('note');
+    expect(note.textContent).toContain('Chrome cache');
+    expect(note.textContent).toContain('files it keeps open will be skipped');
   });
 
   it('cancelling the confirmation moves nothing', async () => {

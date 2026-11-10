@@ -156,9 +156,11 @@ pub struct RuleScanView {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct CleanScanResult {
-    /// Names this scan when cleaning it; empty when the scan was cancelled.
+    /// Names this scan when cleaning it; empty when the scan was cancelled before it looked at
+    /// any rule.
     pub plan_id: String,
-    /// Whether the scan was cancelled. Nothing was found and the earlier scan, if any, still
+    /// Whether the scan was cancelled and is partial: `rules` lists only the rules it got to, the
+    /// last of them possibly `truncated`. With no rule at all the earlier scan, if any, still
     /// stands.
     pub cancelled: bool,
     /// One entry per rule, in file order.
@@ -290,7 +292,8 @@ impl CleanSession {
         Ok(ScanGuard(self))
     }
 
-    /// Asks the running scan to stop before its next rule. Does nothing when none runs.
+    /// Asks the running scan to stop, inside the rule being walked or before the next one. Does
+    /// nothing when none runs.
     pub fn cancel_scan(&self) {
         if self.scanning.load(Ordering::SeqCst) {
             self.cancel.store(true, Ordering::SeqCst);
@@ -431,8 +434,9 @@ fn scan_view(rule: &CleaningRule, scan: &RuleScan) -> RuleScanView {
 }
 
 /// Scans every rule (read-only), keeps the plan under a new id and reports what was found.
-/// `on_progress` is called before each rule. A scan that is cancelled between rules keeps the
-/// earlier plan and returns `cancelled`.
+/// `on_progress` is called before each rule. A scan cancelled before its first rule keeps the
+/// earlier plan and returns `cancelled` with no rules; one cancelled later (between rules or
+/// inside one) returns, and keeps as the new plan, the rules it got to, with `cancelled` set.
 ///
 /// # Errors
 /// `invalidInput` when a scan already runs; `unsupported` without a clean engine.
@@ -441,25 +445,53 @@ pub fn scan_cleaning(
     on_progress: &dyn Fn(CleanScanProgress),
 ) -> Result<CleanScanResult, IpcError> {
     let engine = clean_engine(core)?;
-    let session = core.clean_session();
-    let _running = session.begin_scan()?;
     let ids: Vec<String> = engine
         .rules()
         .rules()
         .iter()
         .map(|rule| rule.id.clone())
         .collect();
+    scan_rules(core, &ids, on_progress)
+}
+
+/// Like [`scan_cleaning`] for the chosen rules only: how the page continues with the rest of a
+/// rule whose scan was truncated. Read-only; the usual confirmation still comes before anything
+/// moves.
+///
+/// # Errors
+/// `invalidInput` when a scan already runs, no rule is named or a rule id is not known;
+/// `unsupported` without a clean engine.
+pub fn scan_cleaning_rules(
+    core: &AppCore,
+    rule_ids: &[String],
+    on_progress: &dyn Fn(CleanScanProgress),
+) -> Result<CleanScanResult, IpcError> {
+    clean_engine(core)?;
+    if rule_ids.is_empty() {
+        return Err(IpcError::InvalidInput {
+            message: "no rule is chosen".to_owned(),
+        });
+    }
+    scan_rules(core, rule_ids, on_progress)
+}
+
+fn scan_rules(
+    core: &AppCore,
+    ids: &[String],
+    on_progress: &dyn Fn(CleanScanProgress),
+) -> Result<CleanScanResult, IpcError> {
+    let engine = clean_engine(core)?;
+    let session = core.clean_session();
+    let _running = session.begin_scan()?;
     let observer = Observer {
         session,
         on_progress,
     };
-    let plan = match engine.scan_observed(&ids, &observer) {
+    let plan = match engine.scan_observed(ids, &observer) {
         Ok(plan) => plan,
-        Err(ScanError::Cancelled) => {
-            return Ok(CleanScanResult {
-                plan_id: String::new(),
-                cancelled: true,
-                rules: Vec::new(),
+        Err(ScanError::UnknownRule(unknown)) => {
+            return Err(IpcError::InvalidInput {
+                message: unknown.to_string(),
             });
         }
         Err(error) => {
@@ -468,6 +500,14 @@ pub fn scan_cleaning(
             });
         }
     };
+    if plan.cancelled && plan.rules.is_empty() {
+        return Ok(CleanScanResult {
+            plan_id: String::new(),
+            cancelled: true,
+            rules: Vec::new(),
+        });
+    }
+    let cancelled = plan.cancelled;
     let rules = plan
         .rules
         .iter()
@@ -485,12 +525,12 @@ pub fn scan_cleaning(
     });
     Ok(CleanScanResult {
         plan_id: id,
-        cancelled: false,
+        cancelled,
         rules,
     })
 }
 
-/// Asks the running scan to stop before its next rule.
+/// Asks the running scan to stop: inside the rule it is walking, or before its next rule.
 pub fn cancel_cleaning_scan(core: &AppCore) {
     core.clean_session().cancel_scan();
 }

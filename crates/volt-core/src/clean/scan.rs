@@ -3,13 +3,13 @@
 
 use std::path::Path;
 
-use super::CleanEngine;
 use super::plan::{
     CleanItem, ItemKind, MAX_SKIPPED_DETAILS, RuleScan, ScanCounts, ScanFailure, SkipReason,
     SkippedEntry,
 };
 use super::root::resolve_root;
 use super::rule::{CleaningRule, MAX_DEPTH_LIMIT, MIN_AGE_SETTING_MAX, MIN_AGE_SETTING_MIN};
+use super::{CleanEngine, ScanObserver};
 use crate::activity::error_class;
 use crate::error::PortError;
 use crate::ports::{EntryInfo, EntryKind};
@@ -114,7 +114,12 @@ impl CleanEngine {
             .collect()
     }
 
-    pub(super) fn scan_rule(&self, rule: &CleaningRule, now: Timestamp) -> RuleScan {
+    pub(super) fn scan_rule(
+        &self,
+        rule: &CleaningRule,
+        now: Timestamp,
+        observer: Option<&dyn ScanObserver>,
+    ) -> RuleScan {
         let mut scan = RuleScan {
             rule_id: rule.id.clone(),
             title: rule.title.clone(),
@@ -175,6 +180,7 @@ impl CleanEngine {
             now,
             min_age_days: scan.min_age_days,
             max_depth: rule.constraints.max_depth.min(MAX_DEPTH_LIMIT),
+            observer,
             scan: &mut scan,
         };
         let mut relative = Vec::new();
@@ -189,6 +195,7 @@ struct Walker<'a> {
     now: Timestamp,
     min_age_days: u32,
     max_depth: u32,
+    observer: Option<&'a dyn ScanObserver>,
     scan: &'a mut RuleScan,
 }
 
@@ -245,9 +252,15 @@ impl Walker<'_> {
         };
         let mut all_planned = true;
         for entry in entries {
+            if !self.scan.truncated && self.observer.is_some_and(ScanObserver::is_cancelled) {
+                // Cancelled in the middle of the walk: what is listed so far
+                // stays, and the rule says it is partial.
+                self.scan.truncated = true;
+            }
             if self.scan.truncated {
-                // The item cap was reached: nothing more is looked at, and a
-                // folder that was not fully looked at is never planned.
+                // The item cap was reached or the scan was cancelled: nothing
+                // more is looked at, and a folder that was not fully looked at
+                // is never planned.
                 return false;
             }
             let path = dir.join(&entry.name);

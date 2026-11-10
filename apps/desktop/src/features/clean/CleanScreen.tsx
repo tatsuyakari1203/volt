@@ -11,6 +11,7 @@ import {
   listCleaningRules,
   onCleanScanProgress,
   scanCleaning,
+  scanCleaningRules,
 } from '../../shared/ipc';
 import { formatSize } from '../../shared/text/size';
 import { Button, Card, Dialog, ListGroup, PageHeader, SegmentedControl } from '../../shared/ui';
@@ -20,9 +21,11 @@ import {
   describeError,
   resultMessage,
   ruleTitle,
+  runningBrowserRules,
   selectionOf,
   selectionText,
   tickedByDefault,
+  truncatedRuleIds,
 } from './messages';
 import { RecycleBinCard } from './RecycleBinCard';
 import { RuleRow } from './RuleRow';
@@ -64,7 +67,18 @@ function Notice({ message, onDismiss }: { message: string; onDismiss: () => void
   );
 }
 
-function ResultCard({ result, onScanAgain }: { result: CleanRunResult; onScanAgain: () => void }) {
+function ResultCard({
+  result,
+  restIds,
+  onScanAgain,
+  onScanRest,
+}: {
+  result: CleanRunResult;
+  /** Rules whose scan was truncated and that this clean took from: more of them is left. */
+  restIds: readonly string[];
+  onScanAgain: () => void;
+  onScanRest: () => void;
+}) {
   return (
     <Card as="section" aria-label={t('clean.result.label')} className="flex flex-col gap-3">
       <h2 className="font-semibold">{t('clean.result.title')}</h2>
@@ -101,7 +115,15 @@ function ResultCard({ result, onScanAgain }: { result: CleanRunResult; onScanAga
       {result.historyIncomplete ? (
         <p className="text-caption text-muted">{t('clean.result.historyIncomplete')}</p>
       ) : null}
-      <div>
+      {restIds.length > 0 ? (
+        <p className="text-caption text-muted">{t('clean.result.rest')}</p>
+      ) : null}
+      <div className="flex flex-wrap gap-2">
+        {restIds.length > 0 ? (
+          <Button variant="primary" onClick={onScanRest}>
+            {t('clean.result.scanRest')}
+          </Button>
+        ) : null}
         <Button onClick={onScanAgain}>{t('clean.scanAgain')}</Button>
       </div>
     </Card>
@@ -121,6 +143,8 @@ function JunkClean({ movedElsewhere }: { movedElsewhere: number }) {
   const [ticked, setTicked] = useState<ReadonlySet<string>>(new Set());
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [cancelling, setCancelling] = useState(false);
+  const [partial, setPartial] = useState(false);
+  const [restIds, setRestIds] = useState<string[]>([]);
   const [confirming, setConfirming] = useState(false);
   const [result, setResult] = useState<CleanRunResult | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -147,12 +171,14 @@ function JunkClean({ movedElsewhere }: { movedElsewhere: number }) {
 
   useEffect(() => readRules(), [readRules]);
 
-  const startScan = async () => {
+  /** Scans every rule, or only `only` (the rest of the rules a clean did not finish). */
+  const startScan = async (only?: readonly string[]) => {
     setPhase('scanning');
     setProgress(null);
     setCancelling(false);
     setNotice(null);
     setResult(null);
+    setRestIds([]);
     let unlisten: (() => void) | undefined;
     try {
       unlisten = await onCleanScanProgress((next) => {
@@ -162,12 +188,13 @@ function JunkClean({ movedElsewhere }: { movedElsewhere: number }) {
       // No progress without the event bridge; the scan itself still works.
     }
     try {
-      const found = await scanCleaning();
+      const found = only ? await scanCleaningRules(only) : await scanCleaning();
       if (!alive.current) return;
-      if (found.cancelled) {
+      if (found.cancelled && found.rules.length === 0) {
         setPhase('idle');
         return;
       }
+      setPartial(found.cancelled);
       setScan(found);
       setTicked(new Set(found.rules.filter((r) => tickedByDefault(r.rule)).map((r) => r.rule.id)));
       setPhase('idle');
@@ -201,9 +228,12 @@ function JunkClean({ movedElsewhere }: { movedElsewhere: number }) {
     setPhase('cleaning');
     setNotice(null);
     try {
+      const rest = truncatedRuleIds(scan.rules, ticked);
       const done = await cleanSelectedRules(scan.planId, [...ticked]);
       if (!alive.current) return;
       setResult(done);
+      setRestIds(rest);
+      setPartial(false);
       // The scan is used up: what it listed has moved, so a new scan is needed to clean again.
       setScan(null);
       setTicked(new Set());
@@ -227,6 +257,7 @@ function JunkClean({ movedElsewhere }: { movedElsewhere: number }) {
   const viewById = useMemo(() => new Map(views.map((view) => [view.rule.id, view])), [views]);
   const selection = useMemo(() => selectionOf(views, ticked), [views, ticked]);
   const nothingSelected = selection.files + selection.folders === 0;
+  const runningBrowsers = useMemo(() => runningBrowserRules(views, ticked), [views, ticked]);
   const scanning = phase === 'scanning';
   const cleaning = phase === 'cleaning';
 
@@ -277,7 +308,12 @@ function JunkClean({ movedElsewhere }: { movedElsewhere: number }) {
         ) : null}
 
         {result && !scanning ? (
-          <ResultCard result={result} onScanAgain={() => void startScan()} />
+          <ResultCard
+            result={result}
+            restIds={restIds}
+            onScanAgain={() => void startScan()}
+            onScanRest={() => void startScan(restIds)}
+          />
         ) : null}
 
         {!scan && !result && !scanning && rulesLoad.status === 'ready' ? (
@@ -304,6 +340,11 @@ function JunkClean({ movedElsewhere }: { movedElsewhere: number }) {
                     selection: <span className="font-semibold">{selectionText(selection)}</span>,
                   })}
             </p>
+            {partial ? (
+              <p className="text-caption text-muted">
+                {t('clean.scan.partial', { scanned: views.length, total: rules.length })}
+              </p>
+            ) : null}
             <div className="flex flex-wrap gap-2">
               <Button
                 variant="primary"
@@ -372,7 +413,17 @@ function JunkClean({ movedElsewhere }: { movedElsewhere: number }) {
             </Button>
           </>
         }
-      />
+      >
+        {runningBrowsers.length > 0 ? (
+          <p role="note" className="text-body text-muted">
+            {t('clean.confirm.browserRunning', {
+              browsers: runningBrowsers
+                .map((view) => ruleTitle(view.rule.id, view.rule.title))
+                .join(', '),
+            })}
+          </p>
+        ) : null}
+      </Dialog>
     </>
   );
 }

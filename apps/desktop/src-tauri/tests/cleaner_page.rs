@@ -109,7 +109,7 @@ fn ids(list: &[&str]) -> Vec<String> {
 fn the_rules_are_listed_with_category_risk_and_the_administrator_flag() {
     let fx = fixture();
     let rules = cleaner::list_cleaning_rules(&fx.core).expect("rules");
-    assert_eq!(rules.len(), 33);
+    assert_eq!(rules.len(), 34);
     let temp = rules.iter().find(|r| r.id == "user-temp").expect("rule");
     assert_eq!(temp.category, CleanCategoryView::TemporaryFiles);
     assert_eq!(temp.category_label, "Temporary files");
@@ -125,7 +125,7 @@ fn a_scan_reports_counts_and_sizes_per_rule_and_never_a_full_path() {
     let result = scan(&fx.core);
     assert!(!result.cancelled);
     assert!(!result.plan_id.is_empty());
-    assert_eq!(result.rules.len(), 33);
+    assert_eq!(result.rules.len(), 34);
 
     let temp = result
         .rules
@@ -165,13 +165,13 @@ fn a_scan_emits_progress_before_each_rule() {
     let seen = RefCell::new(Vec::new());
     cleaner::scan_cleaning(&fx.core, &|p| seen.borrow_mut().push(p)).expect("scan");
     let seen = seen.into_inner();
-    assert_eq!(seen.len(), 33);
-    assert_eq!(seen[0], CleanScanProgress { done: 0, total: 33 });
+    assert_eq!(seen.len(), 34);
+    assert_eq!(seen[0], CleanScanProgress { done: 0, total: 34 });
     assert_eq!(
         seen[10],
         CleanScanProgress {
             done: 10,
-            total: 33
+            total: 34
         }
     );
 }
@@ -293,7 +293,7 @@ fn skipped_items_are_grouped_by_reason() {
 }
 
 #[test]
-fn cancelling_a_scan_keeps_the_earlier_one() {
+fn cancelling_a_scan_returns_what_it_reached_and_says_it_is_partial() {
     let fx = fixture();
     let first = scan(&fx.core);
 
@@ -304,14 +304,42 @@ fn cancelling_a_scan_keeps_the_earlier_one() {
     })
     .expect("scan");
     assert!(cancelled.cancelled);
-    assert!(cancelled.plan_id.is_empty() && cancelled.rules.is_empty());
+    assert!(!cancelled.plan_id.is_empty());
+    // Rules 0 to 3 were started; the fourth was cancelled while it was walked (or before it was).
+    assert!(cancelled.rules.len() <= 4 && !cancelled.rules.is_empty());
 
-    // The earlier scan still stands and can be cleaned.
-    cleaner::clean_plan(&fx.core, &first.plan_id, &ids(&["user-temp"])).expect("clean");
+    // The partial scan replaced the earlier one, which is no longer cleanable.
+    let stale = cleaner::clean_plan(&fx.core, &first.plan_id, &ids(&["user-temp"]));
+    assert!(matches!(stale, Err(IpcError::NotFound { .. })));
+    // What the partial scan listed can be cleaned after the usual confirmation.
+    cleaner::clean_plan(&fx.core, &cancelled.plan_id, &ids(&["user-temp"])).expect("clean");
 
     // A cancel with no scan running does not cancel the next one.
     cleaner::cancel_cleaning_scan(&fx.core);
     assert!(!scan(&fx.core).cancelled);
+}
+
+#[test]
+fn a_scan_of_chosen_rules_looks_at_only_those_and_refuses_bad_input() {
+    let fx = fixture();
+    let progress = RefCell::new(Vec::new());
+    let result = cleaner::scan_cleaning_rules(&fx.core, &ids(&["user-temp"]), &|p| {
+        progress.borrow_mut().push(p);
+    })
+    .expect("scan");
+    assert!(!result.cancelled && !result.plan_id.is_empty());
+    assert_eq!(result.rules.len(), 1);
+    assert_eq!(result.rules[0].rule.id, "user-temp");
+    assert_eq!(result.rules[0].files, 2);
+    assert_eq!(progress.borrow().last().map(|p| p.total), Some(1));
+    // Nothing moved: it is a scan.
+    assert!(fx.system.file_system.trashed().is_empty());
+    cleaner::clean_plan(&fx.core, &result.plan_id, &ids(&["user-temp"])).expect("clean");
+
+    let none = cleaner::scan_cleaning_rules(&fx.core, &[], &|_| {});
+    assert!(matches!(none, Err(IpcError::InvalidInput { .. })));
+    let unknown = cleaner::scan_cleaning_rules(&fx.core, &ids(&["no-such-rule"]), &|_| {});
+    assert!(matches!(unknown, Err(IpcError::InvalidInput { .. })));
 }
 
 #[test]
