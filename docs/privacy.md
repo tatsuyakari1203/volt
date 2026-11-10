@@ -95,6 +95,9 @@ How the app is locked down today:
   Windows provides. That is Microsoft software with its own updater and settings, and **it makes
   its own network connections that Volt neither makes nor controls** (see the observation below).
   What is known:
+  - The installer does not download or install the runtime either: webviewInstallMode is skip,
+    so setup makes no network call. Windows 11 ships WebView2. On a Windows 10 machine without it,
+    install the runtime from Microsoft first, or Volt will not start.
   - Volt does not configure, install or update the runtime and passes it no browser arguments, so
     it runs with the defaults of the Tauri runtime (`wry`). At the version used here those are
     `--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection` (among other things this turns
