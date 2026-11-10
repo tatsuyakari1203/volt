@@ -4345,6 +4345,8 @@ dependencies = [
  "tauri-specta",
  "tempfile",
  "volt-core",
+ "volt-store",
+ "volt-win",
 ]
 
 [[package]]

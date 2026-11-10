@@ -30,8 +30,11 @@ tauri-specta = { version = "=2.0.0-rc.21", features = ["derive", "typescript"] }
 specta = { version = "=2.0.0-rc.22", features = ["derive"] }
 specta-typescript = "=0.0.9"
 volt-core = { workspace = true }
+volt-store = { workspace = true }
+volt-win = { workspace = true }
 log = { workspace = true }
 
 [dev-dependencies]
+volt-core = { workspace = true, features = ["fakes"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }

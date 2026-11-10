@@ -1,11 +1,16 @@
 //! Volt desktop shell: the Tauri host. A composition root, so it may know every crate; it
 //! holds commands and window wiring, never business rules.
 
+pub mod api;
 mod autostart;
+pub mod catalogue;
+mod commands;
 mod ipc;
 mod logging;
 mod tray;
+pub mod unsupported;
 mod window;
+pub mod wiring;
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -66,6 +71,10 @@ pub fn run() {
         .invoke_handler(bindings.invoke_handler())
         .setup(move |app| {
             logging::install(app.handle());
+            // The core outlives the window: the window and its WebView come and go, the engine
+            // and the database stay. Built before any window exists, so the first page load can
+            // already ask for tweaks.
+            app.manage(wiring::init(app.handle()));
             bindings.mount_events(app);
             tray::setup(app)?;
             if window::LaunchMode::from_args(std::env::args().skip(1)) == window::LaunchMode::Foreground {

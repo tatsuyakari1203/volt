@@ -84,6 +84,8 @@ What `volt-core` contains today:
     written to the diagnostic log (a warning) and counted: `Executor::activity_write_failures` is
     the number since the executor was created (clones share it), so the shell can tell the user
     that the history is incomplete.
+  - **What the Undo page shows today:** the newest records, read through `list_activity`: time,
+    outcome and summary, read-only. Per-row revert and export come in a later task.
   - **Source of a revert:** a rollback keeps the source of its plan; a revert requested through
     `revert_entry` or `revert_batch` is recorded as manual, because those calls do not take a
     source.
@@ -143,6 +145,43 @@ Still to be built:
   state, the change was never applied and the entry is marked Failed; if it equals the target, the
   entry is marked Applied and stays undoable; otherwise it is marked Failed as unknown.
 
+## Composition root
+
+`apps/desktop/src-tauri/src/wiring.rs` is where the crates meet. `build_core(ports, store_path,
+catalogue_toml)` is the one function that does the wiring, and it takes everything environmental as
+a parameter, so the app calls it with the real adapters and tests call the same function with
+fakes, or with a throwaway registry key and a temp directory.
+
+- **One store, three ports.** It opens the `Store` once (creating the directory first) and uses
+  that one object as the `Journal`, the `Settings` and the `ActivityLog`. When the store reports a
+  corruption recovery the shell logs a warning that says where the old file was kept; the file is
+  never deleted and the app carries on with the fresh database (earlier changes then cannot be
+  undone from Volt).
+- **Executor and engine.** It builds an `Executor` and a `TweakEngine` over the `Ports`, both with
+  the activity log attached, and calls `reconcile_pending` once, before anything can be applied.
+  The report is logged (counts per resolution, a warning when a state is unknown or could not be
+  read) and kept in `StartupReport`. A reconcile failure never stops the app: the entries stay
+  pending for the next start.
+- **Ports.** `windows_ports()` builds the bundle from `WinRegistry`, `WinFileSystem` and
+  `WinServices`. The processes, memory and commands ports have no Windows adapter yet, so
+  `unsupported.rs` supplies `UnsupportedProcesses`, `UnsupportedMemory` and `UnsupportedCommands`,
+  which fail every call with `PortError::Unsupported`. A tweak with a command step would show its
+  state as unreadable and refuse to apply until a real commands adapter exists.
+- **Managed state.** The result is `AppState` in Tauri's managed state, not owned by the window, so
+  the engine and the database connection outlive the on-demand window. If the core cannot be built
+  (an unusable database, a build bug in the catalogue) the app still starts, the tray and window
+  keep working, and every command answers with the same error, which the UI shows. `AppCore`
+  holds a lock that serialises list, apply and revert, so two quick clicks cannot interleave.
+- **The catalogue** lives in the repository at `catalogue/tweaks.toml` and is embedded into the
+  binary with `include_str!` (`catalogue.rs`); `volt-core` only ever receives the text. A test loads
+  the embedded text and fails the build on any problem. Today it holds exactly one tweak, Show file
+  extensions (`HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced`,
+  `HideFileExt` = DWORD 0): Safe, evidence Anecdotal because it is a usability and safety
+  preference and not a performance gain, no restart (open Explorer windows pick it up on refresh).
+  The real catalogue is a later task.
+- **Where the files are.** The database is `volt.db` in the app data directory
+  (`%APPDATA%\io.github.tatsuyakari1203.volt`); the diagnostic log is in the app log directory.
+
 ## Windows adapters
 
 `volt-win` implements the registry, services and file system ports with the Windows API:
@@ -155,8 +194,9 @@ Still to be built:
 - Tests are confined to `HKCU\Software\VoltTest` and temp directories.
 - Changing a real service's start type is deliberately not covered by an automated test, because
   it would change the machine running the tests.
-- There is no adapter for the Commands port yet, so command tweaks only run against the fake until
-  one is written.
+- There is no adapter for the processes, memory or commands ports yet. The composition root hands
+  the executor small stand-ins that fail every call with `PortError::Unsupported` (see
+  Composition root), so command tweaks only run against the fake until a real adapter is written.
 
 ## Process and elevation model
 
@@ -177,7 +217,8 @@ and `autostart.rs`.
   builds it from that declaration, or focuses it (restoring it first when hidden or minimised)
   when it exists. The create-or-focus decision (`decide_open`) is a pure function. Open requests
   are serialised and run on a worker thread, because building a window from inside a tray or
-  plugin callback on the main thread can deadlock on Windows.
+  plugin callback on the main thread can deadlock on Windows. A failure to open is written to the
+  diagnostic log.
 - **Closing destroys the WebView.** The close button destroys the window and its WebView. Tauri
   then asks the process to exit because the last window is gone; `window::keep_running` refuses
   that request (only requests without an exit code, so Quit, which exits with code 0, still
@@ -187,8 +228,11 @@ and `autostart.rs`.
   (`TrayAction`) is a pure function. **Boost has no engine yet:** it opens the window, which
   starts on Home (a window that is already open is moved to Home by the UI), and emits the typed
   event `TrayBoostRequested` for a later task to consume. It calls no memory purge. When the
-  window had to be created, the event is held until the page has loaded; it is best effort until
-  a pull command exists, because the UI registers its listener asynchronously.
+  window has to be created, the request flag is stored before the window is built, so the page-load
+  handler cannot run first and miss it; the handler then announces it. For a window that already
+  exists the open callback announces it. Whoever takes the flag announces it, so it is sent once, and
+  a failed open discards it. Delivery stays best effort until a pull command exists, because the UI
+  registers its listener asynchronously.
 - **Single instance.** `tauri-plugin-single-instance` is registered before every other plugin. A
   second launch focuses (or recreates) the window of the first instance and exits.
 - **Launch mode.** A launch with `--background` (what the Start with Windows entry passes) does
@@ -251,6 +295,21 @@ not counted in a private working set.
 - `features/settings` holds the Start with Windows switch (`StartupSettings`, built from the shared
   Switch and ListRow); `SettingsScreen` mounts it. The switch reads and writes through the typed
   commands and shows the state the shell reports back, not the state that was asked for.
+- `features/tweaks` is the Tweaks screen over the real commands. It lists the catalogue with the
+  live state, shows loading, empty and error states, and reads the state again whenever it is
+  mounted, which includes a freshly created window. The switch applies (on) or reverts (off); it is
+  disabled with a "Turning on..." or "Undoing..." line while the command runs and shows only the
+  state the shell reports back. A success shows a toast with Undo (which calls revert); a rolled
+  back or needs-attention apply, an incomplete revert, "nothing to undo" and a failed command are
+  explained in a persistent notice in plain words, and a partly applied tweak gets an Undo button.
+  The screen carries no Sample data marker; Home still does.
+- `features/undo` is the Undo screen for now: a read-only list of recent activity (time, outcome
+  and the redacted one-line summary) read from the activity log, newest first, with a Show older
+  button that follows the cursor. Undoing a single line and exporting the list come later; a tweak
+  is undone from the Tweaks screen. Features do not import each other.
+- Outside the Volt window (a plain browser) the generated bindings fail with a `TypeError` because
+  the Tauri bridge is missing. The wrapper turns that into `IpcUnavailableError`, and screens say
+  "not available outside the Volt app" instead of showing the raw error.
 - The shell listens for the typed `tray-boost-requested` event and shows Home, so the tray's Boost
   item lands on Home even when the window is already open on another section.
 - The UI holds no business rules: it renders plans and results produced by the core.
@@ -271,6 +330,19 @@ not counted in a private working set.
     tagged by `kind` (`notFound`, `accessDenied`, `unsupported`, `invalidInput`, `other`), built
     from `volt_core::PortError`. The UI receives `{ status: "error", error: { kind, message } }`
     and switches on `kind`; the wrapper throws `IpcCommandError` carrying the typed value.
+  - **Commands.** Besides `app_info` and the two autostart commands, the shell exposes
+    `list_tweaks` (every catalogue tweak with its state read live; a tweak whose state cannot be
+    read is listed as `unreadable` and does not fail the list), `apply_tweak(id)`,
+    `revert_tweak(id)` and `list_activity(limit, cursor)`. They are async and run their work on the
+    blocking thread pool, never on the main thread, because they touch the registry and `SQLite`.
+    The commands are thin: the logic is in `src-tauri/src/api.rs`, which the integration tests call.
+    Apply reports precisely how it ended: `applied`, `alreadyApplied`, `rolledBack` (a step failed
+    and the system was read again and is as before) or `needsAttention` (it may differ), with a
+    redacted reason (the error class, never command output or data) and the state read again.
+    Revert reports `reverted`, `incomplete` (with counts) or `nothingToRevert` (the journal has
+    nothing to undo: Volt did not apply it, or it is already undone; not an error). Activity pages
+    are newest first; the limit is clamped to 1 to 200 and `nextCursor` is the cursor of the next,
+    older page (or null).
   - **Events.** Events are structs deriving `tauri_specta::Event` and registered in
     `bindings_builder`; the sample is `AppReady(AppInfo)`, listened to as `events.appReady`.
     `TrayBoostRequested` (`events.trayBoostRequested`, payload `null`) is sent when the user
@@ -278,9 +350,16 @@ not counted in a private working set.
   - **64-bit integers.** `specta-typescript` refuses to export `u64`/`i64` by default because
     JavaScript numbers lose precision above 2^53. A type that exposes one fails the export (and
     so the gate) until it is given an explicit representation, for example a decimal string.
-    Registry QWORD values will need that when commands expose them.
-  - **Transfer types.** Types derive `specta::Type` in the shell for now. `volt-core` stays free
-    of the derive until commands expose its domain model.
+    Registry QWORD values will need that when commands expose them. The tweak and activity
+    types avoid 64-bit numbers altogether: record ids are decimal strings (and so is the cursor) and
+    times are ISO 8601 UTC strings.
+  - **Transfer types.** Types derive `specta::Type` in the shell, which owns them (`api.rs`: risk,
+    evidence, restart, category, state, tweak info, apply and revert results, activity items). The
+    domain types are not exposed wholesale, so a change in the core cannot change the UI contract by
+    accident, and `volt-core` stays free of the derive.
+  - **Errors from the engine.** `TweakError` maps into `IpcError` keeping the kind of the port
+    failure underneath (access denied stays access denied); an unknown tweak is `notFound`, and a
+    store that cannot be opened is `other`.
 
 ### Design system
 
@@ -307,14 +386,19 @@ not counted in a private working set.
 
 ## Testing strategy
 
-| Level      | What                                          | How                                                                                                   |
-| ---------- | --------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| Unit       | Core use cases, tweak engine, rule evaluation | In-memory fakes of the ports; runs on any OS                                                          |
-| Adapter    | `volt-win`, `volt-store`                      | Real APIs against a throwaway `HKCU\Software\VoltTest` key, a temp directory and a temp database only |
-| UI         | Components and feature state                  | Vitest                                                                                                |
-| End to end | A few flows through the real app              | WebDriver, added once flows exist                                                                     |
+| Level       | What                                          | How                                                                                                                                                                                                  |
+| ----------- | --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Unit        | Core use cases, tweak engine, rule evaluation | In-memory fakes of the ports; runs on any OS                                                                                                                                                         |
+| Adapter     | `volt-win`, `volt-store`                      | Real APIs against a throwaway `HKCU\Software\VoltTest` key, a temp directory and a temp database only                                                                                                |
+| Integration | The shell's wiring and commands               | The real `WinRegistry` on a throwaway `HKCU\Software\VoltTest` key and a real store in a temp directory (apply, restart, revert, activity), then the same wiring over fakes for the failure outcomes |
+| UI          | Components and feature state                  | Vitest, with the IPC wrapper mocked                                                                                                                                                                  |
+| End to end  | A few flows through the real app              | WebDriver, added once flows exist                                                                                                                                                                    |
 
 Tests never apply a real tweak, clean real user data or purge memory on the machine running them.
+In particular no test applies or reverts the shipped "Show file extensions" tweak: the end to end
+test uses its own catalogue whose every step targets one unique key below `HKCU\Software\VoltTest`,
+and removes that key afterwards. The first run of the real flow on a real machine is a manual check
+by the owner.
 
 ## Error handling
 

@@ -8,8 +8,11 @@ import { Shell } from './Shell';
 // A plain browser has no Tauri bridge: the calls fail. The screens must absorb that. The tray
 // Boost event is the exception: the test captures its handler to fire it by hand.
 const { boostListeners } = vi.hoisted(() => ({ boostListeners: [] as Array<() => void> }));
-vi.mock('../shared/ipc', () => ({
+vi.mock('../shared/ipc', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../shared/ipc')>()),
   getAppInfo: () => Promise.reject(new Error('no tauri bridge')),
+  listTweaks: () => Promise.reject(new Error('no tauri bridge')),
+  listActivity: () => Promise.reject(new Error('no tauri bridge')),
   getAutostartEnabled: () => Promise.reject(new Error('no tauri bridge')),
   setAutostartEnabled: () => Promise.reject(new Error('no tauri bridge')),
   onTrayBoostRequested: (handler: () => void) => {
@@ -132,4 +135,21 @@ it('shows the Start with Windows switch in Settings, unavailable without the she
   const toggle = within(startup).getByRole('switch', { name: 'Start with Windows' });
   expect(toggle.hasAttribute('disabled')).toBe(true);
   expect(await within(startup).findByRole('alert')).toBeTruthy();
+});
+
+it('shows the real Tweaks screen without the sample marker, and explains that it cannot load here', async () => {
+  const user = userEvent.setup();
+  renderShell();
+  await user.click(screen.getByRole('button', { name: 'Tweaks' }));
+  expect(await screen.findByText('Tweaks could not be loaded')).toBeTruthy();
+  expect(screen.queryByText('Sample data')).toBeNull();
+});
+
+it('shows the activity history on the Undo screen instead of a placeholder', async () => {
+  const user = userEvent.setup();
+  renderShell();
+  await user.click(screen.getByRole('button', { name: 'Undo' }));
+  expect(screen.getByRole('heading', { level: 1, name: 'Undo' })).toBeTruthy();
+  expect(await screen.findByText('The history could not be loaded')).toBeTruthy();
+  expect(screen.queryByText('Coming soon')).toBeNull();
 });

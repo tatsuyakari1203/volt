@@ -171,17 +171,35 @@ pub(crate) fn open_main_window<R: Runtime>(app: &AppHandle<R>) -> Result<Opened,
 /// Opens the main window on a worker thread and hands the outcome to `then`.
 ///
 /// Building a window waits for the event loop, so it must never run on the main thread from
-/// inside a tray, menu or plugin callback (that deadlocks on Windows). Failures go to stderr:
-/// there is nowhere better to report them yet, and the next open request tries again.
+/// inside a tray, menu or plugin callback (that deadlocks on Windows). A failure goes to the
+/// diagnostic log (there is nowhere better to report it yet) and the next open request tries
+/// again.
 pub(crate) fn open_in_background<R, F>(app: &AppHandle<R>, then: F)
 where
     R: Runtime,
     F: FnOnce(&AppHandle<R>, Opened) + Send + 'static,
 {
+    open_in_background_checked(app, move |app, result| {
+        if let Ok(opened) = result {
+            then(app, opened);
+        }
+    });
+}
+
+/// Like [`open_in_background`], but `then` also runs when the window could not be opened, so a
+/// caller that prepared something before asking can clean it up. The failure is logged here.
+pub(crate) fn open_in_background_checked<R, F>(app: &AppHandle<R>, then: F)
+where
+    R: Runtime,
+    F: FnOnce(&AppHandle<R>, Result<Opened, ()>) + Send + 'static,
+{
     let app = app.clone();
     std::thread::spawn(move || match open_main_window(&app) {
-        Ok(opened) => then(&app, opened),
-        Err(error) => eprintln!("Volt could not open its window: {error}"),
+        Ok(opened) => then(&app, Ok(opened)),
+        Err(error) => {
+            log::error!("Volt could not open its window: {error}");
+            then(&app, Err(()));
+        }
     });
 }
 

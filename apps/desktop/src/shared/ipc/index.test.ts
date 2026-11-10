@@ -1,13 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { commands } from './bindings';
 import {
+  applyTweak,
   describeIpcError,
   getAppInfo,
   getAutostartEnabled,
   IpcCommandError,
   type IpcError,
+  IpcUnavailableError,
+  listActivity,
+  listTweaks,
   onAppReady,
   onTrayBoostRequested,
+  revertTweak,
   setAutostartEnabled,
 } from './index';
 
@@ -118,5 +123,67 @@ describe('tray boost event', () => {
     callback({ payload: null });
     expect(handler).toHaveBeenCalledTimes(1);
     expect(stop).toBe(unlisten);
+  });
+});
+
+describe('tweak and activity commands', () => {
+  it('lists tweaks through the generated binding', async () => {
+    invoke.mockResolvedValue([{ id: 'show-file-extensions' }]);
+    await expect(listTweaks()).resolves.toEqual([{ id: 'show-file-extensions' }]);
+    expect(invoke).toHaveBeenCalledWith('list_tweaks');
+  });
+
+  it('applies and reverts by id and resolves with the precise result', async () => {
+    invoke.mockResolvedValueOnce({ status: 'applied' });
+    await expect(applyTweak('t')).resolves.toEqual({ status: 'applied' });
+    expect(invoke).toHaveBeenLastCalledWith('apply_tweak', { id: 't' });
+
+    invoke.mockResolvedValueOnce({ status: 'reverted' });
+    await expect(revertTweak('t')).resolves.toEqual({ status: 'reverted' });
+    expect(invoke).toHaveBeenLastCalledWith('revert_tweak', { id: 't' });
+  });
+
+  it('reads the activity with a limit and an optional cursor', async () => {
+    invoke.mockResolvedValue({ items: [], nextCursor: null });
+    await listActivity(50);
+    expect(invoke).toHaveBeenLastCalledWith('list_activity', { limit: 50, cursor: null });
+    await listActivity(10, '42');
+    expect(invoke).toHaveBeenLastCalledWith('list_activity', { limit: 10, cursor: '42' });
+  });
+
+  it('turns a typed error into an IpcCommandError', async () => {
+    invoke.mockRejectedValue({ kind: 'notFound', message: 'unknown tweak `x`' });
+    const failure = await applyTweak('x').catch((e: unknown) => e);
+    expect(failure).toBeInstanceOf(IpcCommandError);
+  });
+});
+
+describe('outside the Volt window', () => {
+  it('turns the missing bridge into an IpcUnavailableError, not a raw TypeError', async () => {
+    invoke.mockImplementation(() => {
+      throw new TypeError("Cannot read properties of undefined (reading 'invoke')");
+    });
+    for (const call of [
+      () => getAppInfo(),
+      () => listTweaks(),
+      () => applyTweak('t'),
+      () => revertTweak('t'),
+      () => listActivity(10),
+      () => getAutostartEnabled(),
+    ]) {
+      await expect(call()).rejects.toBeInstanceOf(IpcUnavailableError);
+    }
+  });
+
+  it('does not hide a TypeError raised inside the real window', async () => {
+    (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
+    try {
+      invoke.mockImplementation(() => {
+        throw new TypeError('a real bug');
+      });
+      await expect(listTweaks()).rejects.toThrow('a real bug');
+    } finally {
+      Reflect.deleteProperty(window, '__TAURI_INTERNALS__');
+    }
   });
 });

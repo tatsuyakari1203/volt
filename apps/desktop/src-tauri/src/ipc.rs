@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use specta_typescript::Typescript;
 use tauri_specta::{Builder, Event, collect_commands, collect_events};
-use volt_core::PortError;
+use volt_core::{ExecError, PlanError, PortError, RevertError, TweakError};
+use volt_store::StoreError;
 
 use crate::AppInfo;
 
@@ -86,6 +87,71 @@ impl From<PortError> for IpcError {
     }
 }
 
+/// The error of a port, with the kind the UI switches on and the message of the whole failure.
+fn kinded(port: &PortError, message: String) -> IpcError {
+    match port {
+        PortError::NotFound(_) => IpcError::NotFound { message },
+        PortError::AccessDenied(_) => IpcError::AccessDenied { message },
+        PortError::Unsupported(_) => IpcError::Unsupported { message },
+        PortError::InvalidInput(_) => IpcError::InvalidInput { message },
+        // `PortError` is non-exhaustive: a variant added later degrades to `Other`.
+        _ => IpcError::Other { message },
+    }
+}
+
+impl From<TweakError> for IpcError {
+    /// Keeps the kind of the underlying port failure when there is one, so the UI can tell
+    /// "access denied" from "not found"; the message is the whole error, naming the tweak.
+    fn from(error: TweakError) -> Self {
+        let message = error.to_string();
+        match &error {
+            TweakError::UnknownTweak(_) | TweakError::NothingToRevert(_) => {
+                Self::NotFound { message }
+            }
+            TweakError::Detect { error: port, .. }
+            | TweakError::Journal { error: port, .. }
+            | TweakError::Plan {
+                error: PlanError::Detect { error: port, .. },
+                ..
+            }
+            | TweakError::Exec {
+                error:
+                    ExecError::Detect(port)
+                    | ExecError::Journal(port)
+                    | ExecError::MarkApplied(port)
+                    | ExecError::Apply { error: port, .. },
+                ..
+            }
+            | TweakError::Revert {
+                error:
+                    RevertError::Journal(port)
+                    | RevertError::Port(port)
+                    | RevertError::MarkReverted(port),
+                ..
+            } => kinded(port, message),
+            TweakError::Revert {
+                error: RevertError::EntryNotFound(_),
+                ..
+            } => Self::NotFound { message },
+            TweakError::Revert {
+                error: RevertError::NotRevertible(_),
+                ..
+            } => Self::InvalidInput { message },
+            // Both enums are non-exhaustive: anything new degrades to `Other`.
+            _ => Self::Other { message },
+        }
+    }
+}
+
+impl From<StoreError> for IpcError {
+    /// Opening the database failed. The UI can do nothing about the kind, so it is `Other`.
+    fn from(error: StoreError) -> Self {
+        Self::Other {
+            message: error.to_string(),
+        }
+    }
+}
+
 /// Event emitted once the page has loaded, carrying the identity of the running app.
 ///
 /// The sample typed event: generated as `events.appReady` on the TypeScript side.
@@ -100,6 +166,10 @@ pub fn bindings_builder() -> Builder<tauri::Wry> {
             crate::app_info,
             crate::autostart::autostart_enabled,
             crate::autostart::set_autostart,
+            crate::commands::list_tweaks,
+            crate::commands::apply_tweak,
+            crate::commands::revert_tweak,
+            crate::commands::list_activity,
         ])
         .events(collect_events![AppReady, crate::TrayBoostRequested])
         .typ::<IpcError>()
@@ -167,5 +237,78 @@ mod tests {
             json,
             serde_json::json!({ "kind": "notFound", "message": "run key" })
         );
+    }
+
+    #[test]
+    fn tweak_errors_keep_the_kind_of_the_port_failure_under_them() {
+        let detect = TweakError::Detect {
+            tweak: "x".into(),
+            step: 0,
+            error: PortError::AccessDenied("hklm".into()),
+        };
+        assert!(matches!(
+            IpcError::from(detect),
+            IpcError::AccessDenied { message } if message.contains("tweak `x`")
+        ));
+        let exec = TweakError::Exec {
+            tweak: "x".into(),
+            error: ExecError::Journal(PortError::Other("disk full".into())),
+        };
+        assert!(matches!(IpcError::from(exec), IpcError::Other { .. }));
+        let unreadable = TweakError::Plan {
+            tweak: "x".into(),
+            error: PlanError::Detect {
+                index: 0,
+                error: PortError::Unsupported("commands".into()),
+            },
+        };
+        assert!(matches!(
+            IpcError::from(unreadable),
+            IpcError::Unsupported { .. }
+        ));
+    }
+
+    #[test]
+    fn unknown_tweaks_and_nothing_to_revert_are_not_found() {
+        assert!(matches!(
+            IpcError::from(TweakError::UnknownTweak("nope".into())),
+            IpcError::NotFound { .. }
+        ));
+        assert!(matches!(
+            IpcError::from(TweakError::NothingToRevert("x".into())),
+            IpcError::NotFound { .. }
+        ));
+    }
+
+    #[test]
+    fn revert_errors_map_by_what_went_wrong() {
+        let revert = |error| {
+            IpcError::from(TweakError::Revert {
+                tweak: "x".into(),
+                error,
+            })
+        };
+        assert!(matches!(
+            revert(RevertError::Port(PortError::AccessDenied("k".into()))),
+            IpcError::AccessDenied { .. }
+        ));
+        assert!(matches!(
+            revert(RevertError::EntryNotFound(volt_core::EntryId(3))),
+            IpcError::NotFound { .. }
+        ));
+        assert!(matches!(
+            revert(RevertError::NotRevertible(volt_core::EntryState::Reverted)),
+            IpcError::InvalidInput { .. }
+        ));
+    }
+
+    #[test]
+    fn store_errors_reach_the_ui_as_other_with_their_message() {
+        let error = StoreError::SchemaTooNew {
+            found: 9,
+            supported: 3,
+        };
+        let text = error.to_string();
+        assert_eq!(IpcError::from(error), IpcError::Other { message: text });
     }
 }

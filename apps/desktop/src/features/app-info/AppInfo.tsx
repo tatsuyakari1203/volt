@@ -1,27 +1,38 @@
 import { useEffect, useState } from 'react';
-import { type AppInfo as AppInfoData, getAppInfo } from '../../shared/ipc';
+import { type AppInfo as AppInfoData, getAppInfo, IpcUnavailableError } from '../../shared/ipc';
 import { Muted } from '../../shared/ui/Muted';
 
-/** Minimal screen: app name and version, read from Rust. */
+type Failure = { kind: 'outside-app' } | { kind: 'error'; message: string };
+
+/** Minimal block: app name and version, read from Rust. It sits inside a card of Settings. */
 export function AppInfo() {
   const [info, setInfo] = useState<AppInfoData | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<Failure | null>(null);
 
   useEffect(() => {
     getAppInfo()
       .then(setInfo)
-      .catch((e: unknown) => setError(String(e)));
+      .catch((e: unknown) =>
+        setFailure(
+          e instanceof IpcUnavailableError
+            ? { kind: 'outside-app' }
+            : { kind: 'error', message: String(e) },
+        ),
+      );
   }, []);
 
-  if (error) {
-    return <Muted>Could not reach the Rust core: {error}</Muted>;
+  if (failure?.kind === 'outside-app') {
+    return <Muted>Version information is not available outside the Volt app.</Muted>;
+  }
+  if (failure) {
+    return <Muted>Could not reach the Rust core: {failure.message}</Muted>;
   }
   if (!info) {
     return <Muted>Loading...</Muted>;
   }
   return (
-    <div className="text-center">
-      <h1 className="text-3xl font-semibold">{info.name}</h1>
+    <div>
+      <h3 className="text-subtitle font-semibold">{info.name}</h3>
       <Muted>Version {info.version}</Muted>
     </div>
   );
