@@ -497,6 +497,24 @@ pub struct StartupProblemView {
     pub reason: String,
 }
 
+/// A scheduled task that runs when you sign in. Read-only: it has no switch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledTaskView {
+    /// The task's name.
+    pub name: String,
+    /// The folder of the task in the Task Scheduler library.
+    pub folder: String,
+    /// The command (program and arguments); empty when the task runs no program.
+    pub command: String,
+    /// Who published the program, when its version information says.
+    pub publisher: Option<String>,
+    /// Whether the task will run at sign-in.
+    pub enabled: bool,
+    /// Whether the task is part of Windows.
+    pub microsoft: bool,
+}
+
 /// Everything that starts with Windows, read just now.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -505,6 +523,10 @@ pub struct StartupList {
     pub entries: Vec<StartupEntryView>,
     /// Sources that could not be read.
     pub problems: Vec<StartupProblemView>,
+    /// Scheduled tasks that run at sign-in, read-only, sorted by name.
+    pub tasks: Vec<ScheduledTaskView>,
+    /// Why the scheduled tasks could not be read ("access denied", ...), if so.
+    pub tasks_problem: Option<String>,
 }
 
 /// How a change of a startup entry ended.
@@ -894,6 +916,19 @@ pub fn list_startup_entries(core: &AppCore) -> Result<StartupList, IpcError> {
                 reason: problem.reason.to_owned(),
             })
             .collect(),
+        tasks: listing
+            .tasks
+            .iter()
+            .map(|task| ScheduledTaskView {
+                name: task.name.clone(),
+                folder: task.folder.clone(),
+                command: task.command.clone(),
+                publisher: task.publisher.clone(),
+                enabled: task.enabled,
+                microsoft: task.microsoft,
+            })
+            .collect(),
+        tasks_problem: listing.tasks_problem.map(str::to_owned),
     })
 }
 

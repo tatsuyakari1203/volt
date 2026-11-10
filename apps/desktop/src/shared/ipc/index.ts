@@ -110,6 +110,7 @@ export type {
   RiskLevel,
   RuleCleanView,
   RuleScanView,
+  ScheduledTaskView,
   SkipGroup,
   SkippedOperationView,
   StartupChangeResult,

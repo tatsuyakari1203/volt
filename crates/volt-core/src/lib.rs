@@ -144,9 +144,9 @@ pub use registry::{
 pub use service::ServiceStartType;
 pub use settings::{Settings, SettingsExt};
 pub use startup::{
-    ChangeOutcome, FilePublisher, NoPublisher, SourceProblem, StartupChange, StartupEntry,
-    StartupError, StartupListing, StartupManager, StartupOrigin, StartupScope, StartupSources,
-    StartupState,
+    ChangeOutcome, FilePublisher, LogonTask, LogonTasks, NoPublisher, ScheduledTaskEntry,
+    ShortcutResolver, ShortcutTarget, SourceProblem, StartupChange, StartupEntry, StartupError,
+    StartupListing, StartupManager, StartupOrigin, StartupScope, StartupSources, StartupState,
 };
 pub use time::{Clock, SystemClock, Timestamp};
 pub use tweak::{

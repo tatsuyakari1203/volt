@@ -1885,6 +1885,34 @@ samples: string[];
  */
 lockedNote: string | null }
 /**
+ * A scheduled task that runs when you sign in. Read-only: it has no switch.
+ */
+export type ScheduledTaskView = { 
+/**
+ * The task's name.
+ */
+name: string; 
+/**
+ * The folder of the task in the Task Scheduler library.
+ */
+folder: string; 
+/**
+ * The command (program and arguments); empty when the task runs no program.
+ */
+command: string; 
+/**
+ * Who published the program, when its version information says.
+ */
+publisher: string | null; 
+/**
+ * Whether the task will run at sign-in.
+ */
+enabled: boolean; 
+/**
+ * Whether the task is part of Windows.
+ */
+microsoft: boolean }
+/**
  * Skipped items with the same reason.
  */
 export type SkipGroup = { 
@@ -1991,7 +2019,15 @@ entries: StartupEntryView[];
 /**
  * Sources that could not be read.
  */
-problems: StartupProblemView[] }
+problems: StartupProblemView[]; 
+/**
+ * Scheduled tasks that run at sign-in, read-only, sorted by name.
+ */
+tasks: ScheduledTaskView[]; 
+/**
+ * Why the scheduled tasks could not be read ("access denied", ...), if so.
+ */
+tasksProblem: string | null }
 /**
  * A source that could not be read; the rest of the list is valid.
  */

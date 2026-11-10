@@ -2,6 +2,7 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
+  ScheduledTaskView,
   StartupChangeResult,
   StartupEntryView,
   StartupList,
@@ -55,8 +56,13 @@ const disabledNotes: StartupEntryView = {
   needsAdmin: false,
 };
 
-function list(entries: StartupEntryView[], problems: StartupProblemView[] = []): StartupList {
-  return { entries, problems };
+function list(
+  entries: StartupEntryView[],
+  problems: StartupProblemView[] = [],
+  tasks: ScheduledTaskView[] = [],
+  tasksProblem: string | null = null,
+): StartupList {
+  return { entries, problems, tasks, tasksProblem };
 }
 
 function changed(
@@ -352,5 +358,50 @@ describe('messages', () => {
     expect(short.startsWith('"C:\\Program Files')).toBe(true);
     expect(short.endsWith('--tray')).toBe(true);
     expect(short).toContain('…');
+  });
+});
+
+describe('scheduled tasks at sign-in', () => {
+  const task = (over: Partial<ScheduledTaskView>): ScheduledTaskView => ({
+    name: 'Sample Task',
+    folder: '\\',
+    command: '"C:\\Tools\\task.exe" /quiet',
+    publisher: 'Sample Software Ltd',
+    enabled: true,
+    microsoft: false,
+    ...over,
+  });
+
+  it('lists them read-only in their own group, with no switch', async () => {
+    ipc.listStartupEntries.mockResolvedValue(
+      list(
+        [sync],
+        [],
+        [
+          task({}),
+          task({ name: 'Windows Thing', microsoft: true, enabled: false, publisher: null }),
+        ],
+      ),
+    );
+    renderScreen();
+    const group = await screen.findByRole('list', { name: 'Scheduled tasks' });
+    const [first, second] = within(group).getAllByRole('listitem') as [HTMLElement, HTMLElement];
+    const rows = [first, second];
+    expect(rows).toHaveLength(2);
+    expect(within(group).queryByRole('switch')).toBeNull();
+    expect(within(first).getByText('Third-party')).toBeTruthy();
+    expect(within(second).getByText('Microsoft')).toBeTruthy();
+    expect(within(second).getByText('Disabled')).toBeTruthy();
+    expect(screen.getByText(/changing them comes later/)).toBeTruthy();
+    // The count above the switchable list is not changed by tasks.
+    expect(screen.getByText('1 entry, 1 on')).toBeTruthy();
+  });
+
+  it('shows tasks even when no entry starts, and says when they could not be read', async () => {
+    ipc.listStartupEntries.mockResolvedValue(list([], [], [task({})], 'access denied'));
+    renderScreen();
+    expect(await screen.findByRole('list', { name: 'Scheduled tasks' })).toBeTruthy();
+    expect(screen.queryByText('Nothing starts with Windows')).toBeNull();
+    expect(screen.getByText(/Scheduled tasks could not be read \(access denied\)/)).toBeTruthy();
   });
 });

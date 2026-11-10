@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { t, tn } from '../../shared/i18n';
 import {
   listStartupEntries,
+  type ScheduledTaskView,
   type StartupEntryView,
   type StartupProblemView,
   setStartupEntryEnabled,
@@ -23,6 +24,7 @@ import {
   describeChangeFailure,
   describeError,
   describeProblems,
+  describeTasksProblem,
   shortenCommand,
   sourceName,
 } from './messages';
@@ -30,7 +32,13 @@ import {
 type Load =
   | { status: 'loading' }
   | { status: 'error'; message: string }
-  | { status: 'ready'; entries: StartupEntryView[]; problems: StartupProblemView[] };
+  | {
+      status: 'ready';
+      entries: StartupEntryView[];
+      problems: StartupProblemView[];
+      tasks: ScheduledTaskView[];
+      tasksProblem: string | null;
+    };
 
 /** What an entry is doing right now, while a command runs. */
 type Busy = 'turning-on' | 'turning-off';
@@ -97,7 +105,13 @@ export function StartupScreen() {
     listStartupEntries()
       .then((list) => {
         if (alive.current) {
-          setLoad({ status: 'ready', entries: list.entries, problems: list.problems });
+          setLoad({
+            status: 'ready',
+            entries: list.entries,
+            problems: list.problems,
+            tasks: list.tasks,
+            tasksProblem: list.tasksProblem,
+          });
         }
       })
       .catch((error: unknown) => {
@@ -167,6 +181,15 @@ export function StartupScreen() {
         .includes(needle),
     );
   }, [entries, query]);
+  const tasks = load.status === 'ready' ? load.tasks : [];
+  const tasksProblem = load.status === 'ready' ? describeTasksProblem(load.tasksProblem) : null;
+  const visibleTasks = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return tasks;
+    return tasks.filter((task) =>
+      `${task.name} ${task.publisher ?? ''} ${task.command}`.toLowerCase().includes(needle),
+    );
+  }, [tasks, query]);
 
   return (
     <>
@@ -215,7 +238,7 @@ export function StartupScreen() {
           </Card>
         ) : null}
 
-        {load.status === 'ready' && entries.length === 0 ? (
+        {load.status === 'ready' && entries.length === 0 && tasks.length === 0 ? (
           <Card className="flex flex-col items-center gap-2 py-10 text-center">
             <Power aria-hidden size={24} className="text-muted" />
             <p className="font-semibold">{t('startup.empty.title')}</p>
@@ -287,6 +310,65 @@ export function StartupScreen() {
               </Card>
             )}
           </>
+        ) : null}
+
+        {load.status === 'ready' && (tasks.length > 0 || tasksProblem) ? (
+          <section aria-labelledby="startup-tasks-title" className="flex flex-col gap-2">
+            <h2 id="startup-tasks-title" className="text-body font-semibold">
+              {t('startup.tasks.title')}
+            </h2>
+            <p className="text-caption text-muted">{t('startup.tasks.note')}</p>
+            {tasksProblem ? (
+              <p role="status" className="text-caption text-muted">
+                {tasksProblem}
+              </p>
+            ) : null}
+            {visibleTasks.length > 0 ? (
+              <ListGroup aria-label={t('startup.tasks.list.label')}>
+                {visibleTasks.map((task) => (
+                  <ListRow
+                    key={`${task.folder}/${task.name}`}
+                    title={task.name}
+                    badge={
+                      <>
+                        <Badge>
+                          {task.microsoft
+                            ? t('startup.tasks.microsoft')
+                            : t('startup.tasks.thirdParty')}
+                        </Badge>
+                        <Badge>
+                          {task.enabled ? t('startup.tasks.enabled') : t('startup.tasks.disabled')}
+                        </Badge>
+                      </>
+                    }
+                    description={
+                      <>
+                        <span className="block">
+                          {task.publisher
+                            ? t('startup.publisher', { name: task.publisher })
+                            : t('startup.publisher.unknown')}
+                        </span>
+                        {task.command ? (
+                          <code
+                            className="mt-0.5 block font-mono wrap-anywhere"
+                            title={task.command}
+                          >
+                            {shortenCommand(task.command)}
+                          </code>
+                        ) : (
+                          <span className="mt-0.5 block">{t('startup.tasks.noProgram')}</span>
+                        )}
+                      </>
+                    }
+                  />
+                ))}
+              </ListGroup>
+            ) : tasks.length > 0 ? (
+              <p className="text-caption text-muted">
+                {t('startup.tasks.noMatch', { query: query.trim() })}
+              </p>
+            ) : null}
+          </section>
         ) : null}
       </div>
     </>
