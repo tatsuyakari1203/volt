@@ -207,6 +207,20 @@ pub fn redacted_prior(prior: &PriorState) -> String {
     }
 }
 
+/// What reverting does to a target, in plain words with the same redaction as
+/// [`redacted_prior`]: `set back to REG_DWORD 1`, `removed (it did not exist
+/// before)`, `set back to disabled`.
+#[must_use]
+pub fn restore_words(prior: &PriorState) -> String {
+    match prior {
+        PriorState::RegistryValue(Some(value)) => format!("set back to {}", redacted_value(value)),
+        PriorState::RegistryValue(None) => "removed (it did not exist before)".to_owned(),
+        PriorState::ServiceStartType(start_type) => format!("set back to {start_type}"),
+        PriorState::CommandState(true) => "put back to in effect".to_owned(),
+        PriorState::CommandState(false) => "put back to not in effect".to_owned(),
+    }
+}
+
 /// The class of a port error, without its message (which can carry command
 /// output or data).
 #[must_use]
@@ -222,7 +236,8 @@ pub fn error_class(error: &PortError) -> &'static str {
 
 /// What an operation touches, named without any data: for a command only the
 /// program, never the arguments.
-pub(crate) fn subject(operation: &Operation) -> String {
+#[must_use]
+pub fn subject(operation: &Operation) -> String {
     match operation {
         Operation::SetRegistryValue { target, .. } | Operation::DeleteRegistryValue { target } => {
             format!("registry value {target}")

@@ -1,13 +1,17 @@
-//! The Tauri commands for tweaks and activity.
+//! The Tauri commands for tweaks, activity and undo.
 //!
 //! Each command is a thin async wrapper over a function in [`crate::api`]. The work reads or
 //! writes the registry and `SQLite`, which can block, so it runs on the blocking thread pool and
 //! never on the main thread (which also runs the window and the tray).
 
-use tauri::State;
+use tauri::{AppHandle, Manager as _, State};
+use tauri_plugin_dialog::DialogExt as _;
 
 use crate::IpcError;
-use crate::api::{self, ActivityPage, ApplyResult, RevertResult, TweakInfo};
+use crate::api::{
+    self, ActivityExport, ActivityPage, ApplyResult, ExportResult, RevertResult, TweakInfo,
+    UndoPreview, UndoResult,
+};
 use crate::wiring::{AppCore, AppState};
 
 /// Runs `work` on the blocking thread pool and returns its result.
@@ -66,4 +70,83 @@ pub(crate) async fn list_activity(
         api::list_activity(core, limit, cursor.as_deref())
     })
     .await
+}
+
+/// Tauri command: undoes one journal entry (the `entry` of an activity line) and reports exactly
+/// how it ended (restored, partly restored, failed or nothing to undo).
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn undo_entry(
+    state: State<'_, AppState>,
+    entry: String,
+) -> Result<UndoResult, IpcError> {
+    blocking(&state, move |core| api::undo_entry(core, &entry)).await
+}
+
+/// Tauri command: undoes every applied entry of a journal batch (the `batch` of an activity
+/// line), newest first, and reports exactly how it ended.
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn undo_batch(
+    state: State<'_, AppState>,
+    batch: String,
+) -> Result<UndoResult, IpcError> {
+    blocking(&state, move |core| api::undo_batch(core, &batch)).await
+}
+
+/// Tauri command: lists what undoing a batch would restore right now. Reads only.
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn preview_undo_batch(
+    state: State<'_, AppState>,
+    batch: String,
+) -> Result<UndoPreview, IpcError> {
+    blocking(&state, move |core| api::preview_undo_batch(core, &batch)).await
+}
+
+/// Tauri command: renders the whole activity log as text, for the copy-to-clipboard fallback.
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn export_activity_text(
+    state: State<'_, AppState>,
+) -> Result<ActivityExport, IpcError> {
+    blocking(&state, api::export_activity_text).await
+}
+
+/// Tauri command: asks the user where to save the activity log (a native save dialog) and writes
+/// it as a text file. The file system is reached from Rust only: the UI is granted no file
+/// system or dialog permission. Closing the dialog is `cancelled`, not an error.
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn export_activity(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ExportResult, IpcError> {
+    blocking(&state, move |core| save_export(&app, core)).await
+}
+
+/// Shows the save dialog and writes the export. Blocks until the dialog closes, so it runs on the
+/// blocking pool (the dialog must not be opened from the main thread).
+fn save_export(app: &AppHandle, core: &AppCore) -> Result<ExportResult, IpcError> {
+    let export = api::export_activity_text(core)?;
+    let mut dialog = app
+        .dialog()
+        .file()
+        .set_title("Save the activity log")
+        .set_file_name(&export.file_name)
+        .add_filter("Text file", &["txt"]);
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.set_parent(&window);
+    }
+    let Some(chosen) = dialog.blocking_save_file() else {
+        return Ok(ExportResult::Cancelled);
+    };
+    let path = chosen.into_path().map_err(|error| IpcError::Other {
+        message: format!("the chosen location cannot be used: {error}"),
+    })?;
+    api::write_export(&path, &export.text)?;
+    Ok(ExportResult::Saved {
+        path: path.display().to_string(),
+        records: export.records,
+    })
 }

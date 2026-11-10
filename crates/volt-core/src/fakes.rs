@@ -789,6 +789,14 @@ impl Journal for FakeJournal {
             .collect())
     }
 
+    fn batch_label(&self, batch: BatchId) -> Result<Option<String>, PortError> {
+        Ok(lock(&self.state)
+            .batches
+            .iter()
+            .find(|(id, _)| *id == batch)
+            .and_then(|(_, label)| label.clone()))
+    }
+
     fn record_pending(&self, entry: NewEntry) -> Result<EntryId, PortError> {
         let mut state = lock(&self.state);
         if let Some(error) = state.fail_record.take() {

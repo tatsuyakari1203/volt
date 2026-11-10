@@ -104,6 +104,65 @@ async latestMetrics() : Promise<Result<MetricsView | null, IpcError>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Tauri command: undoes one journal entry (the `entry` of an activity line) and reports exactly
+ * how it ended (restored, partly restored, failed or nothing to undo).
+ */
+async undoEntry(entry: string) : Promise<Result<UndoResult, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("undo_entry", { entry }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: undoes every applied entry of a journal batch (the `batch` of an activity
+ * line), newest first, and reports exactly how it ended.
+ */
+async undoBatch(batch: string) : Promise<Result<UndoResult, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("undo_batch", { batch }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: lists what undoing a batch would restore right now. Reads only.
+ */
+async previewUndoBatch(batch: string) : Promise<Result<UndoPreview, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("preview_undo_batch", { batch }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: asks the user where to save the activity log (a native save dialog) and writes
+ * it as a text file. The file system is reached from Rust only: the UI is granted no file
+ * system or dialog permission. Closing the dialog is `cancelled`, not an error.
+ */
+async exportActivity() : Promise<Result<ExportResult, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("export_activity") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: renders the whole activity log as text, for the copy-to-clipboard fallback.
+ */
+async exportActivityText() : Promise<Result<ActivityExport, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("export_activity_text") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -126,6 +185,22 @@ trayBoostRequested: "tray-boost-requested"
 
 /** user-defined types **/
 
+/**
+ * The activity log rendered as text, ready to save or copy.
+ */
+export type ActivityExport = { 
+/**
+ * A suggested file name, `volt-activity-<date>.txt`.
+ */
+fileName: string; 
+/**
+ * The text: one line per record, newest first. Follows the redaction rule.
+ */
+text: string; 
+/**
+ * How many records it holds.
+ */
+records: number }
 /**
  * One line of the activity history.
  */
@@ -153,7 +228,32 @@ summary: string;
 /**
  * The tweak id or plan label, when known.
  */
-label: string | null }
+label: string | null; 
+/**
+ * The tweak's title when the label is a catalogue tweak.
+ */
+title: string | null; 
+/**
+ * The journal batch (the changes made together) as a decimal string, when there is one.
+ */
+batch: string | null; 
+/**
+ * The journal entry as a decimal string, when there is one. Pass it to [`undo_entry`].
+ */
+entry: string | null; 
+/**
+ * The value before the change, redacted: numbers and service start types are shown, string
+ * and binary data only as kind and length. Only set for a change that was made.
+ */
+previous: string | null; 
+/**
+ * Whether this line can be undone, was undone, failed and so on.
+ */
+state: ChangeState; 
+/**
+ * One line saying why the change cannot be undone, when `state` is `cannotUndo`.
+ */
+reason: string | null }
 /**
  * A page of the activity history, newest first.
  */
@@ -265,6 +365,30 @@ export type ApplyStatus =
  */
 "needsAttention"
 /**
+ * Where an activity line stands with respect to undo. The Undo page shows it on every row.
+ */
+export type ChangeState = 
+/**
+ * The change was made and its earlier value is in the undo journal: it can be undone.
+ */
+"canUndo" | 
+/**
+ * The change was made and has since been undone.
+ */
+"undone" | 
+/**
+ * The attempt failed (or was interrupted), so there is nothing to undo.
+ */
+"failed" | 
+/**
+ * This line has no usable undo record; `reason` says why.
+ */
+"cannotUndo" | 
+/**
+ * This line itself records an undo (a revert or an automatic rollback).
+ */
+"restored"
+/**
  * One fixed volume.
  */
 export type DiskView = { 
@@ -300,6 +424,18 @@ export type EvidenceLevel =
  * The effect is reported by users but not measured.
  */
 "anecdotal"
+/**
+ * How [`export_activity`] ended.
+ */
+export type ExportResult = 
+/**
+ * The file was written.
+ */
+{ kind: "saved"; path: string; records: number } | 
+/**
+ * The user closed the save dialog without choosing a file. Nothing was written.
+ */
+{ kind: "cancelled" }
 /**
  * The primary GPU. Every number may be missing (`null`): a driver without counters still
  * gives a name.
@@ -586,6 +722,87 @@ export type TweakStateView =
  * The state could not be read. Nothing was guessed.
  */
 { kind: "unreadable"; message: string }
+/**
+ * One change an undo could not restore.
+ */
+export type UndoFailure = { 
+/**
+ * The journal entry, as a decimal string.
+ */
+entry: string; 
+/**
+ * What it touches, in words, without any data.
+ */
+what: string; 
+/**
+ * Why it could not be restored, in words. Never contains command output or data.
+ */
+reason: string }
+/**
+ * What [`undo_batch`] would restore right now. Reads only.
+ */
+export type UndoPreview = { 
+/**
+ * The changes that are still applied, newest first: the order they are undone in.
+ */
+items: UndoPreviewItem[] }
+/**
+ * One change an undo of a batch would restore.
+ */
+export type UndoPreviewItem = { 
+/**
+ * The journal entry, as a decimal string.
+ */
+entry: string; 
+/**
+ * What it touches, in words, without any data.
+ */
+what: string; 
+/**
+ * What undoing does to it, redacted: `set back to REG_DWORD 1`, `removed (it did not exist
+ * before)`.
+ */
+restore: string }
+/**
+ * Precise result of [`undo_entry`] and [`undo_batch`].
+ */
+export type UndoResult = { 
+/**
+ * How it ended.
+ */
+status: UndoStatus; 
+/**
+ * How many changes were restored.
+ */
+restored: number; 
+/**
+ * How many could not be restored.
+ */
+failed: number; 
+/**
+ * The ones that could not be restored, with the reason.
+ */
+failures: UndoFailure[] }
+/**
+ * How an undo ended.
+ */
+export type UndoStatus = 
+/**
+ * Everything that was attempted was restored.
+ */
+"restored" | 
+/**
+ * Some changes were restored and some were not; `failures` says which.
+ */
+"partial" | 
+/**
+ * Nothing was restored; `failures` says why.
+ */
+"failed" | 
+/**
+ * The journal holds nothing to undo here: it was already undone, or never was a change.
+ */
+"nothingToUndo"
 
 /** tauri-specta globals **/
 

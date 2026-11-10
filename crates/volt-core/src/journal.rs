@@ -109,6 +109,10 @@ pub trait Journal: Send + Sync {
     /// Batches created with exactly this `label`, ordered by ascending id.
     fn batches_with_label(&self, label: &str) -> Result<Vec<BatchId>, PortError>;
 
+    /// The label a batch was created with. A batch without a label, and an
+    /// unknown batch, are both `Ok(None)`.
+    fn batch_label(&self, batch: BatchId) -> Result<Option<String>, PortError>;
+
     /// Stores a new entry in state [`EntryState::Pending`] and returns its id.
     ///
     /// Must be durable when it returns: the executor mutates the system only

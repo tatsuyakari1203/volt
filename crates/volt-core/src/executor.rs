@@ -462,6 +462,21 @@ impl Executor {
         }
     }
 
+    /// The label of a batch, or `None` when it has none or the journal cannot say (a diagnostic
+    /// line is written then; the label is only decoration for the activity record).
+    fn batch_label(&self, batch: BatchId) -> Option<String> {
+        match self.journal.batch_label(batch) {
+            Ok(label) => label,
+            Err(error) => {
+                log::warn!(
+                    "cannot read the label of {batch}: {}",
+                    activity::error_class(&error)
+                );
+                None
+            }
+        }
+    }
+
     fn apply_item(
         &self,
         item: &PlanItem,
@@ -539,6 +554,14 @@ impl Executor {
         if !revertible {
             return Err(RevertError::NotRevertible(entry.state));
         }
+        // A revert that does not know its label (a single entry, or a batch picked from the
+        // Undo page) asks the journal, so its activity records carry the tweak id like the
+        // apply did.
+        let found_label = match label {
+            Some(_) => None,
+            None => self.batch_label(entry.batch),
+        };
+        let label = label.or(found_label.as_deref());
         let (source, outcome, done, failed_verb) = match kind {
             RevertKind::Requested => (
                 Source::Manual,
