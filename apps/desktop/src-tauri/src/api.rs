@@ -16,10 +16,10 @@ use volt_core::activity::{exec_reason, restore_words_for, revert_reason, subject
 use volt_core::startup::STARTUP_LABEL;
 use volt_core::{
     ActivityId, ActivityOutcome, ActivityRecord, ApplyOutcome, BatchId, Category, ChangeOutcome,
-    Clock, EntryId, EntryState, Evidence, ItemStatus, JournalEntry, RestartRequirement,
-    RevertError, RevertOutcome, RevertReport, Risk, Source, StartupEntry, StartupOrigin,
-    StartupScope, StartupState, SystemClock, Timestamp, TweakApplyReport, TweakError,
-    TweakRevertReport, TweakState, activity, render_text,
+    Clock, EntryId, EntryState, Evidence, ItemStatus, JournalEntry, RESET_LABEL_SUFFIX,
+    RestartRequirement, RevertError, RevertOutcome, RevertReport, Risk, Source, StartupEntry,
+    StartupOrigin, StartupScope, StartupState, StepPreview, SystemClock, Timestamp,
+    TweakApplyReport, TweakError, TweakRevertReport, TweakState, activity, render_text,
 };
 
 use crate::IpcError;
@@ -129,6 +129,37 @@ pub struct TweakInfo {
     pub needs_admin: bool,
     /// The state read just now.
     pub state: TweakStateView,
+    /// Whether the undo journal holds a change Volt made for this tweak. When it is on and this
+    /// is `false`, it was set outside Volt: Volt has no earlier value to restore.
+    pub applied_by_volt: bool,
+}
+
+/// One step of a tweak: what it touches and the value now and after.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TweakStepView {
+    /// What is changed, such as `HKCU\Software\X\Y`, `service Spooler start type` or a command.
+    pub subject: String,
+    /// The value right now, as text.
+    pub current: String,
+    /// The value the tweak sets (or, in a reset, the value that is left), as text.
+    pub target: String,
+    /// Whether the system is already in the target state for this step.
+    pub at_target: bool,
+}
+
+/// What a tweak changes, for the Advanced list and the confirmation dialog.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TweakPlanView {
+    /// The tweak id.
+    pub id: String,
+    /// Every step of the tweak, in order.
+    pub steps: Vec<TweakStepView>,
+    /// What turning the tweak off would write when Volt has no earlier value to restore: the
+    /// values are removed so Windows uses its default. `None` when the tweak cannot be turned
+    /// off that way (it has a service or a command).
+    pub reset: Option<Vec<TweakStepView>>,
 }
 
 /// How an apply ended.
@@ -476,6 +507,7 @@ pub fn list_tweaks(core: &AppCore) -> Result<Vec<TweakInfo>, IpcError> {
             restart: restart_view(tweak.restart),
             needs_admin: tweak.requires_admin,
             state: state_view(core.engine.state(&tweak.id)),
+            applied_by_volt: core.engine.applied_by_volt(&tweak.id).unwrap_or(false),
         })
         .collect();
     Ok(infos)
@@ -534,6 +566,66 @@ pub fn revert_tweak(core: &AppCore, id: &str) -> Result<RevertResult, IpcError> 
         detail,
         state: state_view(core.engine.state(id)),
     })
+}
+
+/// What a tweak changes now, and what turning it off would write without a journal record.
+pub fn get_tweak_plan(core: &AppCore, id: &str) -> Result<TweakPlanView, IpcError> {
+    let _exclusive = core.exclusive();
+    let steps = core
+        .engine
+        .describe(id)?
+        .into_iter()
+        .map(step_view)
+        .collect();
+    let reset = core.engine.reset_plan(id)?.map(|plan| {
+        plan.items
+            .into_iter()
+            .map(|item| TweakStepView {
+                subject: item.preview.subject,
+                current: item.preview.current,
+                target: item.preview.target,
+                at_target: true,
+            })
+            .collect()
+    });
+    Ok(TweakPlanView {
+        id: id.to_owned(),
+        steps,
+        reset,
+    })
+}
+
+/// Turns off a tweak Volt did not apply by removing the registry values it sets. Journaled.
+pub fn reset_tweak(core: &AppCore, id: &str) -> Result<RevertResult, IpcError> {
+    let _exclusive = core.exclusive();
+    let failures_before = core.engine.activity_write_failures();
+    let report = core.engine.reset(id, Source::Manual);
+    warn_if_history_incomplete(core, failures_before, "resetting a tweak");
+    let report = report?;
+    let restored = report.report.as_ref().map_or(0, |r| {
+        u32::try_from(r.applied().count()).unwrap_or(u32::MAX)
+    });
+    let (status, failed, detail) = match report.outcome {
+        ApplyOutcome::Applied | ApplyOutcome::AlreadyApplied => (RevertStatus::Reverted, 0, None),
+        _ => (RevertStatus::Incomplete, 1, apply_failure_detail(&report)),
+    };
+    Ok(RevertResult {
+        tweak: id.to_owned(),
+        status,
+        restored,
+        failed,
+        detail,
+        state: state_view(core.engine.state(id)),
+    })
+}
+
+fn step_view(step: StepPreview) -> TweakStepView {
+    TweakStepView {
+        subject: step.preview.subject,
+        current: step.preview.current,
+        target: step.preview.target,
+        at_target: step.at_target,
+    }
 }
 
 /// Reads the activity history, newest first: at most `limit` records (1 to
@@ -893,6 +985,13 @@ fn activity_item(core: &AppCore, record: &ActivityRecord) -> ActivityItem {
         title: record.label.as_deref().and_then(|label| {
             if label == STARTUP_LABEL {
                 return Some(STARTUP_TITLE.to_owned());
+            }
+            if let Some(id) = label.strip_suffix(RESET_LABEL_SUFFIX) {
+                return core
+                    .engine
+                    .catalogue()
+                    .get(id)
+                    .map(|tweak| format!("{} (set to the Windows default)", tweak.title));
             }
             core.engine
                 .catalogue()

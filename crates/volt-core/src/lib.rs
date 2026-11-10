@@ -117,6 +117,6 @@ pub use startup::{
 pub use time::{Clock, SystemClock, Timestamp};
 pub use tweak::{
     ApplyOutcome, BatchRevert, Catalogue, CatalogueError, CatalogueIssue, Category, IssueKind,
-    RestartRequirement, Tweak, TweakApplyReport, TweakEngine, TweakError, TweakRevertReport,
-    TweakState, TweakStep,
+    RESET_LABEL_SUFFIX, RestartRequirement, StepPreview, Tweak, TweakApplyReport, TweakEngine,
+    TweakError, TweakRevertReport, TweakState, TweakStep,
 };

@@ -28,6 +28,7 @@ import {
   type StartupChangeResult,
   type StartupList,
   type TweakInfo,
+  type TweakPlanView,
   type UndoPreview,
   type UndoResult,
 } from './bindings';
@@ -85,7 +86,9 @@ export type {
   StartupSource,
   TweakCategory,
   TweakInfo,
+  TweakPlanView,
   TweakStateView,
+  TweakStepView,
   UndoFailure,
   UndoPreview,
   UndoPreviewItem,
@@ -209,6 +212,19 @@ export async function applyTweak(id: string): Promise<ApplyResult> {
 /** Reverts what Volt applied for a tweak. Resolves with whether the revert was complete. */
 export async function revertTweak(id: string): Promise<RevertResult> {
   return call(() => commands.revertTweak(id));
+}
+
+/** What a tweak changes (every step) and what turning it off would write without a journal record. */
+export async function getTweakPlan(id: string): Promise<TweakPlanView> {
+  return call(() => commands.getTweakPlan(id));
+}
+
+/**
+ * Turns off a tweak Volt did not apply, by removing the registry values it sets so Windows uses
+ * its default. Journaled, so it can be undone from the Undo page.
+ */
+export async function resetTweak(id: string): Promise<RevertResult> {
+  return call(() => commands.resetTweak(id));
 }
 
 /**
