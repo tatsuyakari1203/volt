@@ -63,7 +63,7 @@ fn applied_entry(report: &ApplyReport, index: usize) -> EntryId {
 /// Writes a pending entry the way the executor would, then "crashes" (does nothing else).
 fn crash_after_journal(system: &FakeSystem, operation: Operation) -> EntryId {
     let prior = operation.detect(&system.ports()).expect("detect");
-    let batch = system.journal.new_batch().expect("batch");
+    let batch = system.journal.new_batch(None).expect("batch");
     system
         .journal
         .record_pending(NewEntry {

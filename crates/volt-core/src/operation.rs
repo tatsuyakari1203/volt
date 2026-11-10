@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::command::{Command, run_detect, run_expecting_success};
 use crate::error::PortError;
 use crate::ports::Ports;
 use crate::registry::{RegistryValue, RegistryValueRef};
@@ -38,6 +39,21 @@ pub enum Operation {
         /// The new start type.
         start_type: ServiceStartType,
     },
+    /// Run an external command, with the commands that detect and undo it.
+    ///
+    /// Everything Volt applies must be undoable, so a revert command is part
+    /// of the operation. Exit codes: `detect` exits `0` when the effect is in
+    /// place and `1` when it is not (anything else is an error); `apply` and
+    /// `revert` exit `0` on success. A detect command must not change anything;
+    /// Volt cannot enforce that, so a catalogue reviewer has to.
+    RunCommand {
+        /// Reports whether the effect is in place. Read-only by contract.
+        detect: Command,
+        /// Makes the change.
+        apply: Command,
+        /// Undoes the change. Should be safe to run when nothing was changed.
+        revert: Command,
+    },
 }
 
 /// The state of what an operation touches, captured before the change.
@@ -51,10 +67,14 @@ pub enum PriorState {
     RegistryValue(Option<RegistryValue>),
     /// The start type of a service.
     ServiceStartType(ServiceStartType),
+    /// Whether the effect of a command was in place (its detect command said
+    /// so).
+    CommandState(bool),
 }
 
 impl Operation {
-    /// Reads the current state of what this operation would change. Read-only.
+    /// Reads the current state of what this operation would change. Read-only
+    /// (for a command: as read-only as its detect command).
     pub fn detect(&self, ports: &Ports) -> Result<PriorState, PortError> {
         match self {
             Self::SetRegistryValue { target, .. } | Self::DeleteRegistryValue { target } => Ok(
@@ -63,6 +83,21 @@ impl Operation {
             Self::SetServiceStartType { service, .. } => Ok(PriorState::ServiceStartType(
                 ports.services.start_type(service)?,
             )),
+            Self::RunCommand { detect, .. } => {
+                Ok(PriorState::CommandState(run_detect(ports, detect)?))
+            }
+        }
+    }
+
+    /// The state the system is in after this operation has been applied.
+    pub(crate) fn target_state(&self) -> PriorState {
+        match self {
+            Self::SetRegistryValue { value, .. } => PriorState::RegistryValue(Some(value.clone())),
+            Self::DeleteRegistryValue { .. } => PriorState::RegistryValue(None),
+            Self::SetServiceStartType { start_type, .. } => {
+                PriorState::ServiceStartType(*start_type)
+            }
+            Self::RunCommand { .. } => PriorState::CommandState(true),
         }
     }
 
@@ -77,6 +112,7 @@ impl Operation {
                 service,
                 start_type,
             } => ports.services.set_start_type(service, *start_type),
+            Self::RunCommand { apply, .. } => run_expecting_success(ports, apply),
         }
     }
 
@@ -92,6 +128,12 @@ impl Operation {
             },
             (Self::SetServiceStartType { service, .. }, PriorState::ServiceStartType(previous)) => {
                 ports.services.set_start_type(service, *previous)
+            }
+            // The effect was already in place before apply: there is nothing
+            // of ours to undo, and running the revert command would remove it.
+            (Self::RunCommand { .. }, PriorState::CommandState(true)) => Ok(()),
+            (Self::RunCommand { revert, .. }, PriorState::CommandState(false)) => {
+                run_expecting_success(ports, revert)
             }
             _ => Err(PortError::InvalidInput(
                 "journal prior state does not match the operation".to_owned(),
@@ -112,6 +154,7 @@ impl Operation {
                 format!("service {service} start type"),
                 start_type.to_string(),
             ),
+            Self::RunCommand { apply, .. } => (format!("command {apply}"), "applied".to_owned()),
         }
     }
 }
@@ -124,6 +167,8 @@ impl PriorState {
             Self::RegistryValue(Some(value)) => value.to_string(),
             Self::RegistryValue(None) => "(not set)".to_owned(),
             Self::ServiceStartType(start_type) => start_type.to_string(),
+            Self::CommandState(true) => "applied".to_owned(),
+            Self::CommandState(false) => "not applied".to_owned(),
         }
     }
 }

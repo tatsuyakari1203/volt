@@ -42,9 +42,15 @@ architecture decision and should be discussed in an issue first.
 What `volt-core` contains today:
 
 - **Operation:** the unit of change, a declarative `#[non_exhaustive]` enum: set registry value,
-  delete registry value, set service start type. It is data, not behaviour. Its apply and revert
-  are crate-private and reachable only through the Executor, so no caller can change the system
-  without going through the journal.
+  delete registry value, set service start type, run a command. It is data, not behaviour. Its
+  apply and revert are crate-private and reachable only through the Executor, so no caller can
+  change the system without going through the journal.
+- **Commands port:** a `Command` is a program and an argument list, never a shell string. A
+  command operation carries three commands: detect (exit `0` = in effect, `1` = not, anything else
+  is a read error), apply and revert. The revert command is mandatory, because everything Volt
+  applies must be undoable. A detect command must not change anything; Volt cannot enforce that,
+  so a catalogue reviewer has to. If the effect was already in place before apply, revert leaves it
+  alone.
 - **Executor and write-ahead journaling:** for every operation the Executor detects the prior
   state, writes a pending journal entry holding that state, applies the change, then marks the
   entry applied. A failed journal write blocks the change: nothing is mutated without a durable
@@ -52,13 +58,14 @@ What `volt-core` contains today:
 - **Plan and Preview:** a Plan is a list of operations, each with a Preview, a Risk and an
   Evidence label. Building a plan only reads the system, so building a plan is the dry run. The
   user confirms, then the Executor applies it.
-- **Ports:** the `Ports` bundle holds the registry, file system, services, processes and memory
-  traits that operations and use cases may touch. The core only sees these traits; composition
+- **Ports:** the `Ports` bundle holds the registry, file system, services, processes, memory and
+  commands traits that operations and use cases may touch. The core only sees these traits; composition
   roots build the bundle from real adapters, tests build it from fakes.
 - **Journal port:** the persistent undo journal. It allocates batch ids (one batch per applied
   plan), stores entries with states (pending, applied, reverted, failed) and takes time from an
   injected `Clock`, so it is deterministic in tests. Revert reads the journal, so it works after a
-  restart and for whole batches.
+  restart and for whole batches. A batch can carry a label (a plan's `label`, which the tweak
+  engine sets to the tweak id), and `batches_with_label` finds a label's batches again.
 - **Risk and evidence labels:** `Safe`, `Caution`, `Advanced`; `Measured` or `Anecdotal`. The UI
   shows both.
 - **`fakes` cargo feature:** in-memory fakes of every port (`FakeSystem` wires them together
@@ -69,12 +76,31 @@ What `volt-core` contains today:
   they cannot be undone. They only have ports (`FileSystem`, `Memory`); cleaning shows a preview
   and prefers the Recycle Bin.
 
+- **Tweak definition:** data, not code (`volt_core::tweak`). A `Tweak` has an id, title,
+  description, category, risk level, evidence level with a short evidence note, a restart
+  requirement (none, sign-out, reboot) and an ordered list of steps: registry set, registry
+  delete, service start type or command. Each step maps onto one Operation, so apply and revert
+  always run through the Executor. Adding a tweak needs no new Rust code in most cases.
+  - **Catalogue:** `Catalogue::from_toml` loads a set of tweaks from TOML text; the core never
+    reads files. Loading validates everything and rejects the catalogue as a whole, reporting all
+    problems at once, each naming the tweak id and the field path (duplicate or malformed ids,
+    empty step lists, empty or malformed registry subkeys, a command without a revert, unknown
+    enum values, unknown or missing fields, two steps changing the same thing). The format is
+    documented on `Catalogue::from_toml`.
+  - **Tweak engine:** `TweakEngine` reads the state of a tweak (Applied when every step is in its
+    target state, NotApplied when none is, Partial otherwise; read-only, so it also reports tweaks
+    changed outside Volt, and a state that cannot be read is an error, never a guess), previews it
+    (`plan`, the dry run) and applies it. Apply builds a Plan from the steps not already in their
+    target state, labels it with the tweak id and runs it through `apply_or_rollback`. When a step
+    fails the report says whether the system was read again and found back as it was
+    (`RolledBack`) or needs attention (`NeedsAttention`), with the executor's per-step results.
+  - **Revert** finds the journal batches labelled with the tweak id that still have applied
+    entries and reverts them newest first, so it works after a restart. A change made outside Volt
+    has no recorded prior state and cannot be reverted by Volt; neither can steps that were already
+    in their target state when the tweak was applied, because Volt did not change them.
+
 Still to be built:
 
-- **Tweak definition:** data, not code. Each tweak has an id, title, category, risk level,
-  evidence level, a reboot flag, and detect/apply/revert steps expressed as registry, service or
-  command operations. The engine interprets definitions; adding a tweak should not need new Rust
-  code in most cases.
 - **Cleaning rule:** data as well: a root, include and exclude patterns, safety constraints (never
   follow junctions or symlinks outside the root) and a category.
 
@@ -85,7 +111,7 @@ Still to be built:
 - The database runs in WAL mode with `synchronous = FULL`, so a pending journal entry is on disk
   before the system is changed.
 - Schema migrations run through `PRAGMA user_version`. A database with a newer schema than the
-  binary knows is refused, never downgraded.
+  binary knows is refused, never downgraded. Version 2 added the optional label of a batch.
 - A corrupt database is moved aside as `<file>.corrupt-<millis>` and reported to the caller. It is
   never deleted.
 - On startup the composition root opens the store, builds the Executor and calls
@@ -105,6 +131,8 @@ Still to be built:
 - Tests are confined to `HKCU\Software\VoltTest` and temp directories.
 - Changing a real service's start type is deliberately not covered by an automated test, because
   it would change the machine running the tests.
+- There is no adapter for the Commands port yet, so command tweaks only run against the fake until
+  one is written.
 
 ## Process and elevation model
 

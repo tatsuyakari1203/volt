@@ -17,7 +17,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{ExecError, PortError, RevertError};
 use crate::journal::{BatchId, EntryId, EntryState, Journal, NewEntry, Source};
-use crate::operation::{Operation, PriorState};
 use crate::plan::{Plan, PlanItem};
 use crate::ports::Ports;
 use crate::time::Clock;
@@ -118,17 +117,6 @@ const NEVER_APPLIED_REASON: &str =
 const STATE_UNKNOWN_REASON: &str = "interrupted: the current state matches neither the recorded prior state nor the intended \
      state, so it is unknown";
 
-/// The state the system is in after `operation` has been applied.
-fn target_state(operation: &Operation) -> PriorState {
-    match operation {
-        Operation::SetRegistryValue { value, .. } => PriorState::RegistryValue(Some(value.clone())),
-        Operation::DeleteRegistryValue { .. } => PriorState::RegistryValue(None),
-        Operation::SetServiceStartType { start_type, .. } => {
-            PriorState::ServiceStartType(*start_type)
-        }
-    }
-}
-
 /// Precise result of applying a plan: one outcome per item, in plan order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApplyReport {
@@ -219,7 +207,10 @@ impl Executor {
     /// nothing was changed. Otherwise the report says exactly which items were
     /// applied, which failed and which were not attempted.
     pub fn apply(&self, plan: &Plan, source: Source) -> Result<ApplyReport, ExecError> {
-        let batch = self.journal.new_batch().map_err(ExecError::Journal)?;
+        let batch = self
+            .journal
+            .new_batch(plan.label.as_deref())
+            .map_err(ExecError::Journal)?;
         let mut outcomes = Vec::with_capacity(plan.items.len());
         let mut halted = false;
         for (index, item) in plan.items.iter().enumerate() {
@@ -314,7 +305,7 @@ impl Executor {
                     )?;
                     Resolution::NeverApplied
                 }
-                Ok(current) if current == target_state(&entry.operation) => {
+                Ok(current) if current == entry.operation.target_state() => {
                     self.journal
                         .set_state(entry.id, EntryState::Applied, None)?;
                     Resolution::ConfirmedApplied
