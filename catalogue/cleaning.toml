@@ -609,3 +609,192 @@ path = "ServiceProfiles/NetworkService/AppData/Local/Microsoft/Windows/DeliveryO
 [rule.constraints]
 min_age_days = 7
 max_depth = 4
+
+# ---- developer tool caches -------------------------------------------------------------------
+#
+# Only the DEFAULT locations are covered: a cache moved with CARGO_HOME, `npm config set cache`,
+# PIP_CACHE_DIR, a pnpm `store-dir`, NUGET_PACKAGES, GRADLE_USER_HOME or YARN_CACHE_FOLDER is not
+# followed. A tool that is not installed has no folder, which is nothing to clean and no error.
+# The tools' own clean commands are not used: they can neither be previewed nor go to the Recycle Bin.
+
+[[rule]]
+id = "npm-cache"
+title = "npm download cache"
+description = """
+The package cache npm keeps in its default location (%LOCALAPPDATA%\\npm-cache\\_cacache), so installs can reuse \
+downloads. Afterwards the next npm install downloads the packages it needs again, which is slower and uses \
+data, but nothing is lost: it is only a copy of what the registry serves. Moved caches (npm config) are not \
+followed. Files modified in the last day are kept."""
+category = "developer_cache"
+risk = "safe"
+include = ["**"]
+
+[rule.root]
+location = "local_app_data"
+path = "npm-cache/_cacache"
+
+[rule.constraints]
+min_age_days = 1
+max_depth = 16
+
+[[rule]]
+id = "pnpm-store"
+title = "pnpm package store"
+description = """
+The content-addressed store pnpm keeps in its default location (%LOCALAPPDATA%\\pnpm\\store) and links into \
+your projects. Projects that are already installed keep working, because their node_modules hold their own \
+links to the files. Afterwards the next pnpm install downloads every package it needs again, which can take a \
+long time for many projects. Marked Caution for that reason. A store on another drive (.pnpm-store) or a moved \
+store-dir is not followed. Files modified in the last day are kept."""
+category = "developer_cache"
+risk = "caution"
+include = ["**"]
+
+[rule.root]
+location = "local_app_data"
+path = "pnpm/store"
+
+[rule.constraints]
+min_age_days = 1
+max_depth = 16
+
+[[rule]]
+id = "pnpm-metadata-cache"
+title = "pnpm metadata cache"
+description = """
+The package metadata pnpm caches in %LOCALAPPDATA%\\pnpm-cache so it can resolve versions without asking the \
+registry each time. Afterwards the next pnpm install fetches that metadata again, which is a little slower \
+once. Nothing else is lost. A moved cache directory is not followed. Files modified in the last day are kept."""
+category = "developer_cache"
+risk = "safe"
+include = ["**"]
+
+[rule.root]
+location = "local_app_data"
+path = "pnpm-cache"
+
+[rule.constraints]
+min_age_days = 1
+max_depth = 16
+
+[[rule]]
+id = "pip-cache"
+title = "pip download cache"
+description = """
+The wheels and HTTP responses pip caches in %LOCALAPPDATA%\\pip\\Cache. Packages you have installed stay \
+installed. Afterwards the next pip install downloads (or builds again) the packages it needs, which can be \
+slow for large ones such as PyTorch. A cache moved with PIP_CACHE_DIR or pip config is not followed. Files \
+modified in the last day are kept."""
+category = "developer_cache"
+risk = "safe"
+include = ["**"]
+
+[rule.root]
+location = "local_app_data"
+path = "pip/Cache"
+
+[rule.constraints]
+min_age_days = 1
+max_depth = 16
+
+[[rule]]
+id = "cargo-cache"
+title = "Cargo registry cache and git checkouts"
+description = """
+The downloaded crate archives (registry\\cache), their unpacked sources (registry\\src) and the git checkouts \
+(git\\checkouts) that Cargo keeps in %USERPROFILE%\\.cargo. The registry index, git databases, installed \
+programs (bin) and credentials are never touched. Afterwards the next cargo build downloads and unpacks the \
+crates it needs again, and clones git dependencies again, which needs a network connection and can take a \
+while for big projects. Marked Caution for that reason. A CARGO_HOME elsewhere is not followed. Files \
+modified in the last day are kept."""
+category = "developer_cache"
+risk = "caution"
+include = ["registry/cache/**", "registry/src/**", "git/checkouts/**"]
+
+[rule.root]
+location = "user_profile"
+path = ".cargo"
+
+[rule.constraints]
+min_age_days = 1
+max_depth = 16
+
+[[rule]]
+id = "nuget-http-cache"
+title = "NuGet HTTP cache"
+description = """
+The web responses NuGet caches in %LOCALAPPDATA%\\NuGet\\v3-cache (package lists and downloads in progress). \
+Afterwards NuGet asks the feeds again, which is a little slower once. Installed packages are not touched. \
+Files modified in the last day are kept."""
+category = "developer_cache"
+risk = "safe"
+include = ["**"]
+
+[rule.root]
+location = "local_app_data"
+path = "NuGet/v3-cache"
+
+[rule.constraints]
+min_age_days = 1
+max_depth = 16
+
+[[rule]]
+id = "nuget-packages"
+title = "NuGet global packages"
+description = """
+The packages every .NET project restores into %USERPROFILE%\\.nuget\\packages. Afterwards the next restore or \
+build downloads every package it needs again, which needs a network connection and can take long for large \
+solutions; a project that must build offline cannot until then. Marked Caution for that reason. A folder set \
+with NUGET_PACKAGES or a nuget.config is not followed. Files modified in the last day are kept."""
+category = "developer_cache"
+risk = "caution"
+include = ["**"]
+
+[rule.root]
+location = "user_profile"
+path = ".nuget/packages"
+
+[rule.constraints]
+min_age_days = 1
+max_depth = 16
+
+[[rule]]
+id = "gradle-caches"
+title = "Gradle caches"
+description = """
+The downloaded dependencies, transformed jars and build cache Gradle keeps in %USERPROFILE%\\.gradle\\caches. \
+Settings (gradle.properties, init scripts) and the downloaded Gradle versions (wrapper) are never touched. \
+Afterwards the next Gradle build downloads every dependency again and rebuilds what the build cache held, \
+which can take a long time for Android or large JVM projects. Marked Caution for that reason. A \
+GRADLE_USER_HOME elsewhere is not followed. Files modified in the last day are kept."""
+category = "developer_cache"
+risk = "caution"
+include = ["**"]
+
+[rule.root]
+location = "user_profile"
+path = ".gradle/caches"
+
+[rule.constraints]
+min_age_days = 1
+max_depth = 16
+
+[[rule]]
+id = "yarn-cache"
+title = "Yarn cache"
+description = """
+The package cache of Yarn Classic (%LOCALAPPDATA%\\Yarn\\Cache) and the global cache of Yarn Berry \
+(%LOCALAPPDATA%\\Yarn\\Berry\\cache). Afterwards the next yarn install downloads the packages it needs again, \
+which is slower and uses data. A cache moved with YARN_CACHE_FOLDER or .yarnrc is not followed, and a \
+project-local .yarn\\cache is never touched. Files modified in the last day are kept."""
+category = "developer_cache"
+risk = "safe"
+include = ["Cache/**", "Berry/cache/**"]
+
+[rule.root]
+location = "local_app_data"
+path = "Yarn"
+
+[rule.constraints]
+min_age_days = 1
+max_depth = 16

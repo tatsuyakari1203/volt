@@ -34,6 +34,8 @@ pub enum CleanCategory {
     ShaderCache,
     /// Caches of chat applications (never messages, files or sign-in state).
     ChatAppCache,
+    /// Package manager and build tool caches (npm, pnpm, pip, cargo, `NuGet`, Gradle, Yarn).
+    DeveloperCache,
     /// Log files.
     Logs,
     /// Crash dumps and error reports.
@@ -50,6 +52,7 @@ impl fmt::Display for CleanCategory {
             Self::BrowserCache => "Browser caches",
             Self::ShaderCache => "Shader caches",
             Self::ChatAppCache => "Chat app caches",
+            Self::DeveloperCache => "Developer caches",
             Self::Logs => "Logs",
             Self::CrashReports => "Crash reports",
             Self::WindowsUpdate => "Windows Update leftovers",

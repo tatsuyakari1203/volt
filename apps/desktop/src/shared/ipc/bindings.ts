@@ -767,6 +767,10 @@ export type CleanCategoryView =
  */
 "chatAppCache" | 
 /**
+ * Package manager and build tool caches.
+ */
+"developerCache" | 
+/**
  * Log files.
  */
 "logs" | 

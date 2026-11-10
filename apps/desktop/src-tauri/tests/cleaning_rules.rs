@@ -85,6 +85,7 @@ fn folders() -> Arc<FakeKnownFolders> {
     );
     folders.set(Location::ProgramData, abs("ProgramData"));
     folders.set(Location::Windows, abs("Windows"));
+    folders.set(Location::UserProfile, abs("Users/tester"));
     for protected in [
         "Users/tester",
         "Users/tester/Documents",
@@ -544,6 +545,74 @@ fn app_fixture(id: &str) -> Option<Tree> {
             ("Cache/link", Link),
             ("Cache/a/b/c/d/deep", TooDeep),
         ],
+        _ => return dev_fixture(id),
+    })
+}
+
+/// A path far below any developer cache rule's depth limit.
+const VERY_DEEP: &str = "a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q/r/s/t/deep.bin";
+
+/// The developer tool cache rules. A rule that takes `**` has no non-matching entries; the ones
+/// that pick folders out of a shared root also hold what the tool keeps there (never listed).
+fn dev_fixture(id: &str) -> Option<Tree> {
+    Some(match id {
+        "npm-cache"
+        | "pnpm-store"
+        | "pnpm-metadata-cache"
+        | "pip-cache"
+        | "nuget-http-cache"
+        | "nuget-packages"
+        | "gradle-caches" => vec![
+            ("a/b/package.tgz", Taken),
+            ("index-v5/ab/cd/entry", Taken),
+            ("loose.bin", Taken),
+            ("limit.bin", TakenAtAgeLimit),
+            ("fresh.bin", TooNew),
+            ("link", Link),
+            (VERY_DEEP, TooDeep),
+        ],
+        "cargo-cache" => vec![
+            (
+                "registry/cache/index.crates.io-1949cf8c6b5b557f/serde-1.0.0.crate",
+                Taken,
+            ),
+            (
+                "registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.0/src/lib.rs",
+                Taken,
+            ),
+            ("git/checkouts/repo-abc123/1a2b3c/Cargo.toml", Taken),
+            ("registry/cache/limit.crate", TakenAtAgeLimit),
+            ("registry/src/fresh.rs", TooNew),
+            (
+                "registry/index/index.crates.io-1949cf8c6b5b557f/.cache/se/rd/serde",
+                NotMatching,
+            ),
+            ("git/db/repo-abc123/HEAD", NotMatching),
+            ("bin/cargo-nextest.exe", NotMatching),
+            ("credentials.toml", NotMatching),
+            ("config.toml", NotMatching),
+            ("registry/cache/link", Link),
+            (
+                "registry/src/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q/r/s/deep.rs",
+                TooDeep,
+            ),
+        ],
+        "yarn-cache" => vec![
+            (
+                "Cache/v6/npm-left-pad-1.3.0-abc.tgz/node_modules/left-pad/index.js",
+                Taken,
+            ),
+            ("Berry/cache/left-pad-npm-1.3.0-abc.zip", Taken),
+            ("Cache/limit.tgz", TakenAtAgeLimit),
+            ("Berry/cache/fresh.zip", TooNew),
+            ("Berry/global/state.json", NotMatching),
+            ("Config/.yarnrc", NotMatching),
+            ("Cache/link", Link),
+            (
+                "Cache/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q/r/s/t/deep.tgz",
+                TooDeep,
+            ),
+        ],
         _ => return None,
     })
 }
@@ -586,6 +655,15 @@ fn every_rule_has_a_fixture_and_every_fixture_covers_what_the_rule_allows() {
         "teams-cache",
         "teams-classic-cache",
         "zalo-cache",
+        "npm-cache",
+        "pnpm-store",
+        "pnpm-metadata-cache",
+        "pip-cache",
+        "cargo-cache",
+        "nuget-http-cache",
+        "nuget-packages",
+        "gradle-caches",
+        "yarn-cache",
     ] {
         assert!(ids.contains(known), "fixture for {known} but no such rule");
     }
@@ -1192,4 +1270,162 @@ fn a_running_chat_app_is_named_by_the_scan() {
     assert_eq!(running("zalo-cache"), ["zalo.exe"]);
     assert_eq!(running("discord-cache"), ["discord.exe"]);
     assert!(running("telegram-cache").is_empty());
+}
+
+// ---- developer tool caches ----------------------------------------------------------------------
+
+const DEV_RULES: [&str; 9] = [
+    "npm-cache",
+    "pnpm-store",
+    "pnpm-metadata-cache",
+    "pip-cache",
+    "cargo-cache",
+    "nuget-http-cache",
+    "nuget-packages",
+    "gradle-caches",
+    "yarn-cache",
+];
+
+#[test]
+fn developer_rules_are_user_rules_in_their_own_group_that_say_what_is_downloaded_again() {
+    let rules = rules();
+    let in_group: BTreeSet<&str> = rules
+        .rules()
+        .iter()
+        .filter(|rule| rule.category == volt_core::CleanCategory::DeveloperCache)
+        .map(|rule| rule.id.as_str())
+        .collect();
+    assert_eq!(in_group, BTreeSet::from(DEV_RULES));
+    for id in DEV_RULES {
+        let rule = rules.get(id).expect("rule");
+        assert!(!rule.requires_admin, "{id}");
+        assert!(rule.constraints.min_age_days >= 1, "{id}");
+        assert!(
+            !rule.root.relative().is_empty(),
+            "{id}: never a whole location"
+        );
+        let text = rule.description.to_lowercase();
+        assert!(text.contains("afterwards"), "{id}: says what happens next");
+        assert!(
+            text.contains("again"),
+            "{id}: says what is downloaded again"
+        );
+        assert!(
+            text.contains("not followed") || text.contains("not touched"),
+            "{id}: says relocated caches are not followed"
+        );
+    }
+}
+
+#[test]
+fn developer_rules_never_list_credentials_configuration_or_installed_programs() {
+    // What each tool keeps in or beside its cache at the default location. `../` climbs out of
+    // the rule's root to where the tool keeps its own files.
+    let kept: [(&str, &[&str]); 9] = [
+        (
+            "npm-cache",
+            &[
+                "../.npmrc",
+                "../npm/npm.cmd",
+                "../npm-cache/_logs/debug.log",
+            ],
+        ),
+        (
+            "pnpm-store",
+            &["../global/5/package.json", "../pnpm.exe", "../rc"],
+        ),
+        ("pnpm-metadata-cache", &["../pnpm/store/v10/files/ab/cd"]),
+        ("pip-cache", &["../pip.ini", "../../pip/pip.ini"]),
+        (
+            "cargo-cache",
+            &[
+                "credentials.toml",
+                "credentials",
+                "config.toml",
+                "bin/cargo.exe",
+                "bin/rustfmt.exe",
+                ".crates.toml",
+                ".crates2.json",
+                "registry/index/index.crates.io-1949cf8c6b5b557f/config.json",
+                "git/db/repo-abc123/objects/pack/p1",
+            ],
+        ),
+        (
+            "nuget-http-cache",
+            &["../plugins-cache/p1", "../NuGet.Config"],
+        ),
+        ("nuget-packages", &["../NuGet.Config", "../../nuget.config"]),
+        (
+            "gradle-caches",
+            &[
+                "../gradle.properties",
+                "../wrapper/dists/gradle-8.5-bin/x/bin/gradle.bat",
+                "../init.d/a.gradle",
+                "../daemon/8.5/daemon.log",
+            ],
+        ),
+        (
+            "yarn-cache",
+            &[
+                "Berry/global/state.json",
+                "Config/.yarnrc",
+                "../.yarnrc",
+                "../.yarnrc.yml",
+            ],
+        ),
+    ];
+    for (id, protected) in kept {
+        let world = World::new();
+        let rule = world.engine.rules().get(id).expect("rule").clone();
+        let root = world.root_of(&rule);
+        let tree = dev_fixture(id).expect("fixture");
+        let taken: BTreeSet<PathBuf> = tree
+            .iter()
+            .filter(|(_, expect)| *expect == Taken)
+            .map(|(relative, _)| below(&root, relative))
+            .collect();
+        for path in &taken {
+            world.fs.add_file_at(path, 100, ago(30 * DAY));
+        }
+        let mut guarded = Vec::new();
+        for relative in protected {
+            let mut path = root.clone();
+            for part in relative.split('/') {
+                if part == ".." {
+                    path.pop();
+                } else {
+                    path.push(part);
+                }
+            }
+            world.fs.add_file_at(&path, 100, ago(30 * DAY));
+            guarded.push(path);
+        }
+        let plan = world.engine.scan(&[id]).expect("scan");
+        let listed: BTreeSet<PathBuf> = plan.rules[0]
+            .items
+            .iter()
+            .map(|item| item.path.clone())
+            .collect();
+        assert_eq!(listed, taken, "{id}: only cache files are listed");
+        for path in &guarded {
+            assert!(!listed.contains(path), "{id}: {} is listed", path.display());
+        }
+        let report = world.engine.clean(&plan.confirm(), Source::Manual);
+        assert_eq!(report.skipped_count(), 0, "{id}");
+        for path in &guarded {
+            assert!(world.fs.exists(path), "{id}: {} was moved", path.display());
+        }
+    }
+}
+
+#[test]
+fn a_tool_that_is_not_installed_is_skipped_without_a_failure() {
+    let world = World::new();
+    let plan = world.engine.scan(&DEV_RULES).expect("scan");
+    assert_eq!(plan.rules.len(), DEV_RULES.len());
+    for scan in &plan.rules {
+        assert_eq!(scan.failure, None, "{}", scan.rule_id);
+        assert!(!scan.root_exists, "{}", scan.rule_id);
+        assert!(scan.items.is_empty(), "{}", scan.rule_id);
+    }
 }

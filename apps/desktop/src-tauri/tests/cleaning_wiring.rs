@@ -35,6 +35,7 @@ fn fake_folders() -> Arc<FakeKnownFolders> {
     let folders = Arc::new(FakeKnownFolders::new());
     folders.set(Location::UserTemp, temp_folder());
     folders.set(Location::LocalAppData, abs("Users/tester/AppData/Local"));
+    folders.set(Location::UserProfile, abs("Users/tester"));
     folders.set(
         Location::RoamingAppData,
         abs("Users/tester/AppData/Roaming"),

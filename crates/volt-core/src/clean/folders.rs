@@ -31,6 +31,9 @@ pub enum Location {
     ProgramData,
     /// The Windows directory (`%SystemRoot%`).
     Windows,
+    /// The user's profile folder (`%USERPROFILE%`). A rule must name a folder below it
+    /// (such as `.cargo`), never the profile itself.
+    UserProfile,
 }
 
 impl Location {
@@ -43,6 +46,7 @@ impl Location {
             Self::RoamingAppData => "roaming_app_data",
             Self::ProgramData => "program_data",
             Self::Windows => "windows",
+            Self::UserProfile => "user_profile",
         }
     }
 
