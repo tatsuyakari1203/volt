@@ -11,6 +11,8 @@
 //! Adapters in this crate: [`WinRegistry`], [`WinServices`], [`WinFileSystem`],
 //! [`WinKnownFolders`], [`WinRecycleBin`], [`WinMetrics`], [`WinMemory`], [`WinProcesses`],
 //! [`WinCommands`], [`WinFilePublisher`].
+//! The [`helper`] module holds the Windows side of the elevated helper: its named pipe, the checks on
+//! who may use it, the install-folder check and the helper's self-hardening.
 //! The crate is empty on non-Windows targets.
 
 // The workspace denies unsafe code; FFI lives here by design.
@@ -22,6 +24,7 @@ mod error;
 mod files;
 mod folders;
 mod gpu;
+pub mod helper;
 mod memory;
 mod metrics;
 mod processes;

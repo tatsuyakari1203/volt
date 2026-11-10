@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Enforces the crate layering described in docs/architecture.md.
 //
-//   volt-desktop, volt-cli   composition roots: wire adapters into the core
+//   volt-desktop, volt-cli, volt-helper   composition roots: wire adapters into the core
 //        |          |
 //   volt-win    volt-store   adapters: implement the core's port traits
 //        \          /
@@ -31,6 +31,10 @@ const RULES = {
   'volt-desktop': {
     internal: ['volt-core', 'volt-win', 'volt-store'],
     banned: [],
+  },
+  'volt-helper': {
+    internal: ['volt-core', 'volt-win'],
+    banned: ['tauri', 'rusqlite'],
   },
   'volt-cli': {
     internal: ['volt-core', 'volt-win', 'volt-store'],

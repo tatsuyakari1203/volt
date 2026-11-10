@@ -16,6 +16,7 @@ license = "MIT"
 volt-core = { path = "crates/volt-core" }
 volt-store = { path = "crates/volt-store" }
 volt-win = { path = "crates/volt-win" }
+volt-helper = { path = "crates/volt-helper" }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 # Windows API bindings. Only volt-win may use it (scripts/check-arch.mjs); features are listed there.
@@ -27,6 +28,8 @@ log = { version = "0.4", features = ["std"] }
 toml = { version = "1.2", default-features = false, features = ["std", "serde", "parse"] }
 # SQLite is compiled in (`bundled`): no system library is needed.
 rusqlite = { version = "0.41", features = ["bundled"] }
+# SHA-256 of the catalogue texts, so the UI can tell that the helper holds the same catalogues.
+sha2 = "0.10"
 # Dev-only: temp directories for persistence tests.
 tempfile = "3"
 

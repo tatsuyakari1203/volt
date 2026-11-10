@@ -8,6 +8,7 @@ export default {
       [
         'core',
         'win',
+        'helper',
         'store',
         'desktop',
         'ui',

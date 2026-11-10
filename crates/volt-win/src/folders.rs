@@ -33,7 +33,7 @@ impl WinKnownFolders {
 }
 
 /// One shell known folder as a path.
-fn shell_folder(id: &GUID, name: &str) -> Result<PathBuf, PortError> {
+pub(crate) fn shell_folder(id: &GUID, name: &str) -> Result<PathBuf, PortError> {
     // SAFETY: `id` points to a valid known-folder GUID for the call, the flags
     // are the default and no access token is passed (the current user).
     let raw = unsafe { SHGetKnownFolderPath(id, KF_FLAG_DEFAULT, None) }

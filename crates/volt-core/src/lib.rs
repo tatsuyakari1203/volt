@@ -46,6 +46,10 @@
 //! needs and Volt itself (in the core, not only in the UI) and is recorded as an activity that
 //! cannot be undone.
 //!
+//! The elevated helper's wire protocol and the [`Elevator`] port live in the [`elevation`] module:
+//! a closed set of requests, bounded messages and strictly ordered ids, so the UI side can be built
+//! and tested without a helper.
+//!
 //! # Fakes
 //!
 //! In-memory fakes of every port live in the `fakes` module, compiled for this
@@ -57,6 +61,7 @@ pub mod activity;
 pub mod boost;
 pub mod clean;
 pub mod command;
+pub mod elevation;
 pub mod error;
 pub mod executor;
 pub mod health;
@@ -93,6 +98,12 @@ pub use clean::{
     ScanFailure, ScanObserver, SkipReason,
 };
 pub use command::{Command, CommandOutput, Commands, MAX_TIMEOUT_SECS};
+pub use elevation::{
+    AreaResult, AreaStatus, CatalogueHashes, ElevationError, Elevator, ErrorCode, HelloReply,
+    MAX_REPLY_BYTES, MAX_REQUEST_BYTES, MemoryPurgeReply, PROTOCOL_VERSION, Reply, ReplyBody,
+    Request, RequestEnvelope, RequestSequencer, catalogue_hash, decode_reply, decode_request,
+    encode_reply, encode_request,
+};
 pub use error::{ExecError, PlanError, PortError, RevertError};
 pub use executor::{
     ApplyReport, Executor, ItemOutcome, ItemStatus, ReconcileOutcome, ReconcileReport, Resolution,
