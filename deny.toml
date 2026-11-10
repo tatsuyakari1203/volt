@@ -7,6 +7,17 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
+# Unmaintained-crate notices (not vulnerabilities) for the unic-* family. They are pulled in only by
+# tauri-utils -> urlpattern 0.3.0 (URL pattern parsing in Tauri's own build/macro stack); no newer
+# urlpattern is available, so they cannot be removed from our side. Drop these entries once Tauri
+# moves to a urlpattern release without unic-*.
+ignore = [
+  "RUSTSEC-2025-0081", # unic-char-property
+  "RUSTSEC-2025-0075", # unic-char-range
+  "RUSTSEC-2025-0080", # unic-common
+  "RUSTSEC-2025-0100", # unic-ucd-ident
+  "RUSTSEC-2025-0098", # unic-ucd-version
+]
 
 [licenses]
 version = 2
