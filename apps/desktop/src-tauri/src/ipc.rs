@@ -252,6 +252,8 @@ pub fn bindings_builder() -> Builder<tauri::Wry> {
             crate::boost::boost,
             crate::boost::boost_config,
             crate::boost::set_boost_config,
+            crate::language::language_setting,
+            crate::language::set_language,
         ])
         .events(collect_events![
             AppReady,

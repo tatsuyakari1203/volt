@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { t, tn } from '../../shared/i18n';
 import { previewUndoBatch, type UndoPreview } from '../../shared/ipc';
 import { Button, Dialog } from '../../shared/ui';
 import { describeError } from './messages';
@@ -27,8 +28,7 @@ export interface BatchUndoDialogProps {
 }
 
 function confirmLabel(count: number): string {
-  if (count === 0) return 'Undo';
-  return count === 1 ? 'Undo 1 change' : `Undo ${count} changes`;
+  return count === 0 ? t('undo.batch.confirm.none') : tn('undo.batch.confirm', count);
 }
 
 /**
@@ -62,17 +62,13 @@ export function BatchUndoDialog({ target, onClose, onConfirm }: BatchUndoDialogP
     <Dialog
       open={target !== null}
       onClose={onClose}
-      title="Undo all of these changes?"
-      description={
-        target
-          ? `Volt will put back the values it saved before it changed "${target.title}".`
-          : undefined
-      }
+      title={t('undo.batch.title')}
+      description={target ? t('undo.batch.description', { title: target.title }) : undefined}
       initialFocusRef={cancelRef}
       footer={
         <>
           <Button ref={cancelRef} onClick={onClose}>
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button
             variant="primary"
@@ -86,26 +82,26 @@ export function BatchUndoDialog({ target, onClose, onConfirm }: BatchUndoDialogP
     >
       {preview.status === 'loading' ? (
         <p role="status" className="text-body text-muted">
-          Reading what will be restored...
+          {t('undo.batch.reading')}
         </p>
       ) : null}
       {preview.status === 'error' ? (
         <p role="alert" className="text-body text-muted">
-          Could not read what would be restored. {preview.message}
+          {t('undo.batch.readFailed', { message: preview.message })}
         </p>
       ) : null}
       {preview.status === 'ready' && items.length === 0 ? (
-        <p className="text-body text-muted">
-          Nothing is left to undo in this batch. It was already undone.
-        </p>
+        <p className="text-body text-muted">{t('undo.batch.nothingLeft')}</p>
       ) : null}
       <OverwriteWarning overwrites={overwrites} />
       {items.length > 0 ? (
-        <ul aria-label="What will be restored" className="max-h-60 space-y-2 overflow-y-auto">
+        <ul aria-label={t('undo.restore.label')} className="max-h-60 space-y-2 overflow-y-auto">
           {items.map((item) => (
             <li key={item.entry} className="text-body">
               <span className="block break-words font-semibold">{item.what}</span>
-              <span className="block text-muted">Will be {item.restore}.</span>
+              <span className="block text-muted">
+                {t('undo.restore.will', { restore: item.restore })}
+              </span>
             </li>
           ))}
         </ul>

@@ -6,6 +6,7 @@ import { ProcessesScreen } from '../features/processes/ProcessesScreen';
 import { StartupScreen } from '../features/startup/StartupScreen';
 import { TweaksScreen } from '../features/tweaks/TweaksScreen';
 import { UndoScreen } from '../features/undo/UndoScreen';
+import { t, useLanguage } from '../shared/i18n';
 import { type BoostResult, onBoostFinished } from '../shared/ipc';
 import { NavRail } from './NavRail';
 import { SettingsScreen } from './SettingsScreen';
@@ -44,6 +45,7 @@ function Screen({
 
 /** The app frame: a non-scrolling navigation rail beside a scrolling content area. */
 export function Shell() {
+  const { locale } = useLanguage();
   const [current, setCurrent] = useState<SectionId>(() => initialSection(window.location.search));
   const [trayReport, setTrayReport] = useState<BoostResult | null>(null);
   const mainRef = useRef<HTMLElement>(null);
@@ -84,11 +86,12 @@ export function Shell() {
       <main
         ref={mainRef}
         tabIndex={-1}
-        aria-label={allSections.find((section) => section.id === current)?.label}
+        aria-label={t(allSections.find((section) => section.id === current)?.label ?? 'nav.home')}
         className="min-w-0 flex-1 overflow-y-auto outline-none"
       >
         <div className="mx-auto w-full max-w-3xl px-gutter pt-4 pb-8 wide:px-6 wide:pt-6">
-          <Screen id={current} onNavigate={setCurrent} trayReport={trayReport} />
+          {/* A new key draws the page again in the new language. */}
+          <Screen key={locale} id={current} onNavigate={setCurrent} trayReport={trayReport} />
         </div>
       </main>
     </div>

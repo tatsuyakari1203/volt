@@ -43,6 +43,10 @@ jobs:
       - name: Privacy guarantee (offline, no telemetry)
         run: pnpm check:privacy
 
+      # Also part of `pnpm check`; run by name so a missing translation is easy to find.
+      - name: Every language is complete
+        run: pnpm check:i18n
+
       - name: Run all gates
         run: pnpm check
 

@@ -1,23 +1,24 @@
 import { Flame, ShieldCheck, TriangleAlert } from 'lucide-react';
 import type { ReactNode } from 'react';
+import { type MessageKey, t } from '../i18n';
 import { cx } from './cx';
 
 /** Risk level of a tweak. Mirrors `Risk` in volt-core. */
 export type RiskLevel = 'safe' | 'caution' | 'advanced';
 
-const risks: Record<RiskLevel, { label: string; icon: ReactNode; className: string }> = {
+const risks: Record<RiskLevel, { label: MessageKey; icon: ReactNode; className: string }> = {
   safe: {
-    label: 'Safe',
+    label: 'risk.safe',
     icon: <ShieldCheck aria-hidden size={12} />,
     className: 'bg-safe text-safe-fg',
   },
   caution: {
-    label: 'Caution',
+    label: 'risk.caution',
     icon: <TriangleAlert aria-hidden size={12} />,
     className: 'bg-caution text-caution-fg',
   },
   advanced: {
-    label: 'Advanced',
+    label: 'risk.advanced',
     icon: <Flame aria-hidden size={12} />,
     className: 'bg-advanced text-advanced-fg',
   },
@@ -41,7 +42,7 @@ export function Badge({ risk, children }: BadgeProps) {
       )}
     >
       {spec?.icon}
-      {children ?? spec?.label}
+      {children ?? (spec ? t(spec.label) : null)}
     </span>
   );
 }

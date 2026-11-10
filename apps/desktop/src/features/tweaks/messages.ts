@@ -1,13 +1,14 @@
-import {
-  type ApplyResult,
-  describeIpcError,
-  IpcCommandError,
-  IpcUnavailableError,
-  type RestartKind,
-  type RevertResult,
-  type TweakCategory,
-  type TweakInfo,
+import { type MessageKey, t, tx } from '../../shared/i18n';
+import type {
+  ApplyResult,
+  RestartKind,
+  RevertResult,
+  TweakCategory,
+  TweakInfo,
 } from '../../shared/ipc';
+import { describeError } from '../../shared/text/errors';
+
+export { describeError };
 
 /** What to tell the user about a finished action. */
 export interface Outcome {
@@ -19,15 +20,30 @@ export interface Outcome {
   undoable: boolean;
 }
 
-/** What the user still has to do before a tweak takes full effect. */
+/** The name of a tweak. The core writes it in English; other languages are filed under its id. */
+export function tweakTitle(tweak: TweakInfo): string {
+  return tx(`tweak.${tweak.id}.title`, tweak.title);
+}
+
+/** What a tweak does and why, in the current language. */
+export function tweakDescription(tweak: TweakInfo): string {
+  return tx(`tweak.${tweak.id}.description`, tweak.description);
+}
+
+/** Where the claim about a tweak's benefit comes from, in the current language. */
+export function tweakEvidence(tweak: TweakInfo): string {
+  return tx(`tweak.${tweak.id}.evidence`, tweak.evidenceNote);
+}
+
+/** What the user still has to do before a tweak takes full effect, with a space in front. */
 export function restartNote(restart: RestartKind): string {
   switch (restart) {
     case 'none':
       return '';
     case 'signOut':
-      return ' Sign out and back in to finish.';
+      return ` ${t('tweaks.restart.signOut')}`;
     case 'reboot':
-      return ' Restart your PC to finish.';
+      return ` ${t('tweaks.restart.reboot')}`;
     default:
       return assertNever(restart);
   }
@@ -37,34 +53,32 @@ function assertNever(value: never): never {
   throw new Error(`Unhandled value: ${JSON.stringify(value)}`);
 }
 
+/** The reason a step failed, as the end of a sentence, with a space in front. */
 function reason(detail: string | null): string {
-  return detail ? ` Reason: ${detail}.` : '';
+  return detail ? ` ${t('tweaks.reason', { detail })}` : '';
 }
 
 /** Explains how an apply ended, in words a person can act on. */
 export function describeApply(tweak: TweakInfo, result: ApplyResult): Outcome {
+  const title = tweakTitle(tweak);
   switch (result.status) {
     case 'applied':
       return {
-        message: `"${tweak.title}" is on.${restartNote(tweak.restart)}`,
+        message: t('tweaks.apply.applied', { title, restart: restartNote(tweak.restart) }),
         tone: 'done',
         undoable: true,
       };
     case 'alreadyApplied':
-      return {
-        message: `"${tweak.title}" was already on. Nothing was changed.`,
-        tone: 'done',
-        undoable: false,
-      };
+      return { message: t('tweaks.apply.alreadyOn', { title }), tone: 'done', undoable: false };
     case 'rolledBack':
       return {
-        message: `Could not turn on "${tweak.title}". Volt put everything back as it was.${reason(result.detail)}`,
+        message: t('tweaks.apply.rolledBack', { title, reason: reason(result.detail) }),
         tone: 'problem',
         undoable: false,
       };
     case 'needsAttention':
       return {
-        message: `"${tweak.title}" may be only partly on, and Volt could not confirm that everything was put back.${reason(result.detail)} Use Undo on this tweak to restore your earlier setting.`,
+        message: t('tweaks.apply.needsAttention', { title, reason: reason(result.detail) }),
         tone: 'problem',
         undoable: false,
       };
@@ -79,27 +93,27 @@ export function describeRevert(
   result: RevertResult,
   afterUndo: boolean,
 ): Outcome {
+  const title = tweakTitle(tweak);
   switch (result.status) {
     case 'reverted':
       return {
-        message: afterUndo
-          ? `Undone. "${tweak.title}" is back to how it was.`
-          : `"${tweak.title}" is off again.`,
+        message: t(afterUndo ? 'tweaks.revert.undone' : 'tweaks.revert.off', { title }),
         tone: 'done',
         undoable: false,
       };
     case 'incomplete':
       return {
-        message: `Only part of "${tweak.title}" could be undone (${result.restored} restored, ${result.failed} not).${reason(result.detail)} You can try again.`,
+        message: t('tweaks.revert.incomplete', {
+          title,
+          restored: result.restored,
+          failed: result.failed,
+          reason: reason(result.detail),
+        }),
         tone: 'problem',
         undoable: false,
       };
     case 'nothingToRevert':
-      return {
-        message: `Volt has nothing to undo for "${tweak.title}". Volt did not turn it on, so it has no saved earlier setting to restore. You can change it in Windows yourself.`,
-        tone: 'problem',
-        undoable: false,
-      };
+      return { message: t('tweaks.revert.nothing', { title }), tone: 'problem', undoable: false };
     default:
       return assertNever(result.status);
   }
@@ -111,19 +125,10 @@ export function describeFailure(
   tweak: TweakInfo,
   error: unknown,
 ): string {
-  const what = action === 'turn on' ? `turn on "${tweak.title}"` : `undo "${tweak.title}"`;
-  return `Could not ${what}. ${describeError(error)}`;
-}
-
-/** One sentence for any error that reached the UI. */
-export function describeError(error: unknown): string {
-  if (error instanceof IpcUnavailableError) {
-    return 'This is only available inside the Volt app.';
-  }
-  if (error instanceof IpcCommandError) {
-    return describeIpcError(error.error);
-  }
-  return error instanceof Error ? error.message : String(error);
+  return t(action === 'turn on' ? 'tweaks.fail.turnOn' : 'tweaks.fail.undo', {
+    title: tweakTitle(tweak),
+    error: describeError(error),
+  });
 }
 
 /** Every category, in the order the screen lists them. */
@@ -138,41 +143,30 @@ export const CATEGORY_ORDER: readonly TweakCategory[] = [
   'debloat',
 ];
 
+const CATEGORY_KEYS: Record<TweakCategory, MessageKey> = {
+  appearance: 'tweaks.category.appearance',
+  performance: 'tweaks.category.performance',
+  gaming: 'tweaks.category.gaming',
+  privacy: 'tweaks.category.privacy',
+  network: 'tweaks.category.network',
+  windowsUpdate: 'tweaks.category.windowsUpdate',
+  security: 'tweaks.category.security',
+  debloat: 'tweaks.category.debloat',
+};
+
 /** Display name of a category. */
 export function categoryLabel(category: TweakCategory): string {
-  switch (category) {
-    case 'appearance':
-      return 'Appearance';
-    case 'performance':
-      return 'Performance';
-    case 'gaming':
-      return 'Gaming';
-    case 'privacy':
-      return 'Privacy';
-    case 'network':
-      return 'Network';
-    case 'windowsUpdate':
-      return 'Windows Update';
-    case 'security':
-      return 'Security';
-    case 'debloat':
-      return 'Debloat';
-    default:
-      return assertNever(category);
-  }
+  return t(CATEGORY_KEYS[category]);
 }
 
 /** Explains how turning off a tweak that Volt did not apply ended. */
 export function describeReset(tweak: TweakInfo, result: RevertResult): Outcome {
+  const title = tweakTitle(tweak);
   if (result.status === 'reverted') {
-    return {
-      message: `"${tweak.title}" is off. Volt put it back to the Windows default. You can undo this on the Undo page.`,
-      tone: 'done',
-      undoable: false,
-    };
+    return { message: t('tweaks.reset.off', { title }), tone: 'done', undoable: false };
   }
   return {
-    message: `Could not fully turn off "${tweak.title}".${reason(result.detail)} Check the setting in Windows.`,
+    message: t('tweaks.reset.failed', { title, reason: reason(result.detail) }),
     tone: 'problem',
     undoable: false,
   };

@@ -1,12 +1,14 @@
-import {
-  type ActivitySource,
-  type ActivityStatus,
-  describeIpcError,
-  type ExportResult,
-  IpcCommandError,
-  IpcUnavailableError,
-  type UndoResult,
+import { getLocale, localeTag, t, tn, tx } from '../../shared/i18n';
+import type {
+  ActivityItem,
+  ActivitySource,
+  ActivityStatus,
+  ExportResult,
+  UndoResult,
 } from '../../shared/ipc';
+import { describeError } from '../../shared/text/errors';
+
+export { describeError };
 
 /** A message to show the user after an action, with optional detail lines. */
 export interface Notice {
@@ -19,45 +21,77 @@ export interface Notice {
 }
 
 /** Heading of a row, naming how the recorded event ended. */
-export const statusLabels: Record<ActivityStatus, string> = {
-  applied: 'Applied',
-  reverted: 'Undone',
-  failed: 'Failed',
-  rolledBack: 'Rolled back',
-  other: 'Other',
-};
+export function statusLabel(status: ActivityStatus): string {
+  switch (status) {
+    case 'applied':
+      return t('undo.status.applied');
+    case 'reverted':
+      return t('undo.status.reverted');
+    case 'failed':
+      return t('undo.status.failed');
+    case 'rolledBack':
+      return t('undo.status.rolledBack');
+    case 'other':
+      return t('undo.status.other');
+    default:
+      return assertNever(status);
+  }
+}
 
 /** Who started a change, in words. */
-export const sourceLabels: Record<ActivitySource, string> = {
-  manual: 'You',
-  automation: 'Automation',
-  other: 'Unknown source',
-};
+export function sourceLabel(source: ActivitySource): string {
+  switch (source) {
+    case 'manual':
+      return t('undo.source.manual');
+    case 'automation':
+      return t('undo.source.automation');
+    case 'other':
+      return t('undo.source.other');
+    default:
+      return assertNever(source);
+  }
+}
+
+/**
+ * What a record is about, named by its label. The core writes the name in English: a tweak by its
+ * title, the rest by a fixed name. Another language is looked up by the label, which is stable.
+ */
+export function activityTitle(item: ActivityItem): string | null {
+  const { label, title } = item;
+  if (title === null || label === null || getLocale() === 'en') return title;
+  switch (label) {
+    case 'startup':
+      return t('undo.title.startup');
+    case 'memory.clean':
+      return t('undo.title.memory');
+    case 'process.end':
+      return t('undo.title.endedApps');
+    case 'recycle-bin':
+      return t('clean.bin.title');
+    default:
+      break;
+  }
+  if (label.endsWith(':reset')) {
+    const id = label.slice(0, -':reset'.length);
+    const english = title.replace(/ \(set to the Windows default\)$/, '');
+    return t('undo.title.reset', { title: tx(`tweak.${id}.title`, english) });
+  }
+  const tweak = tx(`tweak.${label}.title`, '');
+  if (tweak) return tweak;
+  const rule = tx(`rule.${label}.title`, '');
+  if (rule) return t('undo.title.cleaning', { title: rule });
+  return title;
+}
 
 /** The time as the user's locale writes it; the raw ISO text when it cannot be parsed. */
 export function formatTime(iso: string): string {
   const date = new Date(iso);
-  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString();
-}
-
-/** One sentence for any error that reached the UI. */
-export function describeError(error: unknown): string {
-  if (error instanceof IpcUnavailableError) {
-    return 'This is only available inside the Volt app.';
-  }
-  if (error instanceof IpcCommandError) {
-    return describeIpcError(error.error);
-  }
-  return error instanceof Error ? error.message : String(error);
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString(localeTag());
 }
 
 /** Ends a sentence that may or may not already end with a full stop. */
 function sentence(text: string): string {
   return /[.!?]$/.test(text) ? text : `${text}.`;
-}
-
-function count(n: number, one: string, many: string): string {
-  return `${n} ${n === 1 ? one : many}`;
 }
 
 /** Explains how an undo ended. `scope` says whether one change or a whole batch was asked for. */
@@ -68,34 +102,23 @@ export function describeUndo(result: UndoResult, scope: 'change' | 'batch'): Not
       return {
         tone: 'done',
         message:
-          scope === 'change'
-            ? 'Undone. The earlier value is back.'
-            : `Undone. ${count(result.restored, 'change is', 'changes are')} back to how ${
-                result.restored === 1 ? 'it was' : 'they were'
-              }.`,
+          scope === 'change' ? t('undo.done.change') : tn('undo.done.batch', result.restored),
         details,
       };
     case 'partial':
       return {
         tone: 'problem',
-        message: `Only part of it was undone: ${result.restored} restored, ${result.failed} not. What failed is still in place, and you can try again.`,
+        message: t('undo.partial', { restored: result.restored, failed: result.failed }),
         details,
       };
     case 'failed':
       return {
         tone: 'problem',
-        message:
-          scope === 'change'
-            ? 'Could not undo this change. It is still in place, and you can try again.'
-            : 'Nothing could be undone. The changes are still in place, and you can try again.',
+        message: t(scope === 'change' ? 'undo.failed.change' : 'undo.failed.batch'),
         details,
       };
     case 'nothingToUndo':
-      return {
-        tone: 'info',
-        message: 'Nothing to undo here. It was already undone, or Volt did not change it.',
-        details,
-      };
+      return { tone: 'info', message: t('undo.nothing'), details };
     default:
       return assertNever(result.status);
   }
@@ -105,7 +128,7 @@ export function describeUndo(result: UndoResult, scope: 'change' | 'batch'): Not
 export function describeUndoFailure(error: unknown): Notice {
   return {
     tone: 'problem',
-    message: `Could not undo. ${sentence(describeError(error))}`,
+    message: t('undo.failed.command', { error: sentence(describeError(error)) }),
     details: [],
   };
 }
@@ -116,7 +139,10 @@ export function describeSaved(result: ExportResult): Notice | null {
     case 'saved':
       return {
         tone: 'done',
-        message: `Saved ${count(result.records, 'record', 'records')} to ${result.path}.`,
+        message: t('undo.saved', {
+          records: tn('count.record', result.records),
+          path: result.path,
+        }),
         details: [],
       };
     case 'cancelled':
@@ -130,7 +156,7 @@ export function describeSaved(result: ExportResult): Notice | null {
 export function describeSaveFailure(error: unknown): Notice {
   return {
     tone: 'problem',
-    message: `Could not save the file. ${sentence(describeError(error))} You can copy the text instead.`,
+    message: t('undo.saveFailed', { error: sentence(describeError(error)) }),
     details: [],
   };
 }
@@ -139,7 +165,7 @@ export function describeSaveFailure(error: unknown): Notice {
 export function describeClearFailure(error: unknown): Notice {
   return {
     tone: 'problem',
-    message: `Could not clear the history. ${sentence(describeError(error))}`,
+    message: t('undo.clearFailed', { error: sentence(describeError(error)) }),
     details: [],
   };
 }
@@ -150,8 +176,8 @@ export function describeCleared(removed: number): Notice {
     tone: 'done',
     message:
       removed === 0
-        ? 'Nothing to clear: every record belongs to a change that can still be undone.'
-        : `Cleared ${count(removed, 'record', 'records')}. Changes that can be undone stay in the list.`,
+        ? t('undo.cleared.none')
+        : t('undo.cleared.some', { records: tn('count.record', removed) }),
     details: [],
   };
 }
@@ -160,7 +186,7 @@ export function describeCleared(removed: number): Notice {
 export function describeCopied(records: number): Notice {
   return {
     tone: 'done',
-    message: `Copied ${count(records, 'record', 'records')} to the clipboard.`,
+    message: t('undo.copied', { records: tn('count.record', records) }),
     details: [],
   };
 }
@@ -169,7 +195,7 @@ export function describeCopied(records: number): Notice {
 export function describeCopyFailure(error: unknown): Notice {
   return {
     tone: 'problem',
-    message: `Could not copy the text. ${sentence(describeError(error))} You can save it as a file instead.`,
+    message: t('undo.copyFailed', { error: sentence(describeError(error)) }),
     details: [],
   };
 }

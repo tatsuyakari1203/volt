@@ -1,4 +1,5 @@
 import { Cpu, HardDrive, type LucideIcon, MemoryStick, Monitor, TriangleAlert } from 'lucide-react';
+import { t } from '../../shared/i18n';
 import { Button, Card, cx } from '../../shared/ui';
 import { buildCards, type MetricCardId } from './cards';
 import type { MetricsState } from './hooks';
@@ -10,12 +11,15 @@ const icons: Record<MetricCardId, LucideIcon> = {
   disk: HardDrive,
 };
 
-const placeholders: ReadonlyArray<{ id: MetricCardId; label: string }> = [
-  { id: 'cpu', label: 'CPU' },
-  { id: 'memory', label: 'Memory' },
-  { id: 'gpu', label: 'GPU' },
-  { id: 'disk', label: 'Disk space' },
-];
+/** The cards before the first reading arrives, in the order they are shown. */
+function placeholders(): ReadonlyArray<{ id: MetricCardId; label: string }> {
+  return [
+    { id: 'cpu', label: t('home.card.cpu') },
+    { id: 'memory', label: t('home.card.memory') },
+    { id: 'gpu', label: t('home.card.gpu') },
+    { id: 'disk', label: t('home.card.disk') },
+  ];
+}
 
 function CardFrame({
   id,
@@ -69,27 +73,30 @@ export function MetricCards({
 }) {
   if (state.status === 'error') {
     return (
-      <section aria-label="Live metrics">
+      <section aria-label={t('home.metrics.label')}>
         <Card role="alert" className="flex flex-col items-center gap-3 py-8 text-center">
           <TriangleAlert aria-hidden size={24} className="text-muted" />
-          <p className="font-semibold">Live numbers are not available</p>
+          <p className="font-semibold">{t('home.metrics.unavailable')}</p>
           <p className="max-w-xs text-body text-muted">{state.message}</p>
-          <Button onClick={onRetry}>Try again</Button>
+          <Button onClick={onRetry}>{t('common.tryAgain')}</Button>
         </Card>
       </section>
     );
   }
 
   return (
-    <section aria-label="Live metrics" className="grid grid-cols-2 gap-3 wide:grid-cols-4">
+    <section
+      aria-label={t('home.metrics.label')}
+      className="grid grid-cols-2 gap-3 wide:grid-cols-4"
+    >
       {state.status === 'loading'
-        ? placeholders.map(({ id, label }) => (
+        ? placeholders().map(({ id, label }) => (
             <CardFrame
               key={id}
               id={id}
               label={label}
               value="—"
-              lines={['Waiting for the first reading']}
+              lines={[t('home.metrics.waiting')]}
               empty
               busy
             />

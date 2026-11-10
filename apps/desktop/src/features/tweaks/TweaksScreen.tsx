@@ -1,5 +1,6 @@
 import { Loader2, SearchX, SlidersHorizontal, TriangleAlert } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { t, tn } from '../../shared/i18n';
 import {
   applyTweak,
   getTweakPlan,
@@ -30,6 +31,8 @@ import {
   describeReset,
   describeRevert,
   type Outcome,
+  tweakDescription,
+  tweakTitle,
 } from './messages';
 import { type Busy, type PlanLoad, StepList, TweakRow } from './TweakRow';
 
@@ -149,7 +152,7 @@ export function TweaksScreen() {
     toast.show({
       message: outcome.message,
       ...(outcome.undoable
-        ? { actionLabel: 'Undo', onAction: () => void revert(tweak, true) }
+        ? { actionLabel: t('common.undo'), onAction: () => void revert(tweak, true) }
         : {}),
     });
   };
@@ -268,7 +271,9 @@ export function TweaksScreen() {
       (tweak) =>
         (activeCategory === 'all' || tweak.category === activeCategory) &&
         (!needle ||
-          `${tweak.title} ${tweak.description} ${tweak.risk}`.toLowerCase().includes(needle)),
+          `${tweakTitle(tweak)} ${tweakDescription(tweak)} ${tweak.risk}`
+            .toLowerCase()
+            .includes(needle)),
     );
   }, [inMode, query, activeCategory]);
   const groups = CATEGORY_ORDER.map((name) => ({
@@ -279,16 +284,17 @@ export function TweaksScreen() {
 
   const confirmTitle =
     confirming?.kind === 'reset'
-      ? 'Turn this off?'
-      : `Turn on ${confirming?.tweak.risk === 'caution' ? 'a Caution' : 'an Advanced'} tweak?`;
+      ? t('tweaks.confirm.titleOff')
+      : t(
+          confirming?.tweak.risk === 'caution'
+            ? 'tweaks.confirm.titleCaution'
+            : 'tweaks.confirm.titleAdvanced',
+        );
   const closeConfirm = () => setConfirming(null);
 
   return (
     <>
-      <PageHeader
-        title="Tweaks"
-        description="Volt records the old setting before each change, so you can undo it."
-      />
+      <PageHeader title={t('nav.tweaks')} description={t('tweaks.description')} />
       <div className="flex flex-col gap-3">
         {notice ? (
           <div
@@ -302,7 +308,7 @@ export function TweaksScreen() {
               className="shrink-0 rounded-sm px-2 py-1 font-semibold underline hover:no-underline"
               onClick={() => setNotice(null)}
             >
-              Dismiss
+              {t('common.dismiss')}
             </button>
           </div>
         ) : null}
@@ -310,24 +316,24 @@ export function TweaksScreen() {
         {load.status === 'loading' ? (
           <Card role="status" className="flex items-center justify-center gap-2 py-10 text-muted">
             <Loader2 aria-hidden size={18} className="animate-spin motion-reduce:animate-none" />
-            <p>Reading your settings...</p>
+            <p>{t('tweaks.loading')}</p>
           </Card>
         ) : null}
 
         {load.status === 'error' ? (
           <Card role="alert" className="flex flex-col items-center gap-3 py-10 text-center">
             <TriangleAlert aria-hidden size={24} className="text-muted" />
-            <p className="font-semibold">Tweaks could not be loaded</p>
+            <p className="font-semibold">{t('tweaks.error')}</p>
             <p className="max-w-xs text-body text-muted">{load.message}</p>
-            <Button onClick={read}>Try again</Button>
+            <Button onClick={read}>{t('common.tryAgain')}</Button>
           </Card>
         ) : null}
 
         {load.status === 'ready' && tweaks.length === 0 ? (
           <Card className="flex flex-col items-center gap-2 py-10 text-center">
             <SlidersHorizontal aria-hidden size={24} className="text-muted" />
-            <p className="font-semibold">No tweaks yet</p>
-            <p className="text-body text-muted">This version of Volt has no tweaks to offer.</p>
+            <p className="font-semibold">{t('tweaks.none.title')}</p>
+            <p className="text-body text-muted">{t('tweaks.none.description')}</p>
           </Card>
         ) : null}
 
@@ -335,26 +341,26 @@ export function TweaksScreen() {
           <>
             <div className="flex flex-col gap-2">
               <SegmentedControl<Mode>
-                label="Mode"
+                label={t('tweaks.mode.label')}
                 options={[
-                  { value: 'simple', label: 'Simple' },
-                  { value: 'advanced', label: 'Advanced' },
+                  { value: 'simple', label: t('tweaks.mode.simple') },
+                  { value: 'advanced', label: t('tweaks.mode.advanced') },
                 ]}
                 value={mode}
                 onValueChange={changeMode}
               />
               <SearchField
-                label="Search tweaks"
-                placeholder="Search tweaks"
+                label={t('tweaks.search')}
+                placeholder={t('tweaks.search')}
                 value={query}
                 onValueChange={setQuery}
               />
               {categories.length > 1 ? (
                 <div className="overflow-x-auto">
                   <SegmentedControl<CategoryFilter>
-                    label="Category"
+                    label={t('tweaks.category.label')}
                     options={[
-                      { value: 'all', label: 'All' },
+                      { value: 'all', label: t('tweaks.category.all') },
                       ...categories.map((name) => ({ value: name, label: categoryLabel(name) })),
                     ]}
                     value={activeCategory}
@@ -369,7 +375,9 @@ export function TweaksScreen() {
                   <h2 className="mb-1.5 px-1 text-caption font-semibold tracking-wide text-muted uppercase">
                     {categoryLabel(group.name)}
                   </h2>
-                  <ListGroup aria-label={`${categoryLabel(group.name)} tweaks`}>
+                  <ListGroup
+                    aria-label={t('tweaks.group.label', { category: categoryLabel(group.name) })}
+                  >
                     {group.items.map((tweak) => (
                       <TweakRow
                         key={tweak.id}
@@ -388,15 +396,14 @@ export function TweaksScreen() {
             ) : (
               <Card className="flex flex-col items-center gap-2 py-10 text-center">
                 <SearchX aria-hidden size={24} className="text-muted" />
-                <p className="font-semibold">No tweaks match "{query.trim()}"</p>
-                <p className="text-body text-muted">Try a different word or category.</p>
+                <p className="font-semibold">
+                  {t('tweaks.noMatch.title', { query: query.trim() })}
+                </p>
+                <p className="text-body text-muted">{t('tweaks.noMatch.hint')}</p>
               </Card>
             )}
             {!detailed && hidden > 0 ? (
-              <p className="px-1 text-caption text-muted">
-                {hidden} more {hidden === 1 ? 'tweak is' : 'tweaks are'} in Advanced mode: they
-                carry more risk or need administrator rights.
-              </p>
+              <p className="px-1 text-caption text-muted">{tn('tweaks.hidden', hidden)}</p>
             ) : null}
           </>
         ) : null}
@@ -407,16 +414,16 @@ export function TweaksScreen() {
         title={confirmTitle}
         description={
           confirming?.kind === 'reset'
-            ? `"${confirming.tweak.title}" is on, but Volt did not turn it on, so it has no earlier value to restore.`
+            ? t('tweaks.confirm.descriptionOff', { title: tweakTitle(confirming.tweak) })
             : confirming
-              ? `"${confirming.tweak.title}" can change how Windows behaves. Volt records the old value so you can undo it.`
+              ? t('tweaks.confirm.descriptionOn', { title: tweakTitle(confirming.tweak) })
               : undefined
         }
         initialFocusRef={cancelRef}
         footer={
           <>
             <Button ref={cancelRef} onClick={closeConfirm}>
-              Cancel
+              {t('common.cancel')}
             </Button>
             <Button
               variant="primary"
@@ -431,13 +438,15 @@ export function TweaksScreen() {
                 void (current.kind === 'reset' ? reset(current.tweak) : apply(current.tweak));
               }}
             >
-              {confirming?.kind === 'reset' ? 'Turn off' : 'Turn on'}
+              {confirming?.kind === 'reset'
+                ? t('tweaks.confirm.turnOff')
+                : t('tweaks.confirm.turnOn')}
             </Button>
           </>
         }
       >
         {confirming?.plan.status === 'loading' ? (
-          <p className="text-body text-muted">Reading what it changes...</p>
+          <p className="text-body text-muted">{t('tweaks.confirm.reading')}</p>
         ) : null}
         {confirming?.plan.status === 'error' ? (
           <p className="text-body text-muted">{confirming.plan.message}</p>
@@ -446,26 +455,23 @@ export function TweaksScreen() {
           <div className="max-h-64 overflow-y-auto text-body">
             {confirming.kind === 'apply' ? (
               <>
-                <p className="font-semibold">It will change</p>
+                <p className="font-semibold">{t('tweaks.confirm.willChange')}</p>
                 <StepList
-                  label="Changes"
+                  label={t('tweaks.confirm.changesLabel')}
                   steps={confirming.plan.plan.steps.filter((step) => !step.atTarget)}
                 />
               </>
             ) : confirming.plan.plan.reset ? (
               <>
-                <p className="font-semibold">Volt will write instead</p>
-                <p className="text-caption text-muted">
-                  It puts these back to the Windows default: a value is written back or removed and
-                  a key is deleted. The Undo page can bring them back.
-                </p>
-                <StepList label="Changes" steps={confirming.plan.plan.reset} />
+                <p className="font-semibold">{t('tweaks.confirm.willWrite')}</p>
+                <p className="text-caption text-muted">{t('tweaks.confirm.resetNote')}</p>
+                <StepList
+                  label={t('tweaks.confirm.changesLabel')}
+                  steps={confirming.plan.plan.reset}
+                />
               </>
             ) : (
-              <p className="text-muted">
-                Volt cannot switch this off safely: it has no earlier value and does not know the
-                Windows default. Change it in Windows yourself.
-              </p>
+              <p className="text-muted">{t('tweaks.confirm.cannotReset')}</p>
             )}
           </div>
         ) : null}

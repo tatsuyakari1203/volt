@@ -1,8 +1,8 @@
 import { Loader2, TriangleAlert } from 'lucide-react';
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { t, tn } from '../../shared/i18n';
 import { endApp, type ProcessGroupView } from '../../shared/ipc';
 import { describeError } from '../../shared/text/memory';
-import { countOf } from '../../shared/text/size';
 import {
   Button,
   Card,
@@ -17,10 +17,12 @@ import { ProcessRow } from './ProcessRow';
 import { endSummary, type SortKey, visibleGroups } from './processes';
 import { useProcessList } from './useProcessList';
 
-const sortOptions = [
-  { value: 'memory', label: 'Memory' },
-  { value: 'cpu', label: 'CPU' },
-] as const;
+function sortOptions() {
+  return [
+    { value: 'memory', label: t('processes.sort.memory') },
+    { value: 'cpu', label: t('processes.sort.cpu') },
+  ] as const;
+}
 
 function Notice({ message, onDismiss }: { message: string; onDismiss?: () => void }) {
   return (
@@ -36,7 +38,7 @@ function Notice({ message, onDismiss }: { message: string; onDismiss?: () => voi
           className="shrink-0 rounded-sm px-2 py-1 font-semibold underline hover:no-underline"
           onClick={onDismiss}
         >
-          Dismiss
+          {t('common.dismiss')}
         </button>
       ) : null}
     </div>
@@ -100,29 +102,26 @@ export function ProcessesScreen() {
   const total = groups?.length ?? 0;
   return (
     <>
-      <PageHeader
-        title="Processes"
-        description="What is using memory and CPU right now, grouped by app. Updates about every two seconds."
-      />
+      <PageHeader title={t('nav.processes')} description={t('processes.description')} />
       <div className="flex flex-col gap-3">
         {notice ? <Notice message={notice} onDismiss={() => setNotice(null)} /> : null}
         {load.status === 'ready' && load.problem ? (
-          <Notice message={`The list could not be updated: ${load.problem}`} />
+          <Notice message={t('processes.updateFailed', { problem: load.problem })} />
         ) : null}
 
         {load.status === 'loading' ? (
           <Card role="status" className="flex items-center justify-center gap-2 py-10 text-muted">
             <Loader2 aria-hidden size={18} className="animate-spin motion-reduce:animate-none" />
-            <p>Reading processes...</p>
+            <p>{t('processes.reading')}</p>
           </Card>
         ) : null}
 
         {load.status === 'error' ? (
           <Card role="alert" className="flex flex-col items-center gap-3 py-10 text-center">
             <TriangleAlert aria-hidden size={24} className="text-muted" />
-            <p className="font-semibold">Processes could not be read</p>
+            <p className="font-semibold">{t('processes.error')}</p>
             <p className="max-w-xs text-body text-muted">{load.message}</p>
-            <Button onClick={refresh}>Try again</Button>
+            <Button onClick={refresh}>{t('common.tryAgain')}</Button>
           </Card>
         ) : null}
 
@@ -130,23 +129,29 @@ export function ProcessesScreen() {
           <>
             <div className="flex flex-wrap items-center gap-3">
               <SearchField
-                label="Search processes"
-                placeholder="Search by name"
+                label={t('processes.search.label')}
+                placeholder={t('processes.search.placeholder')}
                 value={query}
                 onValueChange={setQuery}
                 className="min-w-40 flex-1"
               />
               <SegmentedControl
-                label="Sort by"
-                options={sortOptions}
+                label={t('processes.sort.label')}
+                options={sortOptions()}
                 value={sort}
                 onValueChange={setSort}
               />
             </div>
             <p className="text-caption text-muted" aria-live="off">
               {searched.trim()
-                ? `${shown.length} of ${countOf(total, 'app')} match`
-                : `${countOf(total, 'app')}, ${countOf(load.list.processCount, 'process', 'processes')}`}
+                ? t('processes.summary.match', {
+                    shown: shown.length,
+                    apps: tn('count.app', total),
+                  })
+                : t('processes.summary.all', {
+                    apps: tn('count.app', total),
+                    processes: tn('count.process', load.list.processCount),
+                  })}
             </p>
 
             {shown.length > 0 ? (
@@ -155,12 +160,12 @@ export function ProcessesScreen() {
                   aria-hidden
                   className="flex items-center gap-3 px-4 pb-1 text-caption font-semibold text-muted"
                 >
-                  <span className="flex-1">App</span>
-                  <span className="w-16 text-right">Memory</span>
-                  <span className="w-12 text-right">CPU</span>
+                  <span className="flex-1">{t('processes.column.app')}</span>
+                  <span className="w-16 text-right">{t('processes.column.memory')}</span>
+                  <span className="w-12 text-right">{t('processes.column.cpu')}</span>
                   <span className="w-20" />
                 </div>
-                <ListGroup aria-label="Apps">
+                <ListGroup aria-label={t('processes.list.label')}>
                   {shown.map((group) => (
                     <ProcessRow key={group.id} group={group} onEnd={askToEnd} />
                   ))}
@@ -168,13 +173,12 @@ export function ProcessesScreen() {
               </div>
             ) : (
               <Card role="status" className="py-8 text-center text-body text-muted">
-                {searched.trim() ? `No app matches "${searched.trim()}".` : 'No processes found.'}
+                {searched.trim()
+                  ? t('processes.empty.noMatch', { query: searched.trim() })
+                  : t('processes.empty.none')}
               </Card>
             )}
-            <p className="text-caption text-muted">
-              Memory is the private working set, the figure Task Manager shows. CPU is the share of
-              all processors used since the last update. GPU use per app is not shown.
-            </p>
+            <p className="text-caption text-muted">{t('processes.footnote')}</p>
           </>
         ) : null}
       </div>

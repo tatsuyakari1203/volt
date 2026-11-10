@@ -1,5 +1,6 @@
 import { ClipboardCopy, Download, History, Loader2, Trash2, TriangleAlert } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { t, tn } from '../../shared/i18n';
 import {
   type ActivityItem,
   clearHistory,
@@ -44,9 +45,7 @@ type Load =
   | { status: 'ready'; items: ActivityItem[]; nextCursor: string | null };
 
 function describeLoadError(error: unknown): string {
-  return error instanceof IpcUnavailableError
-    ? 'The history is only available inside the Volt app.'
-    : describeError(error);
+  return error instanceof IpcUnavailableError ? t('undo.loadOutsideApp') : describeError(error);
 }
 
 /**
@@ -131,7 +130,7 @@ export function UndoScreen() {
       if (alive.current) {
         setNotice({
           tone: 'problem',
-          message: `The list could not be refreshed. ${describeError(error)}`,
+          message: t('undo.refreshFailed', { error: describeError(error) }),
           details: [],
         });
       }
@@ -195,7 +194,7 @@ export function UndoScreen() {
         setBusy(null);
         setNotice({
           tone: 'problem',
-          message: `Could not check what this undo would change. ${describeError(error)}`,
+          message: t('undo.previewFailed', { error: describeError(error) }),
           details: [],
         });
       }
@@ -267,10 +266,7 @@ export function UndoScreen() {
 
   return (
     <>
-      <PageHeader
-        title="Undo"
-        description="Every change Volt made, newest first. Undo one change, or all the changes made together."
-      />
+      <PageHeader title={t('nav.undo')} description={t('undo.description')} />
       <div className="flex flex-col gap-3">
         {incomplete ? <IncompleteNotice /> : null}
         {notice ? <NoticeBar notice={notice} onDismiss={() => setNotice(null)} /> : null}
@@ -278,8 +274,9 @@ export function UndoScreen() {
         {hasRecords ? (
           <div className="flex items-center justify-between gap-2">
             <p className="text-caption text-muted">
-              {items.length === 1 ? '1 record' : `${items.length} records`}
-              {nextCursor ? ' shown' : ''}
+              {nextCursor
+                ? t('undo.records.shown', { records: tn('count.record', items.length) })
+                : tn('count.record', items.length)}
             </p>
             <div className="flex gap-2">
               <Button
@@ -289,7 +286,7 @@ export function UndoScreen() {
                 disabled={exporting === 'copy'}
                 onClick={() => void save()}
               >
-                Export
+                {t('undo.export')}
               </Button>
               <Button
                 size="sm"
@@ -298,7 +295,7 @@ export function UndoScreen() {
                 disabled={exporting === 'save'}
                 onClick={() => void copy()}
               >
-                Copy
+                {t('undo.copy')}
               </Button>
               <Button
                 size="sm"
@@ -306,7 +303,7 @@ export function UndoScreen() {
                 disabled={exporting !== null}
                 onClick={() => setClearing('asking')}
               >
-                Clear
+                {t('undo.clear')}
               </Button>
             </div>
           </div>
@@ -315,27 +312,24 @@ export function UndoScreen() {
         {load.status === 'loading' ? (
           <Card role="status" className="flex items-center justify-center gap-2 py-10 text-muted">
             <Loader2 aria-hidden size={18} className="animate-spin motion-reduce:animate-none" />
-            <p>Reading the history...</p>
+            <p>{t('undo.loading')}</p>
           </Card>
         ) : null}
 
         {load.status === 'error' ? (
           <Card role="alert" className="flex flex-col items-center gap-3 py-10 text-center">
             <TriangleAlert aria-hidden size={24} className="text-muted" />
-            <p className="font-semibold">The history could not be loaded</p>
+            <p className="font-semibold">{t('undo.error')}</p>
             <p className="max-w-xs text-body text-muted">{load.message}</p>
-            <Button onClick={read}>Try again</Button>
+            <Button onClick={read}>{t('common.tryAgain')}</Button>
           </Card>
         ) : null}
 
         {load.status === 'ready' && !hasRecords ? (
           <Card className="flex flex-col items-center gap-2 py-10 text-center">
             <History aria-hidden size={24} className="text-muted" />
-            <p className="font-semibold">Nothing yet</p>
-            <p className="max-w-xs text-body text-muted">
-              When Volt changes something, it is listed here, with the value it replaced, so you can
-              undo it.
-            </p>
+            <p className="font-semibold">{t('undo.empty.title')}</p>
+            <p className="max-w-xs text-body text-muted">{t('undo.empty.description')}</p>
           </Card>
         ) : null}
 
@@ -351,11 +345,11 @@ export function UndoScreen() {
               <div className="flex flex-col items-center gap-2">
                 {more === 'error' ? (
                   <p role="alert" className="text-body text-muted">
-                    Older entries could not be loaded.
+                    {t('undo.olderFailed')}
                   </p>
                 ) : null}
                 <Button loading={more === 'loading'} onClick={() => older(nextCursor)}>
-                  Show older
+                  {t('undo.showOlder')}
                 </Button>
               </div>
             ) : null}
@@ -412,7 +406,7 @@ function NoticeBar({ notice, onDismiss }: { notice: Notice; onDismiss: () => voi
         className="shrink-0 rounded-sm px-2 py-1 font-semibold underline hover:no-underline"
         onClick={onDismiss}
       >
-        Dismiss
+        {t('common.dismiss')}
       </button>
     </div>
   );
@@ -426,10 +420,7 @@ function IncompleteNotice() {
       className="flex items-start gap-2 rounded-md border border-line bg-surface-sunken p-3 text-body"
     >
       <TriangleAlert aria-hidden size={18} className="mt-0.5 shrink-0 text-muted" />
-      <p>
-        This history is incomplete: some changes could not be written to it since Volt started.
-        Those changes were still made, but they may be missing from this list.
-      </p>
+      <p>{t('undo.incomplete')}</p>
     </div>
   );
 }

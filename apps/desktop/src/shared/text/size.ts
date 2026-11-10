@@ -1,12 +1,19 @@
+import { formatNumber } from '../i18n';
+
 const UNITS = ['B', 'KB', 'MB', 'GB', 'TB'] as const;
 
 const MIB = 1024 ** 2;
 const GIB = 1024 ** 3;
 const TIB = 1024 ** 4;
 
-/** One decimal, without a trailing `.0`: 16 not 16.0, 9.9 stays 9.9. */
+/** One decimal at most, without a trailing zero: 16 not 16.0, 9.9 stays 9.9. */
 function trimmed(value: number): string {
-  return value.toFixed(1).replace(/\.0$/, '');
+  return formatNumber(value, { maximumFractionDigits: 1 });
+}
+
+/** Exactly one decimal, in the decimal mark of the current language. */
+function oneDecimal(value: number): string {
+  return formatNumber(value, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 }
 
 /**
@@ -34,10 +41,5 @@ export function formatSize(bytes: number): string {
     value /= 1024;
     unit += 1;
   }
-  return `${value.toFixed(1)} ${UNITS[unit]}`;
-}
-
-/** `1 file`, `2 files`; the count is grouped (`12,345 files`). */
-export function countOf(count: number, one: string, many = `${one}s`): string {
-  return `${count.toLocaleString('en-US')} ${count === 1 ? one : many}`;
+  return `${oneDecimal(value)} ${UNITS[unit]}`;
 }

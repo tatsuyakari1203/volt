@@ -12,6 +12,7 @@ $steps = [ordered]@{
     'bindings'     = { pwsh -NoProfile -File scripts/bindings.ps1 -Check }
     'architecture' = { node scripts/check-arch.mjs }
     'privacy'      = { node --test scripts/check-privacy.test.mjs; if ($LASTEXITCODE -eq 0) { node scripts/check-privacy.mjs } }
+    'i18n'         = { node --test scripts/check-i18n.test.mjs; if ($LASTEXITCODE -eq 0) { node scripts/check-i18n.mjs } }
     'biome'        = { pnpm exec biome check . }
     'typecheck'    = { pnpm --filter '@volt/desktop' typecheck }
     'vitest'       = { pnpm --filter '@volt/desktop' test }

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { t } from '../../shared/i18n';
 import { type AppInfo as AppInfoData, getAppInfo, IpcUnavailableError } from '../../shared/ipc';
 import { Muted } from '../../shared/ui/Muted';
 
@@ -22,18 +23,18 @@ export function AppInfo() {
   }, []);
 
   if (failure?.kind === 'outside-app') {
-    return <Muted>Version information is not available outside the Volt app.</Muted>;
+    return <Muted>{t('about.outsideApp')}</Muted>;
   }
   if (failure) {
-    return <Muted>Could not reach the Rust core: {failure.message}</Muted>;
+    return <Muted>{t('about.coreError', { message: failure.message })}</Muted>;
   }
   if (!info) {
-    return <Muted>Loading...</Muted>;
+    return <Muted>{t('common.loading')}</Muted>;
   }
   return (
     <div>
       <h3 className="text-subtitle font-semibold">{info.name}</h3>
-      <Muted>Version {info.version}</Muted>
+      <Muted>{t('about.version', { version: info.version })}</Muted>
     </div>
   );
 }

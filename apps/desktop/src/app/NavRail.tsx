@@ -1,4 +1,5 @@
 import { Zap } from 'lucide-react';
+import { t } from '../shared/i18n';
 import { cx } from '../shared/ui';
 import { footerSections, mainSections, type Section, type SectionId } from './sections';
 
@@ -15,7 +16,7 @@ interface NavRailProps {
 export function NavRail({ current, onNavigate }: NavRailProps) {
   return (
     <nav
-      aria-label="Primary"
+      aria-label={t('nav.primary')}
       className="flex w-rail shrink-0 flex-col gap-1 px-2 py-3 wide:w-rail-wide"
     >
       <div className="mb-3 flex h-10 items-center gap-3 px-1.5">
@@ -81,12 +82,14 @@ function NavItem({
           />
         ) : null}
         <Icon aria-hidden size={20} strokeWidth={1.75} className="shrink-0" />
-        <span className="sr-only min-w-0 truncate text-body wide:not-sr-only">{section.label}</span>
+        <span className="sr-only min-w-0 truncate text-body wide:not-sr-only">
+          {t(section.label)}
+        </span>
         <span
           aria-hidden
           className="pointer-events-none absolute top-1/2 left-[calc(100%+8px)] z-50 -translate-y-1/2 whitespace-nowrap rounded-sm bg-toast px-2 py-1 text-caption font-medium text-toast-fg opacity-0 shadow-pop transition-opacity duration-(--duration-fast) group-hover:opacity-100 group-focus-visible:opacity-100 wide:hidden"
         >
-          {section.label}
+          {t(section.label)}
         </span>
       </button>
     </li>

@@ -1,4 +1,5 @@
 import { useRef } from 'react';
+import { t } from '../../shared/i18n';
 import { Button, Dialog } from '../../shared/ui';
 
 export interface ClearHistoryDialogProps {
@@ -16,24 +17,21 @@ export function ClearHistoryDialog({ open, busy, onClose, onConfirm }: ClearHist
     <Dialog
       open={open}
       onClose={onClose}
-      title="Clear the history?"
-      description="The records of past changes are removed from this list. This cannot be undone."
+      title={t('undo.clearDialog.title')}
+      description={t('undo.clearDialog.description')}
       initialFocusRef={cancelRef}
       footer={
         <>
           <Button ref={cancelRef} onClick={onClose}>
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button variant="primary" loading={busy} onClick={onConfirm}>
-            Clear history
+            {t('undo.clearDialog.confirm')}
           </Button>
         </>
       }
     >
-      <p className="text-body text-muted">
-        Changes that can still be undone stay in the list, and nothing on your PC is changed. Volt
-        also removes very old records by itself.
-      </p>
+      <p className="text-body text-muted">{t('undo.clearDialog.note')}</p>
     </Dialog>
   );
 }

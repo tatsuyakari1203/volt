@@ -1,12 +1,13 @@
 import { Ban, Check, Layers, TriangleAlert, Undo2 } from 'lucide-react';
 import type { ReactNode } from 'react';
+import { type MessageKey, t, tNodes } from '../../shared/i18n';
 import type { ActivityItem, ChangeState } from '../../shared/ipc';
 import { Button, cx, ListRow } from '../../shared/ui';
 import type { HistoryEntry } from './history';
-import { formatTime, sourceLabels, statusLabels } from './messages';
+import { activityTitle, formatTime, sourceLabel, statusLabel } from './messages';
 
 interface StateSpec {
-  label: string;
+  label: MessageKey;
   icon: ReactNode;
   className: string;
 }
@@ -16,18 +17,18 @@ const NEUTRAL = 'border border-line bg-surface-sunken text-muted';
 /** The badge of a row's undo state. A row that records an undo (`restored`) has none. */
 const stateSpecs: Record<ChangeState, StateSpec | null> = {
   canUndo: {
-    label: 'Can be undone',
+    label: 'undo.state.canUndo',
     icon: <Undo2 aria-hidden size={12} />,
     className: 'bg-safe text-safe-fg',
   },
-  undone: { label: 'Already undone', icon: <Check aria-hidden size={12} />, className: NEUTRAL },
+  undone: { label: 'undo.state.undone', icon: <Check aria-hidden size={12} />, className: NEUTRAL },
   failed: {
-    label: 'Failed',
+    label: 'undo.state.failed',
     icon: <TriangleAlert aria-hidden size={12} />,
     className: 'bg-caution text-caution-fg',
   },
   cannotUndo: {
-    label: 'Cannot be undone',
+    label: 'undo.state.cannotUndo',
     icon: <Ban aria-hidden size={12} />,
     className: NEUTRAL,
   },
@@ -46,7 +47,7 @@ function StateBadge({ state }: { state: ChangeState }) {
       )}
     >
       {spec.icon}
-      {spec.label}
+      {t(spec.label)}
     </span>
   );
 }
@@ -69,7 +70,7 @@ export interface HistoryListProps {
 export function HistoryList({ entries, busy, onUndoEntry, onUndoBatch }: HistoryListProps) {
   return (
     <ul
-      aria-label="Changes"
+      aria-label={t('undo.list.label')}
       className="divide-y divide-line overflow-hidden rounded-md border border-line bg-surface shadow-card"
     >
       {entries.map((entry) =>
@@ -81,22 +82,24 @@ export function HistoryList({ entries, busy, onUndoEntry, onUndoBatch }: History
               <Layers aria-hidden size={16} className="shrink-0 text-muted" />
               <div className="min-w-0 flex-1">
                 <p className="font-semibold">{entry.title}</p>
-                <p className="text-caption text-muted">{entry.items.length} records in one batch</p>
+                <p className="text-caption text-muted">
+                  {t('undo.batch.records', { count: entry.items.length })}
+                </p>
               </div>
               {entry.items.some((item) => item.state === 'canUndo') ? (
                 <Button
                   size="sm"
-                  aria-label={`Undo all changes of ${entry.title}`}
+                  aria-label={t('undo.batch.undoAll.label', { title: entry.title })}
                   loading={busy === `batch:${entry.batch}`}
                   disabled={busy !== null && busy !== `batch:${entry.batch}`}
                   onClick={() => onUndoBatch(entry.batch, entry.title)}
                 >
-                  Undo all
+                  {t('undo.batch.undoAll')}
                 </Button>
               ) : null}
             </div>
             <ul
-              aria-label={`${entry.title}: records`}
+              aria-label={t('undo.batch.records.label', { title: entry.title })}
               className="divide-y divide-line border-t border-line"
             >
               {entry.items.map((item) => (
@@ -126,21 +129,26 @@ function Row({
   return (
     <ListRow
       title={
-        showTitle && item.title !== null
-          ? `${item.title}: ${statusLabels[item.status]}`
-          : statusLabels[item.status]
+        showTitle && activityTitle(item) !== null
+          ? t('undo.row.titled', {
+              title: activityTitle(item) ?? '',
+              status: statusLabel(item.status),
+            })
+          : statusLabel(item.status)
       }
       badge={<StateBadge state={item.state} />}
       description={
         <>
           <span className="block">
             <time dateTime={item.time}>{formatTime(item.time)}</time>
-            {` · ${sourceLabels[item.source]}`}
+            {` · ${sourceLabel(item.source)}`}
           </span>
           <span className="mt-0.5 block break-words text-fg">{item.summary}</span>
           {item.previous !== null ? (
             <span className="mt-0.5 block break-words">
-              Previous value: <span className="font-semibold text-fg">{item.previous}</span>
+              {tNodes('undo.row.previous', {
+                value: <span className="font-semibold text-fg">{item.previous}</span>,
+              })}
             </span>
           ) : null}
           {item.reason !== null ? <span className="mt-0.5 block">{item.reason}</span> : null}
@@ -150,12 +158,12 @@ function Row({
         item.state === 'canUndo' && key !== null ? (
           <Button
             size="sm"
-            aria-label={`Undo this change: ${item.summary}`}
+            aria-label={t('undo.row.undo.label', { summary: item.summary })}
             loading={busy === key}
             disabled={busy !== null && busy !== key}
             onClick={() => onUndo(item)}
           >
-            Undo
+            {t('common.undo')}
           </Button>
         ) : null
       }

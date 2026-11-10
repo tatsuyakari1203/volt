@@ -1,5 +1,6 @@
+import { formatNumber, t, tn } from '../../shared/i18n';
 import type { EndAppResult, ProcessGroupView } from '../../shared/ipc';
-import { countOf, formatSize } from '../../shared/text/size';
+import { formatSize } from '../../shared/text/size';
 
 export type SortKey = 'memory' | 'cpu';
 
@@ -23,7 +24,9 @@ export function visibleGroups(
 export function cpuText(percent: number | null): string {
   if (percent === null) return '–';
   if (percent < 0.05) return '0%';
-  return percent < 10 ? `${percent.toFixed(1)}%` : `${Math.round(percent)}%`;
+  return percent < 10
+    ? `${formatNumber(percent, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`
+    : `${Math.round(percent)}%`;
 }
 
 /** Memory as shown in a row. */
@@ -32,7 +35,7 @@ export function memoryText(bytes: number): string {
 }
 
 export function processesText(count: number): string {
-  return countOf(count, 'process', 'processes');
+  return tn('count.process', count);
 }
 
 /** What an end-task run did, in one or two sentences. `problem` is true when anything was left. */
@@ -40,22 +43,22 @@ export function endSummary(result: EndAppResult): { text: string; problem: boole
   const parts: string[] = [];
   parts.push(
     result.ended > 0
-      ? `Ended ${result.name}: ${processesText(result.ended)}.`
-      : `Nothing was ended for ${result.name}.`,
+      ? t('processes.end.ended', { name: result.name, processes: processesText(result.ended) })
+      : t('processes.end.nothing', { name: result.name }),
   );
   if (result.needsAdministrator > 0) {
     parts.push(
-      `${processesText(result.needsAdministrator)} need administrator rights, so they were left running.`,
+      t('processes.end.needsAdmin', { processes: processesText(result.needsAdministrator) }),
     );
   }
   if (result.failed > 0) {
-    parts.push(`${processesText(result.failed)} could not be ended.`);
+    parts.push(t('processes.end.failed', { processes: processesText(result.failed) }));
   }
   if (result.alreadyGone > 0 && result.ended === 0) {
-    parts.push('It had already closed.');
+    parts.push(t('processes.end.alreadyClosed'));
   }
   if (!result.recorded) {
-    parts.push('It could not be written to the activity history.');
+    parts.push(t('processes.end.notRecorded'));
   }
   const problem = result.needsAdministrator > 0 || result.failed > 0 || !result.recorded;
   return { text: parts.join(' '), problem };

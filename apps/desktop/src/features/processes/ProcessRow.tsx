@@ -1,5 +1,6 @@
 import { Lock } from 'lucide-react';
 import { memo } from 'react';
+import { type MessageKey, t } from '../../shared/i18n';
 import type { ProcessGroupView } from '../../shared/ipc';
 import { Badge, Button } from '../../shared/ui';
 import { cpuText, memoryText, processesText } from './processes';
@@ -11,9 +12,9 @@ export interface ProcessRowProps {
 }
 
 const protectedReason = {
-  protectedWindows: 'Windows needs this to run, so Volt never ends it.',
-  protectedVolt: 'This is Volt itself, so it cannot be ended here.',
-} as const;
+  protectedWindows: 'processes.row.protectedWindows',
+  protectedVolt: 'processes.row.protectedVolt',
+} as const satisfies Record<string, MessageKey>;
 
 /**
  * Only what a row shows decides whether it draws again: a new reading changes the numbers of a few
@@ -46,25 +47,29 @@ export const ProcessRow = memo(function ProcessRow({ group, onEnd }: ProcessRowP
         <p className="text-caption text-muted">{processesText(group.processCount)}</p>
       </div>
       <p className="w-16 shrink-0 text-right tabular-nums">
-        <span className="sr-only">Memory </span>
+        <span className="sr-only">{t('processes.row.memory')} </span>
         {memoryText(group.memoryBytes)}
       </p>
       <p className="w-12 shrink-0 text-right tabular-nums">
-        <span className="sr-only">CPU </span>
+        <span className="sr-only">{t('processes.row.cpu')} </span>
         {cpuText(group.cpuPercent)}
       </p>
       <div className="flex w-20 shrink-0 justify-end">
         {locked ? (
-          <span title={protectedReason[endability]}>
+          <span title={t(protectedReason[endability])}>
             <Badge>
               <Lock aria-hidden size={12} />
-              Protected
+              {t('processes.row.protected')}
             </Badge>
-            <span className="sr-only">{protectedReason[endability]}</span>
+            <span className="sr-only">{t(protectedReason[endability])}</span>
           </span>
         ) : (
-          <Button size="sm" aria-label={`End ${group.name}`} onClick={() => onEnd(group)}>
-            End
+          <Button
+            size="sm"
+            aria-label={t('processes.row.end.label', { name: group.name })}
+            onClick={() => onEnd(group)}
+          >
+            {t('processes.row.end')}
           </Button>
         )}
       </div>

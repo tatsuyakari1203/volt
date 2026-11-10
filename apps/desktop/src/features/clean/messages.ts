@@ -1,21 +1,22 @@
-import {
-  type CleaningRuleInfo,
-  describeIpcError,
-  IpcCommandError,
-  IpcUnavailableError,
-  type RuleScanView,
-} from '../../shared/ipc';
-import { countOf, formatSize } from '../../shared/text/size';
+import { getLocale, t, tn, tx } from '../../shared/i18n';
+import type { CleaningRuleInfo, CleanRunResult, RuleScanView } from '../../shared/ipc';
+import { formatSize } from '../../shared/text/size';
 
-/** One sentence for any error that reached the UI. */
-export function describeError(error: unknown): string {
-  if (error instanceof IpcUnavailableError) {
-    return 'This is only available inside the Volt app.';
-  }
-  if (error instanceof IpcCommandError) {
-    return describeIpcError(error.error);
-  }
-  return error instanceof Error ? error.message : String(error);
+export { describeError } from '../../shared/text/errors';
+
+/** The name of a rule. The core writes it in English; other languages are filed under its id. */
+export function ruleTitle(id: string, english: string): string {
+  return tx(`rule.${id}.title`, english);
+}
+
+/** What a rule takes and why that is safe, in the current language. */
+export function ruleDescription(rule: CleaningRuleInfo): string {
+  return tx(`rule.${rule.id}.description`, rule.description);
+}
+
+/** The name of the group a rule is listed under, in the current language. */
+export function categoryName(rule: CleaningRuleInfo): string {
+  return tx(`clean.category.${rule.category}`, rule.categoryLabel);
 }
 
 /** Groups whose cleaning has a visible cost afterwards, so the user chooses them. */
@@ -41,10 +42,18 @@ export function tickedByDefault(rule: CleaningRuleInfo): boolean {
 export function findingsLine(view: RuleScanView): string {
   if (view.problem) return view.problem;
   const parts: string[] = [];
-  if (view.files > 0) parts.push(`${countOf(view.files, 'file')}, ${formatSize(view.bytes)}`);
-  if (view.folders > 0) parts.push(countOf(view.folders, 'empty folder'));
-  if (parts.length === 0) return 'Nothing to clean';
-  return parts.join(' and ');
+  if (view.files > 0) {
+    parts.push(
+      t('clean.findings.filesSize', {
+        files: tn('count.file', view.files),
+        size: formatSize(view.bytes),
+      }),
+    );
+  }
+  if (view.folders > 0) parts.push(tn('count.folder', view.folders));
+  const [first, second] = parts;
+  if (first === undefined) return t('clean.findings.nothing');
+  return second === undefined ? first : t('clean.findings.join', { first, second });
 }
 
 /** The totals of the ticked rules. */
@@ -70,6 +79,35 @@ export function selectionOf(
 
 /** What will be moved, for the summary and the confirmation. */
 export function selectionText(selection: Selection): string {
-  const folders = selection.folders > 0 ? ` and ${countOf(selection.folders, 'empty folder')}` : '';
-  return `${countOf(selection.files, 'file')}${folders} (${formatSize(selection.bytes)})`;
+  const files = tn('count.file', selection.files);
+  const size = formatSize(selection.bytes);
+  return selection.folders > 0
+    ? t('clean.selection.withFolders', {
+        files,
+        folders: tn('count.folder', selection.folders),
+        size,
+      })
+    : t('clean.selection.base', { files, size });
+}
+
+/**
+ * What a clean did, in one or two sentences. English is the core's own sentence; another
+ * language is put together from the totals the same result carries.
+ */
+export function resultMessage(result: CleanRunResult): string {
+  if (getLocale() === 'en') return result.message;
+  const files = tn('count.file', result.movedFiles);
+  const moved =
+    result.movedFolders > 0
+      ? t('clean.findings.join', { first: files, second: tn('count.folder', result.movedFolders) })
+      : files;
+  return [
+    t('clean.message.moved', { files: moved, size: formatSize(result.movedBytes) }),
+    result.skippedTotal > 0
+      ? t('clean.message.left', { items: tn('count.item', result.skippedTotal) })
+      : '',
+    t('clean.message.footer'),
+  ]
+    .filter(Boolean)
+    .join(' ');
 }

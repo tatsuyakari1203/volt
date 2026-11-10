@@ -1,8 +1,8 @@
 import { Lock } from 'lucide-react';
+import { t, tn } from '../../shared/i18n';
 import type { CleaningRuleInfo, RuleScanView } from '../../shared/ipc';
-import { countOf } from '../../shared/text/size';
 import { Badge, Switch } from '../../shared/ui';
-import { findingsLine } from './messages';
+import { findingsLine, ruleDescription, ruleTitle } from './messages';
 
 interface RuleRowProps {
   rule: CleaningRuleInfo;
@@ -26,32 +26,30 @@ export function RuleRow({ rule, view, checked, enabled, onCheckedChange }: RuleR
       <div className="flex items-center gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span className="font-semibold">{rule.title}</span>
+            <span className="font-semibold">{ruleTitle(rule.id, rule.title)}</span>
             <Badge risk={rule.risk} />
             {locked ? (
               <Badge>
                 <Lock aria-hidden size={12} />
-                Needs administrator rights
+                {t('common.needsAdmin')}
               </Badge>
             ) : null}
           </div>
           <p className="mt-0.5 text-caption text-muted">
-            {view ? findingsLine(view) : 'Not scanned yet'}
-            {view?.truncated ? ' (there is more than this scan lists)' : ''}
+            {view ? findingsLine(view) : t('clean.rule.notScanned')}
+            {view?.truncated ? ` ${t('clean.rule.truncated')}` : ''}
           </p>
           {view?.skipped ? (
-            <p className="text-caption text-muted">Left out: {view.skipped}</p>
-          ) : null}
-          {view?.lockedNote ? <p className="text-caption text-muted">{view.lockedNote}</p> : null}
-          {locked ? (
             <p className="text-caption text-muted">
-              Volt cannot clean this yet. Nothing here is touched.
+              {t('clean.rule.leftOut', { reason: view.skipped })}
             </p>
           ) : null}
+          {view?.lockedNote ? <p className="text-caption text-muted">{view.lockedNote}</p> : null}
+          {locked ? <p className="text-caption text-muted">{t('clean.rule.cannotClean')}</p> : null}
         </div>
         {view ? (
           <Switch
-            aria-label={`Include ${rule.title}`}
+            aria-label={t('clean.rule.include', { title: ruleTitle(rule.id, rule.title) })}
             checked={checked && !locked}
             disabled={!enabled || locked}
             onCheckedChange={onCheckedChange}
@@ -60,16 +58,16 @@ export function RuleRow({ rule, view, checked, enabled, onCheckedChange }: RuleR
       </div>
       <details className="mt-1 text-caption text-muted">
         <summary className="w-fit cursor-pointer rounded-sm py-0.5 font-semibold hover:text-fg">
-          What is this?
+          {t('clean.rule.what')}
         </summary>
         <div className="mt-1 flex flex-col gap-2">
-          <p>{rule.description}</p>
+          <p>{ruleDescription(rule)}</p>
           {rule.minAgeDays > 0 ? (
-            <p>Only items not changed for {countOf(rule.minAgeDays, 'day')} are taken.</p>
+            <p>{t('clean.rule.minAge', { days: tn('count.day', rule.minAgeDays) })}</p>
           ) : null}
           {view && view.samples.length > 0 ? (
             <div>
-              <p className="font-semibold">Examples</p>
+              <p className="font-semibold">{t('clean.rule.examples')}</p>
               <ul className="font-mono wrap-anywhere">
                 {view.samples.map((sample) => (
                   <li key={sample}>{sample}</li>

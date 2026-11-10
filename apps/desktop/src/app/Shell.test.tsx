@@ -1,15 +1,17 @@
 import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { expect, it, vi } from 'vitest';
+import { I18nProvider } from '../shared/i18n';
 import { ThemeProvider } from '../shared/theme';
 import { ToastProvider } from '../shared/ui';
 import { Shell } from './Shell';
 
 // A plain browser has no Tauri bridge: the calls fail. The screens must absorb that. The tray
 // Boost event is the exception: the test captures its handler to fire it by hand.
-const { boostListeners, tweakReads } = vi.hoisted(() => ({
+const { boostListeners, tweakReads, saveLanguage } = vi.hoisted(() => ({
   boostListeners: [] as Array<(report: unknown) => void>,
   tweakReads: { count: 0 },
+  saveLanguage: vi.fn(() => Promise.resolve({ choice: 'vi', system: 'en' })),
 }));
 vi.mock('../shared/ipc', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../shared/ipc')>()),
@@ -24,6 +26,8 @@ vi.mock('../shared/ipc', async (importOriginal) => ({
   onMetricsUpdated: () => Promise.reject(new Error('no tauri bridge')),
   listStartupEntries: () => Promise.reject(new Error('no tauri bridge')),
   getAutostartEnabled: () => Promise.reject(new Error('no tauri bridge')),
+  getLanguageSetting: () => Promise.reject(new Error('no tauri bridge')),
+  saveLanguageSetting: saveLanguage,
   setAutostartEnabled: () => Promise.reject(new Error('no tauri bridge')),
   onBoostFinished: (handler: (report: unknown) => void) => {
     boostListeners.push(handler);
@@ -199,4 +203,46 @@ it('reads the tweak states again when Tweaks is opened after the Undo screen', a
   await user.click(screen.getByRole('button', { name: 'Tweaks' }));
   await screen.findByText('Tweaks could not be loaded');
   expect(tweakReads.count).toBe(2);
+});
+
+function renderLocalisedShell() {
+  return render(
+    <I18nProvider>
+      <ThemeProvider>
+        <ToastProvider>
+          <Shell />
+        </ToastProvider>
+      </ThemeProvider>
+    </I18nProvider>,
+  );
+}
+
+it('choosing Tiếng Việt in Settings translates the window at once and saves the choice', async () => {
+  const user = userEvent.setup();
+  renderLocalisedShell();
+  await user.click(screen.getByRole('button', { name: 'Settings' }));
+  await user.click(screen.getByRole('radio', { name: 'Tiếng Việt' }));
+
+  // The page stays where it was and is written in Vietnamese; nothing needed a restart.
+  expect(screen.getByRole('heading', { level: 1, name: 'Cài đặt' })).toBeTruthy();
+  expect(screen.getByRole('navigation', { name: 'Điều hướng chính' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Hoàn tác' })).toBeTruthy();
+  expect(document.documentElement.lang).toBe('vi');
+  expect(window.localStorage.getItem('volt.language')).toBe('vi');
+  // The shell learns the choice and what System means on this PC (English here).
+  expect(saveLanguage).toHaveBeenCalledWith('vi', 'en');
+
+  await user.click(screen.getByRole('radio', { name: 'English' }));
+  expect(screen.getByRole('heading', { level: 1, name: 'Settings' })).toBeTruthy();
+  expect(window.localStorage.getItem('volt.language')).toBe('en');
+});
+
+it('follows the language of the system by default', () => {
+  const languages = vi.spyOn(window.navigator, 'languages', 'get').mockReturnValue(['vi-VN']);
+  try {
+    renderLocalisedShell();
+    expect(screen.getByRole('heading', { level: 1, name: 'Trang chủ' })).toBeTruthy();
+  } finally {
+    languages.mockRestore();
+  }
 });
