@@ -1,5 +1,5 @@
 import { getLocale, say, t, tn, tx } from '../../shared/i18n';
-import type { CleaningRuleInfo, CleanRunResult, RuleScanView } from '../../shared/ipc';
+import type { CleaningRuleInfo, CleanRunResult, ItemPick, RuleScanView } from '../../shared/ipc';
 import { formatSize } from '../../shared/text/size';
 
 export { describeError } from '../../shared/text/errors';
@@ -25,22 +25,70 @@ const UNTICKED_CATEGORIES: ReadonlySet<string> = new Set([
   'shaderCache',
   'chatAppCache',
   'developerCache',
+  'aiModelCache',
 ]);
 
 /**
  * Whether the rule is ticked when a scan finishes: Safe, no administrator rights needed, and not a
- * browser, shader or chat app cache (clearing it makes sites slower once, stutters games while
- * shaders compile again, makes a chat app download media again, or makes a package manager download packages again, so the user chooses it).
+ * browser, shader, chat app or model cache (clearing it makes sites slower once, stutters games
+ * while shaders compile again, makes a chat app download media again, or makes a package manager
+ * or an AI program download everything again, so the user chooses it). A rule the user picks by
+ * item is never ticked, and none of its items is: the user ticks each one.
  */
 export function tickedByDefault(rule: CleaningRuleInfo): boolean {
   return (
-    rule.risk === 'safe' && !rule.needsAdministrator && !UNTICKED_CATEGORIES.has(rule.category)
+    rule.risk === 'safe' &&
+    !rule.needsAdministrator &&
+    !rule.pickItems &&
+    !UNTICKED_CATEGORIES.has(rule.category)
   );
+}
+
+/** The items the user ticked, per rule picked by item: positions in the scan's item list. */
+export type Picks = ReadonlyMap<string, ReadonlySet<number>>;
+
+/** Ticks or unticks one item. The map has no entry for a rule with nothing ticked. */
+export function withPick(picks: Picks, ruleId: string, index: number, on: boolean): Picks {
+  const next = new Map(picks);
+  const items = new Set(picks.get(ruleId));
+  if (on) items.add(index);
+  else items.delete(index);
+  if (items.size > 0) next.set(ruleId, items);
+  else next.delete(ruleId);
+  return next;
+}
+
+/** What to send to clean the picked items: one entry per rule with something ticked. */
+export function pickList(views: readonly RuleScanView[], picks: Picks): ItemPick[] {
+  return views
+    .filter((view) => view.rule.pickItems && (picks.get(view.rule.id)?.size ?? 0) > 0)
+    .map((view) => ({
+      ruleId: view.rule.id,
+      items: [...(picks.get(view.rule.id) ?? [])].sort((a, b) => a - b),
+    }));
+}
+
+/** The rules to clean: the ticked ones, and the picked-by-item rules that have an item ticked. */
+export function cleanRuleIds(
+  views: readonly RuleScanView[],
+  ticked: ReadonlySet<string>,
+  picks: Picks,
+): string[] {
+  return [...ticked, ...pickList(views, picks).map((pick) => pick.ruleId)];
 }
 
 /** What a scan found for one rule, in one line. */
 export function findingsLine(view: RuleScanView): string {
   if (view.problem) return say(view.problemPhrase, view.problem);
+  if (view.rule.needsFolder && view.rule.chosenFolder === null) return t('clean.folder.none');
+  if (view.rule.pickItems) {
+    return view.items.length > 0
+      ? t('clean.items.findings', {
+          items: tn('count.item', view.items.length),
+          size: formatSize(view.bytes),
+        })
+      : t('clean.findings.nothing');
+  }
   const parts: string[] = [];
   if (view.files > 0) {
     parts.push(
@@ -65,7 +113,13 @@ export function truncatedRuleIds(
   ticked: ReadonlySet<string>,
 ): string[] {
   return views
-    .filter((view) => view.truncated && ticked.has(view.rule.id) && !view.rule.needsAdministrator)
+    .filter(
+      (view) =>
+        view.truncated &&
+        !view.rule.pickItems &&
+        ticked.has(view.rule.id) &&
+        !view.rule.needsAdministrator,
+    )
     .map((view) => view.rule.id);
 }
 
@@ -96,9 +150,19 @@ export interface Selection {
 export function selectionOf(
   views: readonly RuleScanView[],
   ticked: ReadonlySet<string>,
+  picks: Picks = new Map(),
 ): Selection {
   const total: Selection = { files: 0, folders: 0, bytes: 0 };
   for (const view of views) {
+    if (view.rule.pickItems) {
+      const chosen = picks.get(view.rule.id);
+      for (const item of view.items) {
+        if (!chosen?.has(item.index)) continue;
+        total.files += item.files;
+        total.bytes += item.bytes;
+      }
+      continue;
+    }
     if (!ticked.has(view.rule.id) || view.rule.needsAdministrator) continue;
     total.files += view.files;
     total.folders += view.folders;

@@ -31,6 +31,10 @@ const temp: CleaningRuleInfo = {
   risk: 'safe',
   needsAdministrator: false,
   minAgeDays: 7,
+  pickItems: false,
+  needsFolder: false,
+  chosenFolder: null,
+  follows: [],
 };
 
 beforeEach(() => {

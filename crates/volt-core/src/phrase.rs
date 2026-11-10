@@ -368,6 +368,7 @@ pub const ENGLISH: &[(&str, &str)] = &[
     ("scan.locked.one", "{names} is running: files it keeps open are skipped. Close it first to clean everything."),
     ("scan.locked.other", "{names} are running: files it keeps open are skipped. Close it first to clean everything."),
     ("scan.problem.root", "Volt could not use this location, so it was not scanned."),
+    ("scan.problem.output", "This folder is an output folder, which is never cleaned."),
     ("scan.problem.link", "This location is a link, so it was not scanned."),
     ("scan.problem.notFolder", "This location is not a folder, so it was not scanned."),
     ("scan.problem.denied", "Windows denied access to this location."),

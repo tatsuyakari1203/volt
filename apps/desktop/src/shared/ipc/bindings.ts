@@ -317,9 +317,32 @@ async cancelCleaningScan() : Promise<Result<null, IpcError>> {
  * reports what was moved and what was left, with reasons. Rules that need administrator rights
  * answer `accessDenied`. The scan is used up: scan again to clean again.
  */
-async cleanSelectedRules(planId: string, ruleIds: string[]) : Promise<Result<CleanRunResult, IpcError>> {
+async cleanSelectedRules(planId: string, ruleIds: string[], picks: ItemPick[]) : Promise<Result<CleanRunResult, IpcError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("clean_selected_rules", { planId, ruleIds }) };
+    return { status: "ok", data: await TAURI_INVOKE("clean_selected_rules", { planId, ruleIds, picks }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: adds a folder for a cleaning rule that needs one (a `ComfyUI` install, for its
+ * temp folder) and keeps it in the settings. Reads nothing in the folder. Scan again afterwards.
+ */
+async chooseCleaningFolder(ruleId: string, folder: string) : Promise<Result<null, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("choose_cleaning_folder", { ruleId, folder }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: forgets the folder added for a cleaning rule. The folder is not touched.
+ */
+async forgetCleaningFolder(ruleId: string) : Promise<Result<null, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("forget_cleaning_folder", { ruleId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -943,6 +966,10 @@ export type CleanCategoryView =
  */
 "developerCache" | 
 /**
+ * Caches of AI models, picked one by one.
+ */
+"aiModelCache" | 
+/**
  * Log files.
  */
 "logs" | 
@@ -1061,7 +1088,26 @@ needsAdministrator: boolean;
 /**
  * Files younger than this many days are never taken (0: no minimum).
  */
-minAgeDays: number }
+minAgeDays: number; 
+/**
+ * Whether the user picks what to clean item by item: nothing is ticked by default, and the
+ * scan lists the items.
+ */
+pickItems: boolean; 
+/**
+ * Whether the rule works in a folder the user adds (for example a `ComfyUI` install).
+ */
+needsFolder: boolean; 
+/**
+ * The folder the user added for the rule, or `null`. It is the user's own choice, shown so it
+ * can be checked and removed.
+ */
+chosenFolder: string | null; 
+/**
+ * The documented environment variables the rule follows when a tool's cache was moved, in
+ * order of precedence. Empty: the rule only looks in the default place.
+ */
+follows: FollowView[] }
 /**
  * How many records [`clear_history`] removed.
  */
@@ -1338,6 +1384,18 @@ export type FixActionView =
  */
 "restartWindows"
 /**
+ * An environment variable a rule follows, with the documentation that names it.
+ */
+export type FollowView = { 
+/**
+ * The variable's name, such as `CARGO_HOME`.
+ */
+var: string; 
+/**
+ * Where the tool documents it.
+ */
+source: string }
+/**
  * The primary GPU. Every number may be missing (`null`): a driver without counters still
  * gives a name.
  */
@@ -1471,6 +1529,18 @@ export type IpcError =
  * Any other failure.
  */
 { kind: "other"; message: string }
+/**
+ * The items the user picked of one rule.
+ */
+export type ItemPick = { 
+/**
+ * The rule's id.
+ */
+ruleId: string; 
+/**
+ * The `index` of each picked item.
+ */
+items: number[] }
 /**
  * What the read-only junk scan found.
  */
@@ -2059,7 +2129,36 @@ lockedNote: string | null;
 /**
  * `locked_note` as a code and parameters.
  */
-lockedPhrase: PhraseView | null }
+lockedPhrase: PhraseView | null; 
+/**
+ * For a rule picked item by item: every item, with its size. Empty for other rules.
+ */
+items: ScanItemView[]; 
+/**
+ * The environment variable the folder was found through, when the tool's cache was moved
+ * (for example `CARGO_HOME`), or `null`.
+ */
+followedBy: string | null }
+/**
+ * One item of a rule the user picks from.
+ */
+export type ScanItemView = { 
+/**
+ * Position in the rule's list; sent back to pick the item.
+ */
+index: number; 
+/**
+ * The item's name (a model, a store), never a full path.
+ */
+name: string; 
+/**
+ * Its size in bytes.
+ */
+bytes: number; 
+/**
+ * How many files it holds.
+ */
+files: number }
 /**
  * A scheduled task that runs when you sign in. Read-only: it has no switch.
  */

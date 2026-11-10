@@ -107,6 +107,7 @@
   "scan.oddNames": "{count} mục có tên bất thường",
   "scan.locked.other": "{names} đang chạy: các tệp nó đang mở sẽ được bỏ qua. Hãy đóng nó trước để dọn hết.",
   "scan.problem.root": "Volt không dùng được vị trí này nên chưa quét.",
+  "scan.problem.output": "Đây là thư mục kết quả đầu ra nên không bao giờ bị dọn.",
   "scan.problem.link": "Vị trí này là một liên kết nên chưa quét.",
   "scan.problem.notFolder": "Vị trí này không phải thư mục nên chưa quét.",
   "scan.problem.denied": "Windows từ chối truy cập vị trí này.",

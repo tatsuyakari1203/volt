@@ -27,6 +27,7 @@ import {
   type HealthView,
   type HistoryStatus,
   type IpcError,
+  type ItemPick,
   type LanguageChoice,
   type LanguageSetting,
   type LargeFilesProgress,
@@ -83,11 +84,13 @@ export type {
   ExportResult,
   FileGroupView,
   FixActionView,
+  FollowView,
   GpuView,
   HealthCheckView,
   HealthLevelView,
   HealthView,
   IpcError,
+  ItemPick,
   JunkView,
   Lang,
   LanguageChoice,
@@ -116,6 +119,7 @@ export type {
   RiskLevel,
   RuleCleanView,
   RuleScanView,
+  ScanItemView,
   ScheduledTaskView,
   SkipGroup,
   SkippedOperationView,
@@ -442,15 +446,31 @@ export function onCleanScanProgress(
 
 /**
  * Moves the files of the chosen rules of scan `planId` to the Recycle Bin. A scan can be cleaned
- * once: a newer scan or an earlier clean makes the id `notFound`. Rules that need administrator
+ * once: a newer scan or an earlier clean makes the id `notFound`. For a rule picked item by item
+ * (`pickItems`), `picks` names the items to move; none picked is `invalidInput`. Rules that need administrator
  * rights are `accessDenied`. The result says what was moved and what was left, with reasons; it
  * has no "freed" figure because nothing is freed until the Recycle Bin is emptied.
  */
 export async function cleanSelectedRules(
   planId: string,
   ruleIds: string[],
+  picks: ItemPick[] = [],
 ): Promise<CleanRunResult> {
-  return call(() => commands.cleanSelectedRules(planId, ruleIds));
+  return call(() => commands.cleanSelectedRules(planId, ruleIds, picks));
+}
+
+/**
+ * Adds a folder for a rule that needs one (a ComfyUI install, for its temp folder) and keeps it.
+ * Nothing in the folder is read or changed; scan again afterwards. A folder that is too broad, a
+ * protected folder, an output folder or not a plain folder is `invalidInput`.
+ */
+export async function chooseCleaningFolder(ruleId: string, folder: string): Promise<void> {
+  await call(() => commands.chooseCleaningFolder(ruleId, folder));
+}
+
+/** Forgets the folder added for a rule. The folder itself is never touched. */
+export async function forgetCleaningFolder(ruleId: string): Promise<void> {
+  await call(() => commands.forgetCleaningFolder(ruleId));
 }
 
 /** How many items the Recycle Bin holds and how big they are. Read-only. */

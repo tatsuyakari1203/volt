@@ -28,6 +28,7 @@
 
 mod apply;
 mod bin;
+mod chosen;
 mod folders;
 mod glob;
 mod loader;
@@ -46,18 +47,19 @@ use thiserror::Error;
 
 pub use apply::{CleanReport, CleanSkip, CleanSkipReason, RuleClean};
 pub use bin::{EmptyReport, RecycleBin, RecycleBinManager, RecycleBinStatus};
+pub use chosen::{CHOSEN_FOLDERS_SETTING, FolderError};
 pub use folders::{KnownFolders, Location};
 pub use glob::Pattern;
 pub use loader::{CleaningRules, RuleIssue, RuleIssueKind, RulesError};
 pub use plan::{
     CleanItem, CleanPlan, ConfirmedPlan, ItemKind, MAX_ITEMS_PER_RULE, MAX_SKIPPED_DETAILS,
-    RuleScan, ScanCounts, ScanFailure, SkipReason, SkippedEntry,
+    RuleScan, RuleSelection, ScanCounts, ScanFailure, SelectionError, SkipReason, SkippedEntry,
 };
 pub use root::RootError;
 pub(crate) use root::{same_path_ci, starts_with_ci};
 pub use rule::{
-    CleanCategory, CleaningRule, Constraints, MAX_DEPTH_LIMIT, MIN_AGE_SETTING_MAX,
-    MIN_AGE_SETTING_MIN, RuleRoot,
+    CleanCategory, CleaningRule, Constraints, Follow, ItemUnit, MAX_DEPTH_LIMIT,
+    MIN_AGE_SETTING_MAX, MIN_AGE_SETTING_MIN, RuleRoot, is_output_folder_name,
 };
 
 use crate::activity::ActivityLog;

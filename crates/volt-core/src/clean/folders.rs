@@ -34,6 +34,14 @@ pub enum Location {
     /// The user's profile folder (`%USERPROFILE%`). A rule must name a folder below it
     /// (such as `.cargo`), never the profile itself.
     UserProfile,
+    /// The user's `LocalLow` folder (`%USERPROFILE%\AppData\LocalLow`), where some programs
+    /// (such as the NVIDIA driver's per-driver shader cache) keep low-integrity data.
+    LocalLow,
+    /// A folder the user chose for this rule (a `ComfyUI` install, for example). It is not a place
+    /// the [`KnownFolders`] port knows: the engine reads it from the settings (see
+    /// [`CleanEngine::choose_folder`](super::CleanEngine::choose_folder)). The rule's relative
+    /// path is never empty, so a rule never cleans the chosen folder itself.
+    ChosenFolder,
 }
 
 impl Location {
@@ -47,6 +55,8 @@ impl Location {
             Self::ProgramData => "program_data",
             Self::Windows => "windows",
             Self::UserProfile => "user_profile",
+            Self::LocalLow => "local_low",
+            Self::ChosenFolder => "chosen_folder",
         }
     }
 
@@ -83,5 +93,12 @@ pub trait KnownFolders: Send + Sync {
     /// scan rather than scan the system folders.
     fn system_folders(&self) -> Result<Vec<PathBuf>, PortError> {
         Err(PortError::Unsupported("system folders".to_owned()))
+    }
+
+    /// The folder an environment variable names, for rules that follow a tool's documented
+    /// variable to where the tool keeps its cache. `None` when the variable is not set, is empty
+    /// or is not an absolute path. The default is `None`: nothing is followed.
+    fn env_folder(&self, _variable: &str) -> Option<PathBuf> {
+        None
     }
 }

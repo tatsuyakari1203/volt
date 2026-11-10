@@ -20,6 +20,7 @@ pub struct FakeKnownFolders {
     protected: Mutex<Vec<PathBuf>>,
     protected_failure: Mutex<Option<PortError>>,
     system: Mutex<Option<Vec<PathBuf>>>,
+    env: Mutex<HashMap<String, PathBuf>>,
 }
 
 impl FakeKnownFolders {
@@ -44,6 +45,11 @@ impl FakeKnownFolders {
         *lock(&self.system) = Some(folders);
     }
 
+    /// Sets an environment variable (what `env_folder` returns for it).
+    pub fn set_env(&self, variable: &str, path: impl Into<PathBuf>) {
+        lock(&self.env).insert(variable.to_owned(), path.into());
+    }
+
     /// Makes `protected_folders` fail, or stop failing with `None`.
     pub fn fail_protected_with(&self, error: Option<PortError>) {
         *lock(&self.protected_failure) = error;
@@ -63,6 +69,10 @@ impl KnownFolders for FakeKnownFolders {
             return Err(error);
         }
         Ok(lock(&self.protected).clone())
+    }
+
+    fn env_folder(&self, variable: &str) -> Option<PathBuf> {
+        lock(&self.env).get(variable).cloned()
     }
 
     fn system_folders(&self) -> Result<Vec<PathBuf>, PortError> {

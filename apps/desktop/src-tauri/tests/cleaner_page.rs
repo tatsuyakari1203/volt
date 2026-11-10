@@ -109,7 +109,7 @@ fn ids(list: &[&str]) -> Vec<String> {
 fn the_rules_are_listed_with_category_risk_and_the_administrator_flag() {
     let fx = fixture();
     let rules = cleaner::list_cleaning_rules(&fx.core).expect("rules");
-    assert_eq!(rules.len(), 34);
+    assert_eq!(rules.len(), 40);
     let temp = rules.iter().find(|r| r.id == "user-temp").expect("rule");
     assert_eq!(temp.category, CleanCategoryView::TemporaryFiles);
     assert_eq!(temp.category_label, "Temporary files");
@@ -125,7 +125,7 @@ fn a_scan_reports_counts_and_sizes_per_rule_and_never_a_full_path() {
     let result = scan(&fx.core);
     assert!(!result.cancelled);
     assert!(!result.plan_id.is_empty());
-    assert_eq!(result.rules.len(), 34);
+    assert_eq!(result.rules.len(), 40);
 
     let temp = result
         .rules
@@ -165,13 +165,13 @@ fn a_scan_emits_progress_before_each_rule() {
     let seen = RefCell::new(Vec::new());
     cleaner::scan_cleaning(&fx.core, &|p| seen.borrow_mut().push(p)).expect("scan");
     let seen = seen.into_inner();
-    assert_eq!(seen.len(), 34);
-    assert_eq!(seen[0], CleanScanProgress { done: 0, total: 34 });
+    assert_eq!(seen.len(), 40);
+    assert_eq!(seen[0], CleanScanProgress { done: 0, total: 40 });
     assert_eq!(
         seen[10],
         CleanScanProgress {
             done: 10,
-            total: 34
+            total: 40
         }
     );
 }
@@ -180,7 +180,8 @@ fn a_scan_emits_progress_before_each_rule() {
 fn cleaning_moves_only_the_chosen_rules_and_says_where_the_files_went() {
     let fx = fixture();
     let result = scan(&fx.core);
-    let run = cleaner::clean_plan(&fx.core, &result.plan_id, &ids(&["user-temp"])).expect("clean");
+    let run =
+        cleaner::clean_plan(&fx.core, &result.plan_id, &ids(&["user-temp"]), &[]).expect("clean");
 
     assert_eq!(run.moved_files, 2);
     assert!((run.moved_bytes - 3072.0).abs() < f64::EPSILON);
@@ -214,12 +215,12 @@ fn a_scan_can_be_cleaned_once_and_a_new_scan_replaces_the_old_one() {
     let second = scan(&fx.core);
     assert_ne!(first.plan_id, second.plan_id);
 
-    let stale = cleaner::clean_plan(&fx.core, &first.plan_id, &ids(&["user-temp"]));
+    let stale = cleaner::clean_plan(&fx.core, &first.plan_id, &ids(&["user-temp"]), &[]);
     assert!(matches!(stale, Err(IpcError::NotFound { .. })), "{stale:?}");
     assert!(fx.system.file_system.trashed().is_empty());
 
-    cleaner::clean_plan(&fx.core, &second.plan_id, &ids(&["user-temp"])).expect("clean");
-    let again = cleaner::clean_plan(&fx.core, &second.plan_id, &ids(&["user-temp"]));
+    cleaner::clean_plan(&fx.core, &second.plan_id, &ids(&["user-temp"]), &[]).expect("clean");
+    let again = cleaner::clean_plan(&fx.core, &second.plan_id, &ids(&["user-temp"]), &[]);
     assert!(matches!(again, Err(IpcError::NotFound { .. })), "{again:?}");
 }
 
@@ -239,6 +240,7 @@ fn rules_that_need_administrator_rights_are_scanned_but_cannot_be_cleaned() {
         &fx.core,
         &result.plan_id,
         &ids(&["user-temp", "windows-temp"]),
+        &[],
     );
     assert!(
         matches!(refused, Err(IpcError::AccessDenied { .. })),
@@ -249,19 +251,19 @@ fn rules_that_need_administrator_rights_are_scanned_but_cannot_be_cleaned() {
         "nothing moves when any chosen rule is refused"
     );
     // The refusal does not use the scan up.
-    cleaner::clean_plan(&fx.core, &result.plan_id, &ids(&["user-temp"])).expect("clean");
+    cleaner::clean_plan(&fx.core, &result.plan_id, &ids(&["user-temp"]), &[]).expect("clean");
 }
 
 #[test]
 fn a_clean_with_nothing_chosen_or_an_unknown_rule_is_refused() {
     let fx = fixture();
     let result = scan(&fx.core);
-    let none = cleaner::clean_plan(&fx.core, &result.plan_id, &[]);
+    let none = cleaner::clean_plan(&fx.core, &result.plan_id, &[], &[]);
     assert!(
         matches!(none, Err(IpcError::InvalidInput { .. })),
         "{none:?}"
     );
-    let unknown = cleaner::clean_plan(&fx.core, &result.plan_id, &ids(&["no-such-rule"]));
+    let unknown = cleaner::clean_plan(&fx.core, &result.plan_id, &ids(&["no-such-rule"]), &[]);
     assert!(
         matches!(unknown, Err(IpcError::InvalidInput { .. })),
         "{unknown:?}"
@@ -277,7 +279,8 @@ fn skipped_items_are_grouped_by_reason() {
         PortError::AccessDenied("locked".into()),
     );
     let result = scan(&fx.core);
-    let run = cleaner::clean_plan(&fx.core, &result.plan_id, &ids(&["user-temp"])).expect("clean");
+    let run =
+        cleaner::clean_plan(&fx.core, &result.plan_id, &ids(&["user-temp"]), &[]).expect("clean");
     assert_eq!(run.moved_files, 1);
     assert_eq!(run.skipped_total, 1);
     assert_eq!(run.skipped.len(), 1);
@@ -310,10 +313,10 @@ fn cancelling_a_scan_returns_what_it_reached_and_says_it_is_partial() {
     assert!(cancelled.rules.len() <= 4 && !cancelled.rules.is_empty());
 
     // The partial scan replaced the earlier one, which is no longer cleanable.
-    let stale = cleaner::clean_plan(&fx.core, &first.plan_id, &ids(&["user-temp"]));
+    let stale = cleaner::clean_plan(&fx.core, &first.plan_id, &ids(&["user-temp"]), &[]);
     assert!(matches!(stale, Err(IpcError::NotFound { .. })));
     // What the partial scan listed can be cleaned after the usual confirmation.
-    cleaner::clean_plan(&fx.core, &cancelled.plan_id, &ids(&["user-temp"])).expect("clean");
+    cleaner::clean_plan(&fx.core, &cancelled.plan_id, &ids(&["user-temp"]), &[]).expect("clean");
 
     // A cancel with no scan running does not cancel the next one.
     cleaner::cancel_cleaning_scan(&fx.core);
@@ -335,7 +338,7 @@ fn a_scan_of_chosen_rules_looks_at_only_those_and_refuses_bad_input() {
     assert_eq!(progress.borrow().last().map(|p| p.total), Some(1));
     // Nothing moved: it is a scan.
     assert!(fx.system.file_system.trashed().is_empty());
-    cleaner::clean_plan(&fx.core, &result.plan_id, &ids(&["user-temp"])).expect("clean");
+    cleaner::clean_plan(&fx.core, &result.plan_id, &ids(&["user-temp"]), &[]).expect("clean");
 
     let none = cleaner::scan_cleaning_rules(&fx.core, &[], &|_| {});
     assert!(matches!(none, Err(IpcError::InvalidInput { .. })));
@@ -352,7 +355,7 @@ fn only_one_scan_runs_at_a_time_and_a_clean_waits_for_it() {
         if progress.done == 0 {
             *inner.borrow_mut() = Some((
                 cleaner::scan_cleaning(&fx.core, &|_| {}),
-                cleaner::clean_plan(&fx.core, &first.plan_id, &ids(&["user-temp"])),
+                cleaner::clean_plan(&fx.core, &first.plan_id, &ids(&["user-temp"]), &[]),
             ));
         }
     })
@@ -421,4 +424,167 @@ fn a_core_built_without_a_bin_never_reaches_the_real_one() {
         cleaner::recycle_bin_status(&core),
         Err(IpcError::Unsupported { .. })
     ));
+}
+
+// ---- items, folders and picked items ----------------------------------------------------------
+
+fn hub() -> PathBuf {
+    abs("Users/tester/.cache/huggingface/hub")
+}
+
+fn with_models(fx: &Fixture) {
+    let fs = &fx.system.file_system;
+    fs.add_file_at(hub().join("models--org--big/blobs/a"), 6000, ancient());
+    fs.add_file_at(hub().join("models--org--small/blobs/b"), 300, ancient());
+}
+
+#[test]
+fn a_scan_lists_the_items_of_a_picked_rule_and_only_the_picked_ones_move() {
+    let fx = fixture();
+    with_models(&fx);
+    let result = scan(&fx.core);
+    let view = result
+        .rules
+        .iter()
+        .find(|v| v.rule.id == "huggingface-hub-cache")
+        .expect("rule");
+    assert!(view.rule.pick_items);
+    assert_eq!(view.rule.category, CleanCategoryView::AiModelCache);
+    let names: Vec<&str> = view.items.iter().map(|i| i.name.as_str()).collect();
+    assert_eq!(names, ["models--org--big", "models--org--small"]);
+    assert!((view.items[0].bytes - 6000.0).abs() < 0.5);
+    assert_eq!(view.items[0].files, 1);
+    assert_eq!(view.files, 2);
+    // Items are named, never located: a name is not a path.
+    assert!(view.items.iter().all(|i| !i.name.contains(['/', '\\'])));
+    // Other rules list no items.
+    assert!(
+        result
+            .rules
+            .iter()
+            .filter(|v| !v.rule.pick_items)
+            .all(|v| v.items.is_empty())
+    );
+
+    let rule = ids(&["huggingface-hub-cache"]);
+    // Choosing the rule without picking an item is refused, and so is an item that is not there
+    // or items for a rule that is not picked.
+    let none = cleaner::clean_plan(&fx.core, &result.plan_id, &rule, &[]);
+    assert!(
+        matches!(none, Err(IpcError::InvalidInput { .. })),
+        "{none:?}"
+    );
+    let pick = |rule_id: &str, items: Vec<u32>| cleaner::ItemPick {
+        rule_id: rule_id.to_owned(),
+        items,
+    };
+    let bad = cleaner::clean_plan(
+        &fx.core,
+        &result.plan_id,
+        &rule,
+        &[pick("huggingface-hub-cache", vec![9])],
+    );
+    assert!(matches!(bad, Err(IpcError::InvalidInput { .. })), "{bad:?}");
+    let stray = cleaner::clean_plan(
+        &fx.core,
+        &result.plan_id,
+        &rule,
+        &[pick("user-temp", vec![0])],
+    );
+    assert!(
+        matches!(stray, Err(IpcError::InvalidInput { .. })),
+        "{stray:?}"
+    );
+    assert!(fx.system.file_system.trashed().is_empty());
+
+    let run = cleaner::clean_plan(
+        &fx.core,
+        &result.plan_id,
+        &rule,
+        &[pick("huggingface-hub-cache", vec![1])],
+    )
+    .expect("clean");
+    assert_eq!(run.moved_files, 1);
+    assert!((run.moved_bytes - 300.0).abs() < 0.5);
+    assert_eq!(
+        fx.system.file_system.trashed(),
+        [hub().join("models--org--small")]
+    );
+    assert!(
+        fx.system
+            .file_system
+            .exists(&hub().join("models--org--big/blobs/a"))
+    );
+}
+
+#[test]
+fn a_folder_is_added_for_a_rule_that_needs_one_and_removed_again() {
+    let fx = fixture();
+    let comfy = abs("AI/ComfyUI");
+    fx.system.file_system.add_dir(&comfy, Some(ancient()));
+    fx.system
+        .file_system
+        .add_file_at(comfy.join("temp/p.png"), 10, ancient());
+    let listed = |fx: &Fixture| {
+        cleaner::list_cleaning_rules(&fx.core)
+            .expect("rules")
+            .into_iter()
+            .find(|r| r.id == "comfyui-temp")
+            .expect("rule")
+    };
+    let before = listed(&fx);
+    assert!(before.needs_folder);
+    assert_eq!(before.chosen_folder, None);
+    let waiting = scan(&fx.core);
+    let view = waiting
+        .rules
+        .iter()
+        .find(|v| v.rule.id == "comfyui-temp")
+        .expect("rule");
+    assert_eq!(view.problem, None, "waiting for a folder is not a problem");
+    assert_eq!(view.files, 0);
+
+    // Refused: a rule that needs no folder, a folder that is not there, an output folder.
+    for (rule, folder) in [
+        ("user-temp", comfy.to_string_lossy().into_owned()),
+        (
+            "comfyui-temp",
+            abs("AI/Missing").to_string_lossy().into_owned(),
+        ),
+    ] {
+        let refused = cleaner::choose_cleaning_folder(&fx.core, rule, &folder);
+        assert!(
+            matches!(refused, Err(IpcError::InvalidInput { .. })),
+            "{rule}: {refused:?}"
+        );
+    }
+    fx.system.file_system.add_dir(comfy.join("output"), None);
+    let output = cleaner::choose_cleaning_folder(
+        &fx.core,
+        "comfyui-temp",
+        &comfy.join("output").to_string_lossy(),
+    );
+    assert!(
+        matches!(output, Err(IpcError::InvalidInput { .. })),
+        "{output:?}"
+    );
+
+    cleaner::choose_cleaning_folder(&fx.core, "comfyui-temp", &comfy.to_string_lossy())
+        .expect("chosen");
+    assert_eq!(
+        listed(&fx).chosen_folder.as_deref(),
+        Some(comfy.to_string_lossy().as_ref())
+    );
+    let found = scan(&fx.core);
+    let view = found
+        .rules
+        .iter()
+        .find(|v| v.rule.id == "comfyui-temp")
+        .expect("rule");
+    assert_eq!(view.files, 1);
+    assert_eq!(view.samples, ["chosen_folder/temp/p.png"]);
+
+    cleaner::forget_cleaning_folder(&fx.core, "comfyui-temp").expect("forgotten");
+    assert_eq!(listed(&fx).chosen_folder, None);
+    assert!(fx.system.file_system.exists(&comfy.join("temp/p.png")));
 }

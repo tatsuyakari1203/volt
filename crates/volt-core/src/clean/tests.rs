@@ -1866,3 +1866,556 @@ fn a_scan_names_the_running_programs_of_the_rule_only() {
     let plain = f.engine(&default_rule()).with_processes(processes);
     assert!(only(&plain.scan_all()).running_programs.is_empty());
 }
+
+// ---- items, folders, followed variables and folders the user chose ---------------------------
+
+fn models_rule(extra: &str) -> String {
+    format!(
+        r#"
+[[rule]]
+id = "models"
+title = "Models"
+description = "Downloaded models."
+category = "ai_model_cache"
+risk = "caution"
+unit = "entries"
+pick = true
+include = ["models--*"]
+{extra}
+root = {{ location = "user_profile", path = ".cache/hub" }}
+constraints = {{ min_age_days = 0, max_depth = 0 }}
+"#
+    )
+}
+
+fn hub() -> PathBuf {
+    abs("Users/tester/.cache/hub")
+}
+
+fn profile_fixture() -> Fixture {
+    let f = Fixture::new();
+    f.folders.set(Location::UserProfile, abs("Users/tester"));
+    f
+}
+
+#[test]
+fn the_new_rule_fields_load_and_are_checked() {
+    let rules = CleaningRules::from_toml(&models_rule(
+        r#"follow = [{ var = "HF_HUB_CACHE", source = "Hugging Face docs" }, { var = "HF_HOME", path = "hub", source = "Hugging Face docs" }]"#,
+    ))
+    .expect("loads");
+    let rule = rules.get("models").expect("rule");
+    assert_eq!(rule.unit, ItemUnit::Entries);
+    assert!(rule.pick);
+    assert_eq!(rule.follow.len(), 2);
+    assert_eq!(rule.follow[1].path, ["hub"]);
+    assert_eq!(rule.follow[1].source, "Hugging Face docs");
+
+    // Picking items needs whole entries.
+    let no_entries = models_rule("").replace("unit = \"entries\"\n", "");
+    assert!(CleaningRules::from_toml(&no_entries).is_err());
+    for bad in [
+        r#"follow = [{ var = "HF HOME", source = "x" }]"#,
+        r#"follow = [{ var = "HF_HOME" }]"#,
+        r#"follow = [{ var = "HF_HOME", source = "x", path = "../up" }]"#,
+        r#"follow = [{ var = "HF_HOME", source = "x", other = 1 }]"#,
+        r#"follow = "HF_HOME""#,
+    ] {
+        assert!(
+            CleaningRules::from_toml(&models_rule(bad)).is_err(),
+            "{bad} must be refused"
+        );
+    }
+    // A rule in a folder the user chose needs a relative path and cannot follow a variable.
+    let chosen = |path: &str, follow: &str| {
+        format!(
+            r#"
+[[rule]]
+id = "comfy"
+title = "t"
+description = "d"
+category = "application_cache"
+risk = "safe"
+include = ["**"]
+{follow}
+root = {{ location = "chosen_folder", path = "{path}" }}
+constraints = {{ min_age_days = 1, max_depth = 2 }}
+"#
+        )
+    };
+    assert!(CleaningRules::from_toml(&chosen("temp", "")).is_ok());
+    assert!(CleaningRules::from_toml(&chosen("", "")).is_err());
+    assert!(
+        CleaningRules::from_toml(&chosen("temp", r#"follow = [{ var = "X", source = "s" }]"#))
+            .is_err()
+    );
+    // LocalLow is a location rules can name.
+    let low = temp_rule("low", r#"["**"]"#, "[]", "min_age_days = 1\nmax_depth = 1").replace(
+        r#"location = "user_temp""#,
+        "location = \"local_low\"\npath = \"NVIDIA\"",
+    );
+    assert_eq!(
+        CleaningRules::from_toml(&low)
+            .expect("loads")
+            .get("low")
+            .expect("rule")
+            .root
+            .location(),
+        Location::LocalLow
+    );
+}
+
+/// Two models: one with a link inside (as Hugging Face snapshots have), one plain; and things the
+/// rule does not match.
+fn install_models(f: &Fixture) {
+    let a = hub().join("models--org--a");
+    f.fs.add_file_at(a.join("blobs").join("b1"), 1000, ago(30));
+    f.fs.add_file_at(a.join("blobs").join("b2"), 500, ago(10));
+    f.fs.add_link(a.join("snapshots").join("rev").join("model.bin"));
+    let b = hub().join("models--org--b");
+    f.fs.add_file_at(b.join("blobs").join("c1"), 200, ago(1));
+    f.fs.add_file_at(hub().join(".locks").join("x.lock"), 1, ago(1));
+    f.fs.add_file_at(hub().join("token"), 1, ago(1));
+}
+
+#[test]
+fn a_rule_with_entries_lists_each_folder_as_one_item_with_its_size() {
+    let f = profile_fixture();
+    install_models(&f);
+    let engine = f.engine(&models_rule(""));
+    let plan = engine.scan(&["models"]).expect("scan");
+    let scan = only(&plan);
+    assert_eq!(scan.failure, None);
+    assert!(scan.pick);
+    assert_eq!(
+        paths(scan),
+        [hub().join("models--org--a"), hub().join("models--org--b")]
+    );
+    let a = &scan.items[0];
+    assert_eq!(a.kind, ItemKind::Folder);
+    assert_eq!((a.size_bytes, a.file_count), (1500, 2));
+    assert_eq!(a.modified, Some(ago(10)));
+    assert_eq!(scan.file_count(), 3);
+    assert_eq!(scan.total_bytes(), 1700);
+    assert_eq!(
+        scan.counts.links, 1,
+        "the link inside is counted, not followed"
+    );
+    assert_eq!(scan.counts.not_matching, 2);
+    // Nothing is confirmed without picking: a rule picked by item is left out of the whole-plan
+    // confirmations.
+    assert!(plan.confirm().rules().is_empty());
+    assert!(plan.confirm_rules(&["models"]).rules().is_empty());
+}
+
+#[test]
+fn only_the_picked_items_are_moved_and_a_folder_goes_in_one_move() {
+    let f = profile_fixture();
+    install_models(&f);
+    let engine = f.engine(&models_rule(""));
+    let plan = engine.scan(&["models"]).expect("scan");
+    let confirmed = plan
+        .confirm_selection(&[RuleSelection {
+            rule_id: "models".to_owned(),
+            items: Some(vec![1]),
+        }])
+        .expect("confirmed");
+    let report = engine.clean(&confirmed, Source::Manual);
+    assert_eq!(report.skipped_count(), 0, "{report:?}");
+    assert_eq!(report.moved_files(), 1);
+    assert_eq!(report.moved_bytes(), 200);
+    // One move for the whole folder, not one per file.
+    assert_eq!(f.fs.trash_attempts(), [hub().join("models--org--b")]);
+    assert!(f.fs.exists(&hub().join("models--org--a").join("blobs").join("b1")));
+    assert!(!f.fs.exists(&hub().join("models--org--b")));
+    assert!(f.fs.exists(&hub().join("token")));
+}
+
+#[test]
+fn a_selection_must_name_real_items_of_a_rule_that_is_picked_by_item() {
+    let f = profile_fixture();
+    install_models(&f);
+    f.fs.add_file_at(temp().join("a.tmp"), 1, ago(30));
+    let both = format!(
+        "{}{}",
+        models_rule(""),
+        default_rule().replace("temp-files", "plain")
+    );
+    let engine = f.engine(&both);
+    let plan = engine.scan(&["models", "plain"]).expect("scan");
+    let select = |rule: &str, items: Option<Vec<usize>>| {
+        plan.confirm_selection(&[RuleSelection {
+            rule_id: rule.to_owned(),
+            items,
+        }])
+    };
+    assert_eq!(
+        select("models", None).unwrap_err(),
+        SelectionError::NothingPicked("models".to_owned())
+    );
+    assert_eq!(
+        select("models", Some(vec![])).unwrap_err(),
+        SelectionError::NothingPicked("models".to_owned())
+    );
+    assert_eq!(
+        select("models", Some(vec![7])).unwrap_err(),
+        SelectionError::NoSuchItem("models".to_owned(), 7)
+    );
+    assert_eq!(
+        select("plain", Some(vec![0])).unwrap_err(),
+        SelectionError::NotPickable("plain".to_owned())
+    );
+    assert_eq!(
+        select("ghost", None).unwrap_err(),
+        SelectionError::NotInPlan("ghost".to_owned())
+    );
+    assert!(select("plain", None).is_ok());
+    assert!(select("models", Some(vec![0, 1])).is_ok());
+}
+
+#[test]
+fn a_folder_that_changed_since_the_scan_is_not_moved() {
+    let f = profile_fixture();
+    install_models(&f);
+    let engine = f.engine(&models_rule(""));
+    let plan = engine.scan(&["models"]).expect("scan");
+    // A program writes a new file into the model after the scan.
+    f.fs.add_file_at(
+        hub().join("models--org--b").join("blobs").join("new"),
+        5,
+        ago(0),
+    );
+    let confirmed = plan
+        .confirm_selection(&[RuleSelection {
+            rule_id: "models".to_owned(),
+            items: Some(vec![0, 1]),
+        }])
+        .expect("confirmed");
+    let report = engine.clean(&confirmed, Source::Manual);
+    assert_eq!(report.rules[0].moved.len(), 1);
+    assert_eq!(report.rules[0].skipped.len(), 1);
+    assert_eq!(report.rules[0].skipped[0].reason, CleanSkipReason::Changed);
+    assert!(f.fs.exists(&hub().join("models--org--b")));
+}
+
+#[test]
+fn a_folder_with_something_unreadable_inside_is_left_out_and_reported() {
+    let f = profile_fixture();
+    install_models(&f);
+    f.fs.fail_read_dir_of(
+        hub().join("models--org--a").join("blobs"),
+        PortError::AccessDenied("denied".to_owned()),
+    );
+    let engine = f.engine(&models_rule(""));
+    let plan = engine.scan(&["models"]).expect("scan");
+    let scan = only(&plan);
+    assert_eq!(paths(scan), [hub().join("models--org--b")]);
+    assert_eq!(scan.counts.access_denied, 1);
+}
+
+fn chosen_rule() -> String {
+    r#"
+[[rule]]
+id = "comfy"
+title = "ComfyUI temp"
+description = "Temp files."
+category = "application_cache"
+risk = "safe"
+include = ["**"]
+root = { location = "chosen_folder", path = "temp" }
+constraints = { min_age_days = 1, max_depth = 3, remove_empty_dirs = true }
+"#
+    .to_owned()
+}
+
+fn chosen_engine(f: &Fixture) -> (CleanEngine, Arc<FakeSettings>) {
+    let settings = Arc::new(FakeSettings::new());
+    (
+        f.engine(&chosen_rule()).with_settings(settings.clone()),
+        settings,
+    )
+}
+
+#[test]
+fn a_rule_that_needs_a_folder_waits_until_one_is_chosen() {
+    let f = Fixture::new();
+    let (engine, settings) = chosen_engine(&f);
+    let scan = engine.scan_all();
+    assert_eq!(
+        only(&scan).failure,
+        Some(ScanFailure::Root(RootError::FolderNotChosen))
+    );
+    assert_eq!(engine.chosen_folder("comfy"), Ok(None));
+
+    let install = abs("AI/ComfyUI");
+    f.fs.add_dir(&install, Some(ago(400)));
+    f.fs.add_file_at(install.join("temp").join("preview.png"), 10, ago(30));
+    f.fs.add_file_at(install.join("temp").join("fresh.png"), 10, ago(0));
+    f.fs.add_file_at(install.join("output").join("image.png"), 10, ago(30));
+    f.fs.add_file_at(install.join("models").join("m.safetensors"), 10, ago(30));
+    engine.choose_folder("comfy", &install).expect("chosen");
+    assert_eq!(engine.chosen_folder("comfy"), Ok(Some(install.clone())));
+    assert!(
+        settings
+            .get(CHOSEN_FOLDERS_SETTING)
+            .expect("read")
+            .is_some()
+    );
+
+    let plan = engine.scan_all();
+    let scan = only(&plan);
+    assert_eq!(scan.failure, None);
+    assert_eq!(scan.root.as_deref(), Some(install.join("temp").as_path()));
+    assert_eq!(paths(scan), [install.join("temp").join("preview.png")]);
+    let report = engine.clean(&plan.confirm(), Source::Manual);
+    assert_eq!(report.moved_files(), 1);
+    assert!(f.fs.exists(&install.join("output").join("image.png")));
+    assert!(f.fs.exists(&install.join("models").join("m.safetensors")));
+
+    // The choice is only forgotten: the folder is untouched.
+    engine.forget_folder("comfy").expect("forgotten");
+    assert_eq!(engine.chosen_folder("comfy"), Ok(None));
+    assert_eq!(settings.get(CHOSEN_FOLDERS_SETTING).expect("read"), None);
+    assert!(f.fs.exists(&install.join("models").join("m.safetensors")));
+    engine
+        .forget_folder("comfy")
+        .expect("forgetting twice is fine");
+}
+
+#[test]
+fn a_folder_that_could_hold_more_than_a_cache_cannot_be_chosen() {
+    let f = Fixture::new();
+    let (engine, _) = chosen_engine(&f);
+    let refused = |path: PathBuf| engine.choose_folder("comfy", &path).unwrap_err();
+    // Not there, not a folder.
+    assert_eq!(refused(abs("AI/Missing")), FolderError::NotAFolder);
+    f.fs.add_file(abs("AI/file.txt"), 1);
+    assert_eq!(refused(abs("AI/file.txt")), FolderError::NotAFolder);
+    f.fs.add_link(abs("AI/link"));
+    assert_eq!(refused(abs("AI/link")), FolderError::NotAFolder);
+    // Relative, too broad, protected, and the output folder of an image generator.
+    assert!(matches!(
+        refused(PathBuf::from("ComfyUI")),
+        FolderError::Refused(RootError::NotAbsolute)
+    ));
+    f.fs.add_dir(abs(""), None);
+    assert!(matches!(
+        refused(abs("")),
+        FolderError::Refused(RootError::TooBroad)
+    ));
+    f.fs.add_dir(abs("Users/tester"), None);
+    assert!(matches!(
+        refused(abs("Users/tester")),
+        FolderError::Refused(RootError::TooBroad)
+    ));
+    f.folders.set_system_folders(vec![abs("Windows")]);
+    f.fs.add_dir(abs("Windows/Servicing"), None);
+    assert!(matches!(
+        refused(abs("Windows/Servicing")),
+        FolderError::Refused(RootError::TooBroad)
+    ));
+    f.fs.add_dir(abs("AI/ComfyUI/output"), None);
+    assert!(matches!(
+        refused(abs("AI/ComfyUI/output")),
+        FolderError::Refused(RootError::OutputFolder)
+    ));
+    assert_eq!(engine.chosen_folder("comfy"), Ok(None));
+    // A rule that needs no folder, and one that does not exist.
+    let plain = f
+        .engine(&default_rule())
+        .with_settings(Arc::new(FakeSettings::new()));
+    assert!(matches!(
+        plain.choose_folder("temp-files", &abs("AI")),
+        Err(FolderError::NotChoosable(_))
+    ));
+    assert!(matches!(
+        plain.choose_folder("ghost", &abs("AI")),
+        Err(FolderError::UnknownRule(_))
+    ));
+    // Without settings nothing can be kept.
+    assert_eq!(
+        f.engine(&chosen_rule())
+            .choose_folder("comfy", &abs("AI/ComfyUI"))
+            .unwrap_err(),
+        FolderError::NoSettings
+    );
+}
+
+#[test]
+fn output_folders_are_never_offered_even_when_the_rule_would_match_them() {
+    let f = Fixture::new();
+    // A rule that takes everything below `temp`, including folders called Output inside it, and a
+    // stored folder that was edited to lie in an output folder.
+    let (engine, settings) = chosen_engine(&f);
+    let install = abs("AI/ComfyUI");
+    f.fs.add_dir(&install, Some(ago(400)));
+    f.fs.add_file_at(install.join("temp").join("a.png"), 10, ago(30));
+    f.fs.add_file_at(
+        install.join("temp").join("Output").join("kept.png"),
+        10,
+        ago(30),
+    );
+    f.fs.add_file_at(
+        install
+            .join("temp")
+            .join("sub")
+            .join("outputs")
+            .join("kept.png"),
+        10,
+        ago(30),
+    );
+    engine.choose_folder("comfy", &install).expect("chosen");
+    let plan = engine.scan_all();
+    assert_eq!(paths(only(&plan)), [install.join("temp").join("a.png")]);
+
+    // A plan edited to name an output file is refused at clean time, too.
+    let mut tampered = plan.clone();
+    tampered.rules[0].items.push(CleanItem {
+        path: install.join("temp").join("Output").join("kept.png"),
+        kind: ItemKind::File,
+        size_bytes: 10,
+        file_count: 1,
+        modified: Some(ago(30)),
+    });
+    let report = engine.clean(&tampered.confirm(), Source::Manual);
+    assert_eq!(report.rules[0].moved.len(), 1);
+    assert_eq!(
+        report.rules[0].skipped[0].reason,
+        CleanSkipReason::NotAllowedByRule
+    );
+    assert!(f.fs.exists(&install.join("temp").join("Output").join("kept.png")));
+
+    // A stored folder that is an output folder is refused at scan time.
+    settings
+        .set(
+            CHOSEN_FOLDERS_SETTING,
+            &serde_json::json!({ "comfy": abs("AI/ComfyUI/output").to_string_lossy() }),
+        )
+        .expect("set");
+    assert_eq!(
+        only(&engine.scan_all()).failure,
+        Some(ScanFailure::Root(RootError::OutputFolder))
+    );
+}
+
+fn cargo_rule() -> String {
+    r#"
+[[rule]]
+id = "cargo"
+title = "Cargo"
+description = "Crates."
+category = "developer_cache"
+risk = "caution"
+include = ["registry/cache/**"]
+follow = [
+  { var = "CARGO_HOME", source = "The Cargo Book" },
+  { var = "OTHER_HOME", path = "cache", source = "Other docs" },
+]
+root = { location = "user_profile", path = ".cargo" }
+constraints = { min_age_days = 0, max_depth = 8 }
+"#
+    .to_owned()
+}
+
+fn followed_fixture() -> (Fixture, CleanEngine) {
+    let f = profile_fixture();
+    f.folders.protect(abs("Users/tester/AppData/Local"));
+    f.folders
+        .set_system_folders(vec![abs("Windows"), abs("Program Files")]);
+    let engine = f.engine(&cargo_rule());
+    (f, engine)
+}
+
+#[test]
+fn a_documented_variable_moves_the_root_and_the_scan_says_so() {
+    let (f, engine) = followed_fixture();
+    f.fs.add_file_at(
+        abs("Users/tester/.cargo/registry/cache/old.crate"),
+        1,
+        ago(5),
+    );
+    let default_scan = engine.scan_all();
+    assert_eq!(only(&default_scan).followed_by, None);
+    assert_eq!(paths(only(&default_scan)).len(), 1);
+
+    // A top-level folder on another drive is a plausible cache folder.
+    f.folders.set_env("CARGO_HOME", abs("cargo"));
+    f.fs.add_file_at(abs("cargo/registry/cache/moved.crate"), 7, ago(5));
+    let plan = engine.scan_all();
+    let scan = only(&plan);
+    assert_eq!(scan.followed_by.as_deref(), Some("CARGO_HOME"));
+    assert_eq!(scan.root.as_deref(), Some(abs("cargo").as_path()));
+    assert_eq!(paths(scan), [abs("cargo/registry/cache/moved.crate")]);
+
+    // The clean checks the root again: it is the followed one, and it still moves the file.
+    let report = engine.clean(&plan.confirm(), Source::Manual);
+    assert_eq!(report.moved_files(), 1);
+    assert!(f.fs.exists(&abs("Users/tester/.cargo/registry/cache/old.crate")));
+
+    // The variable changes after the scan: the plan is stale and nothing moves.
+    f.fs.add_file_at(abs("cargo/registry/cache/again.crate"), 7, ago(5));
+    let stale = engine.scan_all();
+    f.folders.set_env("CARGO_HOME", abs("elsewhere/cargo"));
+    let report = engine.clean(&stale.confirm(), Source::Manual);
+    assert!(report.rules[0].moved.is_empty());
+    assert_eq!(
+        report.rules[0].skipped[0].reason,
+        CleanSkipReason::RootChanged
+    );
+}
+
+#[test]
+fn variables_are_tried_in_order_and_add_their_own_subfolder() {
+    let (f, engine) = followed_fixture();
+    f.folders.set_env("OTHER_HOME", abs("tools/other"));
+    assert_eq!(
+        only(&engine.scan_all()).root.as_deref(),
+        Some(abs("tools/other/cache").as_path())
+    );
+    f.folders.set_env("CARGO_HOME", abs("tools/cargo"));
+    assert_eq!(
+        only(&engine.scan_all()).root.as_deref(),
+        Some(abs("tools/cargo").as_path()),
+        "the first variable of the rule wins"
+    );
+}
+
+#[test]
+fn a_variable_that_is_not_a_plausible_cache_folder_is_ignored() {
+    let (f, engine) = followed_fixture();
+    let default_root = abs("Users/tester/.cargo");
+    for bad in [
+        abs(""),                           // a drive root
+        abs("Users/tester"),               // the profile itself
+        abs("Users/tester/AppData/Local"), // a folder above protected data
+        abs("Windows"),                    // a system folder
+        abs("Windows/System32/cargo"),     // inside one
+        abs("Program Files/cargo"),        // inside one
+        PathBuf::from("relative/cargo"),   // not absolute
+        abs("tools/../Windows"),           // climbs out
+    ] {
+        f.folders.set_env("CARGO_HOME", bad.clone());
+        let plan = engine.scan_all();
+        let scan = only(&plan);
+        assert_eq!(scan.followed_by, None, "{bad:?} must be ignored");
+        assert_eq!(
+            scan.root.as_deref(),
+            Some(default_root.as_path()),
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
+fn without_a_system_folder_list_protected_variables_are_still_ignored() {
+    let f = profile_fixture();
+    // No system folders given (the fake then reports them unsupported).
+    let engine = f.engine(&cargo_rule());
+    f.folders.set_env("CARGO_HOME", abs("Users/tester"));
+    assert_eq!(only(&engine.scan_all()).followed_by, None);
+    f.folders.set_env("CARGO_HOME", abs("tools/cargo"));
+    assert_eq!(
+        only(&engine.scan_all()).followed_by.as_deref(),
+        Some("CARGO_HOME")
+    );
+}

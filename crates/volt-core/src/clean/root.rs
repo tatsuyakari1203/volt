@@ -3,8 +3,8 @@
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 
-use super::folders::KnownFolders;
-use super::rule::CleaningRule;
+use super::folders::{KnownFolders, Location};
+use super::rule::{CleaningRule, is_output_folder_name};
 use crate::activity::error_class;
 
 /// Why a rule's root cannot be used.
@@ -22,6 +22,10 @@ pub enum RootError {
     /// The root is, or lies above, a protected folder such as the user
     /// profile. Holds the protected folder.
     Protected(PathBuf),
+    /// The rule works in a folder the user chooses and none is chosen yet.
+    FolderNotChosen,
+    /// The chosen folder is, or lies in, an output folder (`output`), which is never cleaned.
+    OutputFolder,
 }
 
 impl fmt::Display for RootError {
@@ -37,6 +41,10 @@ impl fmt::Display for RootError {
                 "the root is, or contains, the protected folder {}",
                 folder.display()
             ),
+            Self::FolderNotChosen => f.write_str("no folder is chosen for this rule yet"),
+            Self::OutputFolder => {
+                f.write_str("the chosen folder is an output folder, which is never cleaned")
+            }
         }
     }
 }
@@ -59,6 +67,60 @@ pub(crate) fn same_path_ci(a: &Path, b: &Path) -> bool {
     folded(a) == folded(b)
 }
 
+/// The root of a rule, and the environment variable it was found through, if any.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ResolvedRoot {
+    pub(super) path: PathBuf,
+    /// The variable that moved the root (see [`Follow`](super::Follow)).
+    pub(super) followed: Option<String>,
+}
+
+/// Whether the folder an environment variable names can be where a tool keeps its cache: an
+/// absolute path without `.` or `..`, not a drive root, not a protected folder or one that
+/// contains a protected folder (the profile, `AppData`), and not inside a system folder.
+fn plausible_cache_folder(folder: &Path, folders: &dyn KnownFolders) -> bool {
+    if !folder.is_absolute()
+        || folder
+            .components()
+            .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
+        || !folder
+            .components()
+            .any(|c| matches!(c, Component::Normal(_)))
+    {
+        return false;
+    }
+    let Ok(protected) = folders.protected_folders() else {
+        return false;
+    };
+    if protected
+        .iter()
+        .any(|protected| starts_with_ci(protected, folder))
+    {
+        return false;
+    }
+    // A system folder list the adapter cannot give is not a reason to refuse: the protected list
+    // above already holds the Windows directory and Program Files.
+    folders.system_folders().map_or(true, |system| {
+        system.iter().all(|s| !starts_with_ci(folder, s))
+    })
+}
+
+/// The root a tool's documented variable moves the rule to, when one is set to a plausible folder.
+fn followed_root(rule: &CleaningRule, folders: &dyn KnownFolders) -> Option<ResolvedRoot> {
+    rule.follow.iter().find_map(|follow| {
+        let base = folders.env_folder(&follow.var)?;
+        if !plausible_cache_folder(&base, folders) {
+            return None;
+        }
+        let mut path = base;
+        path.extend(&follow.path);
+        Some(ResolvedRoot {
+            path,
+            followed: Some(follow.var.clone()),
+        })
+    })
+}
+
 /// The folder a rule starts from.
 ///
 /// Refused: a location that cannot be resolved or is not absolute, a root that
@@ -69,10 +131,30 @@ pub(crate) fn same_path_ci(a: &Path, b: &Path) -> bool {
 pub(super) fn resolve_root(
     rule: &CleaningRule,
     folders: &dyn KnownFolders,
-) -> Result<PathBuf, RootError> {
-    let base = folders
-        .location(rule.root.location)
-        .map_err(|e| RootError::Unavailable(error_class(&e)))?;
+    chosen: Option<&Path>,
+) -> Result<ResolvedRoot, RootError> {
+    if let Some(found) = followed_root(rule, folders) {
+        return Ok(found);
+    }
+    let base = if rule.root.location == Location::ChosenFolder {
+        let chosen = chosen.ok_or(RootError::FolderNotChosen)?;
+        if chosen
+            .components()
+            .any(|c| is_output_folder_name(&c.as_os_str().to_string_lossy()))
+        {
+            return Err(RootError::OutputFolder);
+        }
+        // A folder the user chose is judged like a folder a variable names: never a drive root,
+        // the profile, a system folder or one that holds protected data.
+        if !plausible_cache_folder(chosen, folders) {
+            return Err(RootError::TooBroad);
+        }
+        chosen.to_path_buf()
+    } else {
+        folders
+            .location(rule.root.location)
+            .map_err(|e| RootError::Unavailable(error_class(&e)))?
+    };
     if !base.is_absolute() {
         return Err(RootError::NotAbsolute);
     }
@@ -103,5 +185,8 @@ pub(super) fn resolve_root(
     {
         return Err(RootError::Protected(folder));
     }
-    Ok(root)
+    Ok(ResolvedRoot {
+        path: root,
+        followed: None,
+    })
 }

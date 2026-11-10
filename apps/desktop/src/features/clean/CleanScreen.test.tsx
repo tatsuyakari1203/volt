@@ -39,6 +39,10 @@ const temp: CleaningRuleInfo = {
   risk: 'safe',
   needsAdministrator: false,
   minAgeDays: 7,
+  pickItems: false,
+  needsFolder: false,
+  chosenFolder: null,
+  follows: [],
 };
 const thumbs: CleaningRuleInfo = {
   id: 'thumbnail-cache',
@@ -49,6 +53,10 @@ const thumbs: CleaningRuleInfo = {
   risk: 'safe',
   needsAdministrator: false,
   minAgeDays: 0,
+  pickItems: false,
+  needsFolder: false,
+  chosenFolder: null,
+  follows: [],
 };
 const careful: CleaningRuleInfo = {
   id: 'careful',
@@ -59,6 +67,10 @@ const careful: CleaningRuleInfo = {
   risk: 'caution',
   needsAdministrator: false,
   minAgeDays: 0,
+  pickItems: false,
+  needsFolder: false,
+  chosenFolder: null,
+  follows: [],
 };
 const machine: CleaningRuleInfo = {
   id: 'windows-temp',
@@ -69,6 +81,10 @@ const machine: CleaningRuleInfo = {
   risk: 'caution',
   needsAdministrator: true,
   minAgeDays: 7,
+  pickItems: false,
+  needsFolder: false,
+  chosenFolder: null,
+  follows: [],
 };
 const chrome: CleaningRuleInfo = {
   id: 'chrome-cache',
@@ -79,6 +95,10 @@ const chrome: CleaningRuleInfo = {
   risk: 'safe',
   needsAdministrator: false,
   minAgeDays: 1,
+  pickItems: false,
+  needsFolder: false,
+  chosenFolder: null,
+  follows: [],
 };
 const allRules = [temp, machine, thumbs, careful];
 
@@ -96,6 +116,8 @@ function view(rule: CleaningRuleInfo, extra: Partial<RuleScanView> = {}): RuleSc
     problem: null,
     problemPhrase: null,
     samples: [],
+    items: [],
+    followedBy: null,
     ...extra,
   };
 }
@@ -336,7 +358,11 @@ describe('choosing and cleaning', () => {
     ipc.cleanSelectedRules.mockResolvedValue(cleaned);
     await user.click(within(dialog).getByRole('button', { name: 'Move to Recycle Bin' }));
     const result = await screen.findByRole('region', { name: 'Clean result' });
-    expect(ipc.cleanSelectedRules).toHaveBeenCalledWith('scan-1', ['user-temp', 'thumbnail-cache']);
+    expect(ipc.cleanSelectedRules).toHaveBeenCalledWith(
+      'scan-1',
+      ['user-temp', 'thumbnail-cache'],
+      [],
+    );
 
     // The result reads as a move, with reasons, and never claims space was freed.
     expect(result.textContent).toContain('Moved to the Recycle Bin');
@@ -543,6 +569,10 @@ describe('helpers', () => {
       category: 'browserCache',
       categoryLabel: 'Browser caches',
       minAgeDays: 1,
+      pickItems: false,
+      needsFolder: false,
+      chosenFolder: null,
+      follows: [],
     };
     expect(tickedByDefault(chrome)).toBe(false);
   });

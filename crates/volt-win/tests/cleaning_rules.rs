@@ -51,6 +51,7 @@ impl KnownFolders for TempFolders {
             Location::ProgramData => self.folder("ProgramData"),
             Location::Windows => self.folder("Windows"),
             Location::UserProfile => self.folder("Profile"),
+            Location::LocalLow => self.folder("LocalLow"),
             other => return Err(PortError::Unsupported(format!("location {other}"))),
         })
     }
@@ -212,7 +213,9 @@ fn a_machine_wide_rule_over_a_missing_location_is_nothing_to_clean() {
     let plan = engine.scan_all();
     assert!(plan.is_empty());
     for scan in &plan.rules {
-        assert_eq!(scan.failure, None, "{}", scan.rule_id);
+        // A rule that works in a folder the user adds waits for one.
+        let waiting = scan.rule_id == "comfyui-temp";
+        assert_eq!(scan.failure.is_some(), waiting, "{}", scan.rule_id);
         assert!(!scan.root_exists, "{}", scan.rule_id);
         assert!(!scan.needs_administrator(), "{}", scan.rule_id);
     }
@@ -241,7 +244,7 @@ fn a_read_only_scan_of_every_rule_on_this_machine() {
             .map_or_else(|| "none".to_owned(), ToString::to_string);
         eprintln!(
             "{:<28} admin-rule={:<5} root_exists={:<5} needs_admin={:<5} files={:<6} folders={:<4} \
-             bytes={:<12} too_new={:<5} denied={:<4} unreadable={:<4} failure={}",
+             bytes={:<12} too_new={:<5} denied={:<4} unreadable={:<4} items={:<4} links={:<3}              followed={:?} failure={}",
             scan.rule_id,
             scan.requires_admin,
             scan.root_exists,
@@ -252,6 +255,9 @@ fn a_read_only_scan_of_every_rule_on_this_machine() {
             scan.counts.too_new,
             scan.counts.access_denied,
             scan.counts.unreadable,
+            scan.items.len(),
+            scan.counts.links,
+            scan.followed_by,
             failure,
         );
         // Whatever the machine looks like, a refusal is typed: never an untyped failure for a
