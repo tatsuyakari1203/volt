@@ -302,15 +302,24 @@ mod tests {
     /// when the test fails.
     struct TestKey {
         subkey: String,
+        // Serialises tests: one test's cleanup removes the shared base key,
+        // which would otherwise race with another test creating its subkey.
+        // Declared last so it is released after `Drop::drop` has cleaned up.
+        _serial: std::sync::MutexGuard<'static, ()>,
     }
 
     impl TestKey {
         fn new() -> Self {
             static COUNTER: AtomicU32 = AtomicU32::new(0);
+            static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            let serial = SERIAL
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let nanos = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |d| d.as_nanos());
             Self {
+                _serial: serial,
                 subkey: format!(
                     "{BASE}\\t-{}-{nanos}-{}",
                     std::process::id(),
