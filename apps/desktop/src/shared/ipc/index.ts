@@ -3,15 +3,37 @@
 // transfer type or call `invoke` directly. This file adds ergonomics on top of the generated
 // module and nothing else.
 import {
+  type ActivityPage,
   type AppInfo,
+  type ApplyResult,
   type AppReady,
   commands,
   events,
   type IpcError,
   type Result,
+  type RevertResult,
+  type TweakInfo,
 } from './bindings';
 
-export type { AppInfo, AppReady, IpcError };
+export type {
+  ActivityItem,
+  ActivityPage,
+  ActivitySource,
+  ActivityStatus,
+  AppInfo,
+  ApplyResult,
+  ApplyStatus,
+  AppReady,
+  EvidenceLevel,
+  IpcError,
+  RestartKind,
+  RevertResult,
+  RevertStatus,
+  RiskLevel,
+  TweakCategory,
+  TweakInfo,
+  TweakStateView,
+} from './bindings';
 
 /** Thrown by the wrappers below when a command returns an error; carries the typed value. */
 export class IpcCommandError extends Error {
@@ -43,6 +65,38 @@ export function describeIpcError(error: IpcError): string {
   }
 }
 
+/**
+ * Thrown by the wrappers below when the page runs outside the Volt window (a plain browser, a
+ * screenshot tool): there is no Tauri bridge to call. It is an expected situation, not a bug, so
+ * screens can say so in plain words instead of showing a raw `TypeError`.
+ */
+export class IpcUnavailableError extends Error {
+  constructor() {
+    super('Not available outside the Volt app.');
+    this.name = 'IpcUnavailableError';
+  }
+}
+
+/** Whether the Tauri bridge exists, which is only true inside the Volt window. */
+function insideVolt(): boolean {
+  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+}
+
+/**
+ * Runs a generated command and unwraps its result. Outside the Volt window the generated
+ * binding fails with a `TypeError` (the bridge is missing); that becomes an `IpcUnavailableError`.
+ */
+async function call<T>(run: () => Promise<Result<T, IpcError>>): Promise<T> {
+  try {
+    return unwrap(await run());
+  } catch (error) {
+    if (error instanceof TypeError && !insideVolt()) {
+      throw new IpcUnavailableError();
+    }
+    throw error;
+  }
+}
+
 function assertNever(value: never): never {
   throw new Error(`Unhandled IPC error: ${JSON.stringify(value)}`);
 }
@@ -57,7 +111,7 @@ export function unwrap<T>(result: Result<T, IpcError>): T {
 
 /** Asks the Rust side who it is. Proves the frontend-to-Rust path works. */
 export async function getAppInfo(): Promise<AppInfo> {
-  return unwrap(await commands.appInfo());
+  return call(() => commands.appInfo());
 }
 
 /** Calls `handler` each time the shell announces that the app is ready. Returns the unlisten function. */
@@ -67,12 +121,12 @@ export function onAppReady(handler: (info: AppReady) => void): Promise<() => voi
 
 /** Whether Volt is registered to start with Windows (per-user, unelevated). */
 export async function getAutostartEnabled(): Promise<boolean> {
-  return unwrap(await commands.autostartEnabled());
+  return call(() => commands.autostartEnabled());
 }
 
 /** Turns start with Windows on or off. Resolves with the state that is true afterwards. */
 export async function setAutostartEnabled(enabled: boolean): Promise<boolean> {
-  return unwrap(await commands.setAutostart(enabled));
+  return call(() => commands.setAutostart(enabled));
 }
 
 /**
@@ -82,4 +136,27 @@ export async function setAutostartEnabled(enabled: boolean): Promise<boolean> {
  */
 export function onTrayBoostRequested(handler: () => void): Promise<() => void> {
   return events.trayBoostRequested.listen(() => handler());
+}
+
+/** Every tweak of the catalogue with its state read live from the system. */
+export async function listTweaks(): Promise<TweakInfo[]> {
+  return call(() => commands.listTweaks());
+}
+
+/** Applies a tweak. Resolves with how it ended; a failed step is a result, not a rejection. */
+export async function applyTweak(id: string): Promise<ApplyResult> {
+  return call(() => commands.applyTweak(id));
+}
+
+/** Reverts what Volt applied for a tweak. Resolves with whether the revert was complete. */
+export async function revertTweak(id: string): Promise<RevertResult> {
+  return call(() => commands.revertTweak(id));
+}
+
+/**
+ * Reads the activity history, newest first. Pass the previous page's `nextCursor` as `cursor`
+ * to read the next, older page.
+ */
+export async function listActivity(limit: number, cursor?: string | null): Promise<ActivityPage> {
+  return call(() => commands.listActivity(limit, cursor ?? null));
 }

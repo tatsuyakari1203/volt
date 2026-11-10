@@ -1,0 +1,23 @@
+# The tweak catalogue embedded in the desktop app (apps/desktop/src-tauri/src/catalogue.rs).
+#
+# This file currently holds ONE tweak, to prove the whole path (detect, apply, undo, restart)
+# end to end. The real catalogue is a later task. The format is documented on
+# `volt_core::Catalogue::from_toml`; the app refuses to start the tweak engine when this file
+# does not validate, and a test checks it on every build.
+
+[[tweak]]
+id = "show-file-extensions"
+title = "Show file extensions"
+description = "Always show file endings such as .exe and .pdf in File Explorer, so a program disguised as a document is easier to spot."
+category = "appearance"
+risk = "safe"
+evidence = "anecdotal"
+evidence_note = "A usability and safety preference, not a performance gain: nothing gets faster. Open File Explorer windows pick the change up when they are refreshed."
+restart = "none"
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKCU"
+subkey = 'Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "HideFileExt"
+value = { dword = 0 }

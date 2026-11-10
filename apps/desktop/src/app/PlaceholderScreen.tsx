@@ -9,7 +9,6 @@ const plans: Record<string, string> = {
     'See what is using memory and release what Windows can spare, with a before and after you can check.',
   apps: 'Review installed apps and choose what starts with Windows, with the startup cost of each.',
   health: 'Check disk, battery and system health, and see what changed since the last check.',
-  undo: 'A history of every change Volt made, each with a one-click way to put things back.',
 };
 
 /** Stand-in for a section that is not built yet. It says what will live there. */

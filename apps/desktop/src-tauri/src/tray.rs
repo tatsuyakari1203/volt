@@ -26,9 +26,47 @@ const TRAY_ID: &str = "main-tray";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, tauri_specta::Event)]
 pub struct TrayBoostRequested;
 
-/// A Boost request that arrived while the window had to be created, waiting for its page.
+/// A Boost request that is waiting for the page of a window that is being built.
+///
+/// The flag is stored *before* the window is built, so the page-load handler cannot run
+/// first and miss it.
 #[derive(Debug, Default)]
 struct PendingBoost(AtomicBool);
+
+impl PendingBoost {
+    /// Records a request.
+    fn request(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+
+    /// Takes the request, if there is one. Whoever takes it announces it, so it is announced
+    /// at most once.
+    fn take(&self) -> bool {
+        self.0.swap(false, Ordering::SeqCst)
+    }
+}
+
+/// What to do with a pending Boost request once the open attempt has finished.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AfterOpen {
+    /// The page exists already: announce now.
+    Announce,
+    /// A window is being built: its page-load handler announces the request.
+    LeaveForPageLoad,
+    /// The window could not be opened: forget the request, so it cannot fire later on an
+    /// unrelated window.
+    Discard,
+}
+
+/// Decides what happens to the pending request after the open attempt.
+#[must_use]
+fn after_open(result: Result<Opened, ()>) -> AfterOpen {
+    match result {
+        Ok(Opened::Focused) => AfterOpen::Announce,
+        Ok(Opened::Created) => AfterOpen::LeaveForPageLoad,
+        Err(()) => AfterOpen::Discard,
+    }
+}
 
 /// One entry of the tray menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,11 +159,18 @@ pub(crate) fn setup(app: &App) -> tauri::Result<()> {
 fn run<R: Runtime>(app: &AppHandle<R>, action: TrayAction) {
     match action {
         TrayAction::Open => window::open_in_background(app, |_, _| {}),
-        TrayAction::Boost => window::open_in_background(app, |app, opened| match opened {
-            Opened::Focused => announce_boost(app),
-            // The page is not there yet: send the event once it has loaded.
-            Opened::Created => app.state::<PendingBoost>().0.store(true, Ordering::SeqCst),
-        }),
+        TrayAction::Boost => {
+            // Store the request first: when the window has to be built, its page can finish
+            // loading (and run the page-load handler) before the build call returns.
+            app.state::<PendingBoost>().request();
+            window::open_in_background_checked(app, |app, result| match after_open(result) {
+                AfterOpen::Announce => announce_boost_if_pending(app),
+                AfterOpen::LeaveForPageLoad => {}
+                AfterOpen::Discard => {
+                    app.state::<PendingBoost>().take();
+                }
+            });
+        }
         TrayAction::Quit => app.exit(0),
     }
 }
@@ -136,13 +181,18 @@ fn announce_boost<R: Runtime>(app: &AppHandle<R>) {
     let _ = TrayBoostRequested.emit(app);
 }
 
-/// Called when a page finishes loading: delivers a Boost request that was waiting for it.
-pub(crate) fn flush_pending_boost<R: Runtime>(app: &AppHandle<R>) {
+/// Announces the pending Boost request, if nobody has taken it yet.
+fn announce_boost_if_pending<R: Runtime>(app: &AppHandle<R>) {
     if let Some(pending) = app.try_state::<PendingBoost>()
-        && pending.0.swap(false, Ordering::SeqCst)
+        && pending.take()
     {
         announce_boost(app);
     }
+}
+
+/// Called when a page finishes loading: delivers a Boost request that was waiting for it.
+pub(crate) fn flush_pending_boost<R: Runtime>(app: &AppHandle<R>) {
+    announce_boost_if_pending(app);
 }
 
 #[cfg(test)]
@@ -197,6 +247,36 @@ mod tests {
             MouseButton::Middle,
             MouseButtonState::Up
         )));
+    }
+
+    #[test]
+    fn a_pending_boost_is_announced_exactly_once() {
+        let pending = PendingBoost::default();
+        assert!(!pending.take(), "nothing requested yet");
+        pending.request();
+        assert!(pending.take(), "the first taker gets it");
+        assert!(!pending.take(), "nobody gets it twice");
+    }
+
+    #[test]
+    fn a_request_stored_before_the_window_exists_is_seen_by_the_page_load() {
+        // The order the tray uses: request first, then build. Whatever the timing of the page
+        // load, it finds the flag; and a later focus finds it already taken.
+        let pending = PendingBoost::default();
+        pending.request();
+        let page_load_saw_it = pending.take();
+        assert!(page_load_saw_it);
+        assert!(
+            !pending.take(),
+            "the open callback must not announce it again"
+        );
+    }
+
+    #[test]
+    fn the_open_result_decides_who_announces_the_request() {
+        assert_eq!(after_open(Ok(Opened::Focused)), AfterOpen::Announce);
+        assert_eq!(after_open(Ok(Opened::Created)), AfterOpen::LeaveForPageLoad);
+        assert_eq!(after_open(Err(())), AfterOpen::Discard);
     }
 
     #[test]

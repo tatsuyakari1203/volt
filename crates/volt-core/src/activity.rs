@@ -273,7 +273,8 @@ pub(crate) fn failure_summary(verb: &str, operation: &Operation, reason: &str) -
 }
 
 /// Why applying failed, in words, without any port message.
-pub(crate) fn exec_reason(error: &ExecError) -> String {
+#[must_use]
+pub fn exec_reason(error: &ExecError) -> String {
     match error {
         ExecError::Detect(e) => format!("could not read the current state ({})", error_class(e)),
         ExecError::Journal(_) => "could not write the undo journal".to_owned(),
@@ -285,7 +286,8 @@ pub(crate) fn exec_reason(error: &ExecError) -> String {
 }
 
 /// Why reverting failed, in words, without any port message.
-pub(crate) fn revert_reason(error: &RevertError) -> String {
+#[must_use]
+pub fn revert_reason(error: &RevertError) -> String {
     match error {
         RevertError::Port(e) => format!(
             "the previous state could not be restored ({})",

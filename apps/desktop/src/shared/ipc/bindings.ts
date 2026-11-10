@@ -44,6 +44,53 @@ async setAutostart(enabled: boolean) : Promise<Result<boolean, IpcError>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Tauri command: lists the catalogue tweaks with their live state. Reads the system only.
+ */
+async listTweaks() : Promise<Result<TweakInfo[], IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_tweaks") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: applies a tweak through the undo journal and reports exactly how it ended
+ * (applied, already applied, rolled back or needs attention).
+ */
+async applyTweak(id: string) : Promise<Result<ApplyResult, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("apply_tweak", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: reverts what Volt applied for a tweak and reports whether the revert was
+ * complete.
+ */
+async revertTweak(id: string) : Promise<Result<RevertResult, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("revert_tweak", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: reads the activity history, newest first. `limit` is clamped to 1 to 200;
+ * `cursor` is the `nextCursor` of the previous page.
+ */
+async listActivity(limit: number, cursor: string | null) : Promise<Result<ActivityPage, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_activity", { limit, cursor }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -65,6 +112,86 @@ trayBoostRequested: "tray-boost-requested"
 /** user-defined types **/
 
 /**
+ * One line of the activity history.
+ */
+export type ActivityItem = { 
+/**
+ * Record id as a decimal string.
+ */
+id: string; 
+/**
+ * When it happened: ISO 8601, UTC.
+ */
+time: string; 
+/**
+ * Who started it.
+ */
+source: ActivitySource; 
+/**
+ * How it ended.
+ */
+status: ActivityStatus; 
+/**
+ * One redacted sentence: names the target and the outcome, never data.
+ */
+summary: string; 
+/**
+ * The tweak id or plan label, when known.
+ */
+label: string | null }
+/**
+ * A page of the activity history, newest first.
+ */
+export type ActivityPage = { 
+/**
+ * The records of this page.
+ */
+items: ActivityItem[]; 
+/**
+ * Pass this as the cursor to get the next (older) page; `None` on the last page.
+ */
+nextCursor: string | null }
+/**
+ * Who started an activity.
+ */
+export type ActivitySource = 
+/**
+ * The user.
+ */
+"manual" | 
+/**
+ * A schedule, threshold or profile.
+ */
+"automation" | 
+/**
+ * A source this version of the UI does not know.
+ */
+"other"
+/**
+ * How an activity ended.
+ */
+export type ActivityStatus = 
+/**
+ * A change was made.
+ */
+"applied" | 
+/**
+ * A change was undone on request.
+ */
+"reverted" | 
+/**
+ * An attempt failed or was interrupted.
+ */
+"failed" | 
+/**
+ * A change was undone automatically because a later step failed.
+ */
+"rolledBack" | 
+/**
+ * An outcome this version of the UI does not know.
+ */
+"other"
+/**
  * Identity of the running app, returned to the UI by the `app_info` command.
  */
 export type AppInfo = { 
@@ -82,6 +209,58 @@ version: string }
  * The sample typed event: generated as `events.appReady` on the TypeScript side.
  */
 export type AppReady = AppInfo
+/**
+ * Precise result of [`apply_tweak`].
+ */
+export type ApplyResult = { 
+/**
+ * The tweak id.
+ */
+tweak: string; 
+/**
+ * How it ended.
+ */
+status: ApplyStatus; 
+/**
+ * Why it failed, in words, when it did. Never contains command output or data.
+ */
+detail: string | null; 
+/**
+ * The state read again after the apply.
+ */
+state: TweakStateView }
+/**
+ * How an apply ended.
+ */
+export type ApplyStatus = 
+/**
+ * The tweak is now applied.
+ */
+"applied" | 
+/**
+ * It was already in effect; nothing was changed or journaled.
+ */
+"alreadyApplied" | 
+/**
+ * A step failed and the system was read again and found exactly as it was before.
+ */
+"rolledBack" | 
+/**
+ * A step failed and the system may differ from before; the user has to look.
+ */
+"needsAttention"
+/**
+ * Whether the benefit of a tweak was measured. Mirrors [`volt_core::Evidence`].
+ */
+export type EvidenceLevel = 
+/**
+ * The effect was measured.
+ */
+"measured" | 
+/**
+ * The effect is reported by users but not measured.
+ */
+"anecdotal"
 /**
  * The one error type every command returns.
  * 
@@ -111,6 +290,83 @@ export type IpcError =
  */
 { kind: "other"; message: string }
 /**
+ * What the user has to do before a tweak takes full effect.
+ */
+export type RestartKind = 
+/**
+ * Nothing.
+ */
+"none" | 
+/**
+ * Sign out and in again.
+ */
+"signOut" | 
+/**
+ * Restart the machine.
+ */
+"reboot"
+/**
+ * Precise result of [`revert_tweak`].
+ */
+export type RevertResult = { 
+/**
+ * The tweak id.
+ */
+tweak: string; 
+/**
+ * Whether the revert was complete.
+ */
+status: RevertStatus; 
+/**
+ * How many journal entries were restored.
+ */
+restored: number; 
+/**
+ * How many could not be restored.
+ */
+failed: number; 
+/**
+ * Why something could not be restored, in words.
+ */
+detail: string | null; 
+/**
+ * The state read again after the revert.
+ */
+state: TweakStateView }
+/**
+ * How a revert ended.
+ */
+export type RevertStatus = 
+/**
+ * Everything that was attempted was restored.
+ */
+"reverted" | 
+/**
+ * Something could not be restored; the rest was.
+ */
+"incomplete" | 
+/**
+ * The journal holds nothing to undo for this tweak: Volt did not apply it, or it is
+ * already undone. Not an error.
+ */
+"nothingToRevert"
+/**
+ * How risky a tweak is. Mirrors [`volt_core::Risk`].
+ */
+export type RiskLevel = 
+/**
+ * Harmless and easy to undo.
+ */
+"safe" | 
+/**
+ * Can change behaviour the user may notice.
+ */
+"caution" | 
+/**
+ * Can break software or the system if misused.
+ */
+"advanced"
+/**
  * Event emitted when the user picks Boost in the tray menu, after the window is open on Home.
  * 
  * Boost has no engine yet; a later task listens to this event and starts the real work. When
@@ -119,6 +375,102 @@ export type IpcError =
  * until a pull command exists.
  */
 export type TrayBoostRequested = null
+/**
+ * The group a tweak is listed under.
+ */
+export type TweakCategory = 
+/**
+ * Speed and responsiveness.
+ */
+"performance" | 
+/**
+ * Settings for games.
+ */
+"gaming" | 
+/**
+ * Telemetry, advertising and tracking.
+ */
+"privacy" | 
+/**
+ * Look and feel of the shell.
+ */
+"appearance" | 
+/**
+ * Networking.
+ */
+"network" | 
+/**
+ * Windows Update behaviour.
+ */
+"windowsUpdate" | 
+/**
+ * Security features.
+ */
+"security" | 
+/**
+ * Preinstalled software and background tasks.
+ */
+"debloat"
+/**
+ * One tweak with its live state, as the Tweaks screen shows it.
+ */
+export type TweakInfo = { 
+/**
+ * Stable id; pass it to [`apply_tweak`] and [`revert_tweak`].
+ */
+id: string; 
+/**
+ * Short name.
+ */
+title: string; 
+/**
+ * What it does and why.
+ */
+description: string; 
+/**
+ * The group it belongs to.
+ */
+category: TweakCategory; 
+/**
+ * How risky it is.
+ */
+risk: RiskLevel; 
+/**
+ * Whether its benefit is measured.
+ */
+evidence: EvidenceLevel; 
+/**
+ * Where the evidence comes from, in a sentence.
+ */
+evidenceNote: string; 
+/**
+ * What the user has to do afterwards.
+ */
+restart: RestartKind; 
+/**
+ * The state read just now.
+ */
+state: TweakStateView }
+/**
+ * Whether a tweak is in effect right now, read live from the system.
+ */
+export type TweakStateView = 
+/**
+ * Every step is in its target state.
+ */
+{ kind: "applied" } | 
+/**
+ * No step is in its target state.
+ */
+{ kind: "notApplied" } | 
+/**
+ * Some steps are in their target state and some are not.
+ */
+{ kind: "partial" } | 
+/**
+ * The state could not be read. Nothing was guessed.
+ */
+{ kind: "unreadable"; message: string }
 
 /** tauri-specta globals **/
 
