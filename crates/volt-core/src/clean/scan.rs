@@ -7,8 +7,11 @@ use super::plan::{
     CleanItem, ItemKind, MAX_SKIPPED_DETAILS, RuleScan, ScanCounts, ScanFailure, SkipReason,
     SkippedEntry,
 };
+use super::root::RootError;
 use super::root::resolve_root;
-use super::rule::{CleaningRule, MAX_DEPTH_LIMIT, MIN_AGE_SETTING_MAX, MIN_AGE_SETTING_MIN};
+use super::rule::{
+    CleaningRule, ItemUnit, MAX_DEPTH_LIMIT, MIN_AGE_SETTING_MAX, MIN_AGE_SETTING_MIN,
+};
 use super::{CleanEngine, ScanObserver};
 use crate::activity::error_class;
 use crate::error::PortError;
@@ -135,6 +138,8 @@ impl CleanEngine {
             skipped: Vec::new(),
             counts: ScanCounts::default(),
             running_programs: self.running_programs(rule),
+            pick: rule.pick,
+            followed_by: None,
         };
         match self.effective_min_age(rule) {
             Ok(days) => scan.min_age_days = days,
@@ -143,8 +148,18 @@ impl CleanEngine {
                 return scan;
             }
         }
-        let root = match resolve_root(rule, self.folders.as_ref()) {
-            Ok(root) => root,
+        let chosen = match self.chosen_folder_of(rule) {
+            Ok(chosen) => chosen,
+            Err(class) => {
+                scan.failure = Some(ScanFailure::Root(RootError::Unavailable(class)));
+                return scan;
+            }
+        };
+        let root = match resolve_root(rule, self.folders.as_ref(), chosen.as_deref()) {
+            Ok(resolved) => {
+                scan.followed_by = resolved.followed;
+                resolved.path
+            }
             Err(error) => {
                 scan.failure = Some(ScanFailure::Root(error));
                 return scan;
@@ -183,9 +198,32 @@ impl CleanEngine {
             observer,
             scan: &mut scan,
         };
-        let mut relative = Vec::new();
-        walker.walk(&root, &mut relative);
+        if rule.unit == ItemUnit::Entries {
+            walker.entries(&root);
+        } else {
+            let mut relative = Vec::new();
+            walker.walk(&root, &mut relative);
+        }
         scan
+    }
+}
+
+/// What a folder holds: the number of files, their total size and the newest modification time.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Tally {
+    pub(super) files: u64,
+    pub(super) bytes: u64,
+    pub(super) newest: Option<Timestamp>,
+}
+
+impl Tally {
+    pub(super) fn add_file(&mut self, info: &EntryInfo) {
+        self.files += 1;
+        self.bytes = self.bytes.saturating_add(info.size_bytes);
+        self.newest = match (self.newest, info.modified) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        };
     }
 }
 
@@ -294,6 +332,124 @@ impl Walker<'_> {
         all_planned
     }
 
+    /// Scans a rule whose items are the entries directly inside the root: a file is an item, and
+    /// so is a folder, whole, whatever it holds.
+    fn entries(&mut self, root: &Path) {
+        let entries = match self.engine.file_system.read_dir(root) {
+            Ok(entries) => entries,
+            Err(error) => {
+                self.scan.failure = Some(root_failure(&error));
+                return;
+            }
+        };
+        for entry in entries {
+            if self.cancelled() {
+                return;
+            }
+            let path = root.join(&entry.name);
+            let Some(name) = component_text(&entry.name) else {
+                self.skip(&path, SkipReason::InvalidName);
+                continue;
+            };
+            let info = match entry.info {
+                Ok(info) => info,
+                Err(error) => {
+                    self.skip(&path, read_failure(&error));
+                    continue;
+                }
+            };
+            let relative = [name];
+            if self.rule.excludes(&relative) {
+                self.scan.counts.excluded += 1;
+                continue;
+            }
+            match info.kind {
+                EntryKind::File => {
+                    self.file(&path, info, &relative);
+                }
+                EntryKind::Directory => {
+                    if !self.rule.includes(&relative) {
+                        self.scan.counts.not_matching += 1;
+                        continue;
+                    }
+                    self.whole_folder(&path, &info);
+                }
+                _ => self.skip(&path, SkipReason::Link),
+            }
+        }
+    }
+
+    /// Plans the folder at `path` as one item, with the size and newest file time found by
+    /// walking it (read-only). Links inside are never followed and go with the folder; the
+    /// folder is left out when something in it cannot be read or is too new.
+    fn whole_folder(&mut self, path: &Path, info: &EntryInfo) {
+        let Some(tally) = self.tally(path) else {
+            return;
+        };
+        if let Err(reason) = self.age_ok(tally.newest.or(info.modified)) {
+            self.skip(path, reason);
+            return;
+        }
+        if self.at_cap() {
+            return;
+        }
+        self.scan.items.push(CleanItem {
+            path: path.to_path_buf(),
+            kind: ItemKind::Folder,
+            size_bytes: tally.bytes,
+            file_count: tally.files,
+            modified: tally.newest,
+        });
+    }
+
+    /// What a folder holds, or `None` when it cannot be planned: something in it could not be
+    /// read (it is then reported as skipped) or the scan was cancelled.
+    fn tally(&mut self, folder: &Path) -> Option<Tally> {
+        let mut tally = Tally::default();
+        let mut stack = vec![folder.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            if self.cancelled() {
+                return None;
+            }
+            let entries = match self.engine.file_system.read_dir(&dir) {
+                Ok(entries) => entries,
+                Err(error) => {
+                    self.skip(&dir, read_failure(&error));
+                    return None;
+                }
+            };
+            self.scan.counts.folders_entered += 1;
+            for entry in entries {
+                let path = dir.join(&entry.name);
+                let info = match entry.info {
+                    Ok(info) => info,
+                    Err(error) => {
+                        self.skip(&path, read_failure(&error));
+                        return None;
+                    }
+                };
+                match info.kind {
+                    EntryKind::Directory => stack.push(path),
+                    EntryKind::File => {
+                        self.scan.counts.files_seen += 1;
+                        tally.add_file(&info);
+                    }
+                    // A link is not followed and its target is not counted.
+                    _ => self.scan.counts.links += 1,
+                }
+            }
+        }
+        Some(tally)
+    }
+
+    /// Marks the scan as stopped when it was cancelled; returns whether it is stopped.
+    fn cancelled(&mut self) -> bool {
+        if !self.scan.truncated && self.observer.is_some_and(ScanObserver::is_cancelled) {
+            self.scan.truncated = true;
+        }
+        self.scan.truncated
+    }
+
     /// Returns whether the file is planned.
     fn file(&mut self, path: &Path, info: EntryInfo, relative: &[String]) -> bool {
         self.scan.counts.files_seen += 1;
@@ -316,6 +472,7 @@ impl Walker<'_> {
             path: path.to_path_buf(),
             kind: ItemKind::File,
             size_bytes: info.size_bytes,
+            file_count: 1,
             modified: info.modified,
         });
         true
@@ -353,6 +510,7 @@ impl Walker<'_> {
             path: path.to_path_buf(),
             kind: ItemKind::EmptyDirectory,
             size_bytes: 0,
+            file_count: 0,
             modified: info.modified,
         });
         true

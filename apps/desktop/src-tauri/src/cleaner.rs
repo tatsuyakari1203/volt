@@ -22,10 +22,11 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri_specta::Event;
 use volt_core::Phrase;
-use volt_core::clean::ScanCounts;
+use volt_core::clean::{RootError, ScanCounts};
 use volt_core::{
-    CleanCategory, CleanPlan, CleanReport, CleaningRule, RecycleBinManager, RuleScan, ScanError,
-    ScanFailure, ScanObserver, Source,
+    CleanCategory, CleanEngine, CleanPlan, CleanReport, CleaningRule, FolderError, ItemKind,
+    RecycleBinManager, RuleScan, RuleSelection, ScanError, ScanFailure, ScanObserver,
+    SelectionError, Source,
 };
 
 use crate::IpcError;
@@ -65,6 +66,8 @@ pub enum CleanCategoryView {
     ChatAppCache,
     /// Package manager and build tool caches.
     DeveloperCache,
+    /// Caches of AI models, picked one by one.
+    AiModelCache,
     /// Log files.
     Logs,
     /// Crash dumps and error reports.
@@ -83,6 +86,7 @@ fn category_view(category: CleanCategory) -> CleanCategoryView {
         CleanCategory::ShaderCache => CleanCategoryView::ShaderCache,
         CleanCategory::ChatAppCache => CleanCategoryView::ChatAppCache,
         CleanCategory::DeveloperCache => CleanCategoryView::DeveloperCache,
+        CleanCategory::AiModelCache => CleanCategoryView::AiModelCache,
         CleanCategory::Logs => CleanCategoryView::Logs,
         CleanCategory::CrashReports => CleanCategoryView::CrashReports,
         CleanCategory::WindowsUpdate => CleanCategoryView::WindowsUpdate,
@@ -111,6 +115,64 @@ pub struct CleaningRuleInfo {
     pub needs_administrator: bool,
     /// Files younger than this many days are never taken (0: no minimum).
     pub min_age_days: u32,
+    /// Whether the user picks what to clean item by item: nothing is ticked by default, and the
+    /// scan lists the items.
+    pub pick_items: bool,
+    /// Whether the rule works in a folder the user adds (for example a `ComfyUI` install).
+    pub needs_folder: bool,
+    /// The folder the user added for the rule, or `null`. It is the user's own choice, shown so it
+    /// can be checked and removed.
+    pub chosen_folder: Option<String>,
+    /// The documented environment variables the rule follows when a tool's cache was moved, in
+    /// order of precedence. Empty: the rule only looks in the default place.
+    pub follows: Vec<FollowView>,
+}
+
+/// An environment variable a rule follows, with the documentation that names it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FollowView {
+    /// The variable's name, such as `CARGO_HOME`.
+    pub var: String,
+    /// Where the tool documents it.
+    pub source: String,
+}
+
+/// One item of a rule the user picks from.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanItemView {
+    /// Position in the rule's list; sent back to pick the item.
+    pub index: u32,
+    /// The item's name (a model, a store), never a full path.
+    pub name: String,
+    /// Its size in bytes.
+    pub bytes: f64,
+    /// How many files it holds.
+    pub files: u32,
+}
+
+/// The items the user picked of one rule.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemPick {
+    /// The rule's id.
+    pub rule_id: String,
+    /// The `index` of each picked item.
+    pub items: Vec<u32>,
+}
+
+/// The rule as the page lists it, with the folder the user added for it, if any.
+fn rule_info(engine: &CleanEngine, rule: &CleaningRule) -> CleaningRuleInfo {
+    let mut info = CleaningRuleInfo::from(rule);
+    if rule.needs_chosen_folder() {
+        info.chosen_folder = engine
+            .chosen_folder(&rule.id)
+            .ok()
+            .flatten()
+            .map(|folder| folder.to_string_lossy().into_owned());
+    }
+    info
 }
 
 impl From<&CleaningRule> for CleaningRuleInfo {
@@ -124,6 +186,17 @@ impl From<&CleaningRule> for CleaningRuleInfo {
             risk: risk_view(rule.risk),
             needs_administrator: rule.requires_admin,
             min_age_days: rule.constraints.min_age_days,
+            pick_items: rule.pick,
+            needs_folder: rule.needs_chosen_folder(),
+            chosen_folder: None,
+            follows: rule
+                .follow
+                .iter()
+                .map(|follow| FollowView {
+                    var: follow.var.clone(),
+                    source: follow.source.clone(),
+                })
+                .collect(),
         }
     }
 }
@@ -158,6 +231,11 @@ pub struct RuleScanView {
     pub locked_note: Option<String>,
     /// `locked_note` as a code and parameters.
     pub locked_phrase: Option<PhraseView>,
+    /// For a rule picked item by item: every item, with its size. Empty for other rules.
+    pub items: Vec<ScanItemView>,
+    /// The environment variable the folder was found through, when the tool's cache was moved
+    /// (for example `CARGO_HOME`), or `null`.
+    pub followed_by: Option<String>,
 }
 
 /// The result of a scan.
@@ -347,17 +425,19 @@ fn recycle_bin(core: &AppCore) -> Result<&RecycleBinManager, IpcError> {
 
 /// Lists the cleaning rules. Reads nothing from the file system.
 pub fn list_cleaning_rules(core: &AppCore) -> Result<Vec<CleaningRuleInfo>, IpcError> {
-    Ok(clean_engine(core)?
+    let engine = clean_engine(core)?;
+    Ok(engine
         .rules()
         .rules()
         .iter()
-        .map(CleaningRuleInfo::from)
+        .map(|rule| rule_info(engine, rule))
         .collect())
 }
 
 /// Why a rule was not scanned, in words that name no folder.
 fn problem_phrase(failure: &ScanFailure) -> Phrase {
     match failure {
+        ScanFailure::Root(RootError::OutputFolder) => Phrase::new("scan.problem.output"),
         ScanFailure::Root(_) => Phrase::new("scan.problem.root"),
         ScanFailure::RootIsLink => Phrase::new("scan.problem.link"),
         ScanFailure::RootNotDirectory => Phrase::new("scan.problem.notFolder"),
@@ -399,7 +479,7 @@ fn samples(rule: &CleaningRule, scan: &RuleScan) -> Vec<String> {
     };
     scan.items
         .iter()
-        .filter(|item| item.kind == volt_core::ItemKind::File)
+        .filter(|item| item.kind != ItemKind::EmptyDirectory)
         .filter_map(|item| {
             let relative = item.path.strip_prefix(root).ok()?;
             let parts: Vec<String> = relative
@@ -428,12 +508,38 @@ fn locked_phrase(running: &[String]) -> Option<Phrase> {
     )
 }
 
-fn scan_view(rule: &CleaningRule, scan: &RuleScan) -> RuleScanView {
+/// The items of a rule the user picks from, as the page lists them.
+fn item_views(scan: &RuleScan) -> Vec<ScanItemView> {
+    if !scan.pick {
+        return Vec::new();
+    }
+    scan.items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| ScanItemView {
+            index: count32(index),
+            name: item
+                .path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            bytes: count64(item.size_bytes),
+            files: count32(usize::try_from(item.file_count).unwrap_or(usize::MAX)),
+        })
+        .collect()
+}
+
+fn scan_view(engine: &CleanEngine, rule: &CleaningRule, scan: &RuleScan) -> RuleScanView {
     let skipped = skipped_phrase(&scan.counts);
-    let problem = scan.failure.as_ref().map(problem_phrase);
+    // A rule that waits for the user to add a folder has nothing wrong: the page says so.
+    let problem = scan
+        .failure
+        .as_ref()
+        .filter(|failure| !matches!(failure, ScanFailure::Root(RootError::FolderNotChosen)))
+        .map(problem_phrase);
     let locked = locked_phrase(&scan.running_programs);
     RuleScanView {
-        rule: CleaningRuleInfo::from(rule),
+        rule: rule_info(engine, rule),
         files: count32(scan.file_count()),
         folders: count32(scan.directory_count()),
         bytes: count64(scan.total_bytes()),
@@ -445,6 +551,8 @@ fn scan_view(rule: &CleaningRule, scan: &RuleScan) -> RuleScanView {
         samples: samples(rule, scan),
         locked_note: locked.as_ref().map(Phrase::english),
         locked_phrase: locked.as_ref().map(PhraseView::from),
+        items: item_views(scan),
+        followed_by: scan.followed_by.clone(),
     }
 }
 
@@ -530,7 +638,7 @@ fn scan_rules(
             engine
                 .rules()
                 .get(&scan.rule_id)
-                .map(|rule| scan_view(rule, scan))
+                .map(|rule| scan_view(engine, rule, scan))
         })
         .collect();
     let id = session.next_id();
@@ -610,6 +718,7 @@ pub fn clean_plan(
     core: &AppCore,
     plan_id: &str,
     rule_ids: &[String],
+    picks: &[ItemPick],
 ) -> Result<CleanRunResult, IpcError> {
     let engine = clean_engine(core)?;
     let session = core.clean_session();
@@ -645,12 +754,82 @@ pub fn clean_plan(
                 });
             }
         }
-        let confirmed = plan.confirm_rules(rule_ids);
+        if let Some(pick) = picks.iter().find(|pick| !rule_ids.contains(&pick.rule_id)) {
+            return Err(IpcError::InvalidInput {
+                message: format!("\"{}\" has picked items but is not chosen", pick.rule_id),
+            });
+        }
+        let selections: Vec<RuleSelection> = rule_ids
+            .iter()
+            .map(|id| RuleSelection {
+                rule_id: id.clone(),
+                items: picks.iter().find(|pick| &pick.rule_id == id).map(|pick| {
+                    pick.items
+                        .iter()
+                        .map(|index| usize::try_from(*index).unwrap_or(usize::MAX))
+                        .collect()
+                }),
+            })
+            .collect();
+        let confirmed =
+            plan.confirm_selection(&selections)
+                .map_err(|error| IpcError::InvalidInput {
+                    message: selection_text(&error),
+                })?;
         *stored = None;
         confirmed
     };
     let report = engine.clean(&confirmed, Source::Manual);
     Ok(run_view(core, &report))
+}
+
+fn selection_text(error: &SelectionError) -> String {
+    match error {
+        SelectionError::NothingPicked(_) => "choose at least one item to clean".to_owned(),
+        other => other.to_string(),
+    }
+}
+
+/// Why a folder was refused, in words that name no folder.
+fn folder_error(error: &FolderError) -> IpcError {
+    let message = match error {
+        FolderError::UnknownRule(_) | FolderError::NotChoosable(_) => {
+            "this rule does not work in a folder you add".to_owned()
+        }
+        FolderError::NoSettings => "the choice cannot be saved in this build".to_owned(),
+        FolderError::Refused(RootError::OutputFolder) => {
+            "this is an output folder, which is never cleaned".to_owned()
+        }
+        FolderError::Refused(_) => {
+            "this folder cannot be used: it is too broad or a protected folder".to_owned()
+        }
+        FolderError::NotAFolder => "this is not an existing, plain folder".to_owned(),
+        FolderError::Settings(class) => format!("the choice could not be saved ({class})"),
+        _ => "this folder cannot be used".to_owned(),
+    };
+    IpcError::InvalidInput { message }
+}
+
+/// Adds `folder` for the rule that needs one (a `ComfyUI` install, for its temp folder) and keeps it
+/// in the settings. Nothing in the folder is read or changed. A new scan is needed afterwards.
+///
+/// # Errors
+/// `invalidInput` when the rule needs no folder or the folder is refused (not a plain folder, a
+/// drive root, a protected or an output folder); `unsupported` without a clean engine.
+pub fn choose_cleaning_folder(core: &AppCore, rule_id: &str, folder: &str) -> Result<(), IpcError> {
+    clean_engine(core)?
+        .choose_folder(rule_id, std::path::Path::new(folder))
+        .map_err(|error| folder_error(&error))
+}
+
+/// Forgets the folder added for the rule. The folder itself is never touched.
+///
+/// # Errors
+/// `invalidInput` when the rule needs no folder; `unsupported` without a clean engine.
+pub fn forget_cleaning_folder(core: &AppCore, rule_id: &str) -> Result<(), IpcError> {
+    clean_engine(core)?
+        .forget_folder(rule_id)
+        .map_err(|error| folder_error(&error))
 }
 
 /// What the Recycle Bin holds. Read-only.

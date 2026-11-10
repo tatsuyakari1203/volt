@@ -15,7 +15,8 @@ use crate::api::{
     UndoResult,
 };
 use crate::cleaner::{
-    self, CleanRunResult, CleanScanResult, CleaningRuleInfo, EmptyBinResult, RecycleBinView,
+    self, CleanRunResult, CleanScanResult, CleaningRuleInfo, EmptyBinResult, ItemPick,
+    RecycleBinView,
 };
 use crate::wiring::{AppCore, AppState};
 
@@ -192,9 +193,38 @@ pub(crate) async fn clean_selected_rules(
     state: State<'_, AppState>,
     plan_id: String,
     rule_ids: Vec<String>,
+    picks: Vec<ItemPick>,
 ) -> Result<CleanRunResult, IpcError> {
     blocking(&state, move |core| {
-        cleaner::clean_plan(core, &plan_id, &rule_ids)
+        cleaner::clean_plan(core, &plan_id, &rule_ids, &picks)
+    })
+    .await
+}
+
+/// Tauri command: adds a folder for a cleaning rule that needs one (a `ComfyUI` install, for its
+/// temp folder) and keeps it in the settings. Reads nothing in the folder. Scan again afterwards.
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn choose_cleaning_folder(
+    state: State<'_, AppState>,
+    rule_id: String,
+    folder: String,
+) -> Result<(), IpcError> {
+    blocking(&state, move |core| {
+        cleaner::choose_cleaning_folder(core, &rule_id, &folder)
+    })
+    .await
+}
+
+/// Tauri command: forgets the folder added for a cleaning rule. The folder is not touched.
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn forget_cleaning_folder(
+    state: State<'_, AppState>,
+    rule_id: String,
+) -> Result<(), IpcError> {
+    blocking(&state, move |core| {
+        cleaner::forget_cleaning_folder(core, &rule_id)
     })
     .await
 }

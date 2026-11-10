@@ -8,8 +8,8 @@ use std::path::{Component, Path, PathBuf};
 use super::CleanEngine;
 use super::plan::{CleanItem, ConfirmedPlan, ItemKind, RuleScan};
 use super::root::{resolve_root, same_path_ci};
-use super::rule::{CleaningRule, MAX_DEPTH_LIMIT};
-use super::scan::component_text;
+use super::rule::{CleaningRule, ItemUnit, MAX_DEPTH_LIMIT};
+use super::scan::{Tally, component_text};
 use crate::activity::{ActivityOutcome, NewActivity, error_class};
 use crate::error::PortError;
 use crate::journal::Source;
@@ -97,19 +97,21 @@ pub struct RuleClean {
 }
 
 impl RuleClean {
-    /// Number of files moved to the Recycle Bin.
+    /// Number of files moved to the Recycle Bin, those inside whole folders included.
     #[must_use]
     pub fn moved_files(&self) -> usize {
-        self.moved
-            .iter()
-            .filter(|item| item.kind == ItemKind::File)
-            .count()
+        self.moved.iter().fold(0_usize, |sum, item| {
+            sum.saturating_add(usize::try_from(item.file_count).unwrap_or(usize::MAX))
+        })
     }
 
     /// Number of empty folders moved to the Recycle Bin.
     #[must_use]
     pub fn moved_directories(&self) -> usize {
-        self.moved.len() - self.moved_files()
+        self.moved
+            .iter()
+            .filter(|item| item.kind == ItemKind::EmptyDirectory)
+            .count()
     }
 
     /// Size of the files moved to the Recycle Bin, in bytes (logical size as
@@ -283,9 +285,10 @@ impl CleanEngine {
         };
         // The root is resolved and judged again now; a plan is not trusted to
         // say where its rule's root is.
-        let resolved = resolve_root(rule, self.folders.as_ref());
+        let chosen = self.chosen_folder_of(rule).unwrap_or(None);
+        let resolved = resolve_root(rule, self.folders.as_ref(), chosen.as_deref());
         let root = match (resolved, scan.root.clone()) {
-            (Ok(resolved), Some(planned)) if same_path_ci(&resolved, &planned) => planned,
+            (Ok(resolved), Some(planned)) if same_path_ci(&resolved.path, &planned) => planned,
             _ => {
                 skip_all(&mut result, CleanSkipReason::RootChanged);
                 return result;
@@ -326,10 +329,13 @@ impl CleanEngine {
         // Would the rule have chosen this path? A path outside that (an
         // edited plan, a changed rule) is not touched.
         let depth_limit = rule.constraints.max_depth.min(MAX_DEPTH_LIMIT) as usize;
+        let entries = rule.unit == ItemUnit::Entries;
         let allowed = match item.kind {
+            ItemKind::File if entries => relative.len() == 1 && rule.includes(&relative),
             ItemKind::File => relative.len() <= depth_limit + 1 && rule.includes(&relative),
+            ItemKind::Folder => entries && relative.len() == 1 && rule.includes(&relative),
             ItemKind::EmptyDirectory => {
-                rule.constraints.remove_empty_dirs && relative.len() <= depth_limit
+                !entries && rule.constraints.remove_empty_dirs && relative.len() <= depth_limit
             }
         } && !rule.excludes(&relative);
         if !allowed {
@@ -366,6 +372,18 @@ impl CleanEngine {
             (ItemKind::File, EntryKind::File) => {
                 if info.size_bytes != item.size_bytes || info.modified != item.modified {
                     return Err(CleanSkipReason::Changed);
+                }
+            }
+            (ItemKind::Folder, EntryKind::Directory) => {
+                // A whole folder is moved only when it still holds exactly what the scan saw.
+                match tally_tree(fs, &item.path) {
+                    Ok(now)
+                        if now.files == item.file_count
+                            && now.bytes == item.size_bytes
+                            && now.newest == item.modified => {}
+                    Ok(_) => return Err(CleanSkipReason::Changed),
+                    Err(PortError::NotFound(_)) => return Err(CleanSkipReason::Gone),
+                    Err(error) => return Err(CleanSkipReason::Failed(error_class(&error))),
                 }
             }
             (ItemKind::EmptyDirectory, EntryKind::Directory) => {
@@ -438,6 +456,24 @@ impl CleanEngine {
         }
         failures
     }
+}
+
+/// What the folder holds now, read-only: how many files, their size and the newest file time.
+/// Links are not followed.
+fn tally_tree(fs: &dyn FileSystem, folder: &Path) -> Result<Tally, PortError> {
+    let mut tally = Tally::default();
+    let mut stack = vec![folder.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in fs.read_dir(&dir)? {
+            let info = entry.info?;
+            match info.kind {
+                EntryKind::Directory => stack.push(dir.join(&entry.name)),
+                EntryKind::File => tally.add_file(&info),
+                _ => {}
+            }
+        }
+    }
+    Ok(tally)
 }
 
 /// The path below `root` as plain components, or why it is not one.

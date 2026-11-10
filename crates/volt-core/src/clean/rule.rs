@@ -36,6 +36,9 @@ pub enum CleanCategory {
     ChatAppCache,
     /// Package manager and build tool caches (npm, pnpm, pip, cargo, `NuGet`, Gradle, Yarn).
     DeveloperCache,
+    /// Caches of AI models (Hugging Face, torch hub, Ollama). Large, and downloaded again only
+    /// at the cost of the whole download, so the user picks them one by one.
+    AiModelCache,
     /// Log files.
     Logs,
     /// Crash dumps and error reports.
@@ -53,6 +56,7 @@ impl fmt::Display for CleanCategory {
             Self::ShaderCache => "Shader caches",
             Self::ChatAppCache => "Chat app caches",
             Self::DeveloperCache => "Developer caches",
+            Self::AiModelCache => "AI model caches",
             Self::Logs => "Logs",
             Self::CrashReports => "Crash reports",
             Self::WindowsUpdate => "Windows Update leftovers",
@@ -92,6 +96,45 @@ impl fmt::Display for RuleRoot {
         }
         Ok(())
     }
+}
+
+/// What one item of a rule's plan is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ItemUnit {
+    /// Every matching file is an item (the default). Folders are walked, and removed when empty
+    /// if the rule says so.
+    #[default]
+    Files,
+    /// Every entry directly inside the root is an item, and a folder is taken whole, in one move
+    /// to the Recycle Bin, whatever it holds. The rule's `include` patterns are matched against
+    /// the entry's name only. For stores with hundreds of thousands of small files, and for
+    /// stores that are only useful as a whole (a model in a cache).
+    Entries,
+}
+
+/// A documented environment variable that moves the folder a rule cleans.
+///
+/// When the variable is set to a plausible folder, the rule's root becomes that folder plus
+/// `path` instead of the default location, because that is where the tool keeps its cache now.
+/// A value that is not a plausible cache folder (a drive root, the profile, a system folder) is
+/// ignored and the default location is used.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Follow {
+    /// The variable's name, such as `CARGO_HOME`.
+    pub var: String,
+    /// The path below the variable's folder, one entry per component. Empty: the folder itself.
+    pub path: Vec<String>,
+    /// Where the tool documents the variable (the document and section), shown next to it.
+    pub source: String,
+}
+
+/// Names no rule that works in a folder the user chose ever offers: the output folders of image
+/// generators (`ComfyUI` keeps generated images in `output`).
+#[must_use]
+pub fn is_output_folder_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case("output") || name.eq_ignore_ascii_case("outputs")
 }
 
 /// Limits a rule puts on itself.
@@ -147,13 +190,38 @@ pub struct CleaningRule {
     /// the files of this rule open while they run. A scan says which of them are
     /// running, because a clean then skips the files they hold. Empty: none.
     pub locked_by: Vec<String>,
+    /// What one item is: a file (default) or a whole entry of the root.
+    pub unit: ItemUnit,
+    /// Whether the user picks the items one by one. A scan then lists every item with its
+    /// size, nothing is selected by default and a clean takes only the items the user picked.
+    /// Needs `unit = "entries"`.
+    pub pick: bool,
+    /// Environment variables that move the root, in order of precedence: the first one that is
+    /// set to a plausible folder wins.
+    pub follow: Vec<Follow>,
 }
 
 impl CleaningRule {
+    /// Whether the rule works in a folder the user chose.
+    #[must_use]
+    pub fn needs_chosen_folder(&self) -> bool {
+        self.root.location == Location::ChosenFolder
+    }
+
     /// Whether the entry at `relative` (path components below the root) or one
-    /// of its parent folders matches an exclude pattern.
+    /// of its parent folders matches an exclude pattern, or is in an output folder of a rule
+    /// that works in a folder the user chose.
     #[must_use]
     pub fn excludes<S: AsRef<str>>(&self, relative: &[S]) -> bool {
+        // Output folders of image generators are never offered or taken, in any mode, whatever
+        // the patterns say: that is where the user's own images are.
+        if self.needs_chosen_folder()
+            && relative
+                .iter()
+                .any(|part| is_output_folder_name(part.as_ref()))
+        {
+            return true;
+        }
         (1..=relative.len()).any(|end| {
             self.exclude
                 .iter()

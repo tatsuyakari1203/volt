@@ -95,9 +95,9 @@ pub use boost::{
 };
 pub use clean::{
     CleanCategory, CleanEngine, CleanItem, CleanPlan, CleanReport, CleanSkip, CleanSkipReason,
-    CleaningRule, CleaningRules, ConfirmedPlan, EmptyReport, ItemKind, KnownFolders, Location,
-    RecycleBin, RecycleBinManager, RecycleBinStatus, RuleClean, RuleScan, RulesError, ScanError,
-    ScanFailure, ScanObserver, SkipReason,
+    CleaningRule, CleaningRules, ConfirmedPlan, EmptyReport, FolderError, ItemKind, ItemUnit,
+    KnownFolders, Location, RecycleBin, RecycleBinManager, RecycleBinStatus, RuleClean, RuleScan,
+    RuleSelection, RulesError, ScanError, ScanFailure, ScanObserver, SelectionError, SkipReason,
 };
 pub use command::{Command, CommandOutput, Commands, MAX_TIMEOUT_SECS};
 pub use elevation::{

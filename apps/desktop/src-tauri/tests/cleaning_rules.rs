@@ -86,11 +86,13 @@ fn folders() -> Arc<FakeKnownFolders> {
     folders.set(Location::ProgramData, abs("ProgramData"));
     folders.set(Location::Windows, abs("Windows"));
     folders.set(Location::UserProfile, abs("Users/tester"));
+    folders.set(Location::LocalLow, abs("Users/tester/AppData/LocalLow"));
     for protected in [
         "Users/tester",
         "Users/tester/Documents",
         "Users/tester/AppData/Local",
         "Users/tester/AppData/Roaming",
+        "Users/tester/AppData/LocalLow",
         "ProgramData",
         "Windows",
         "Program Files",
@@ -98,6 +100,13 @@ fn folders() -> Arc<FakeKnownFolders> {
         folders.protect(abs(protected));
     }
     folders
+}
+
+/// Rules whose items are plain files below a named location: the ones the generic fixtures below
+/// cover. Rules that take whole folders, are picked by item or work in a folder the user adds
+/// have their own tests (`items_and_folders` further down).
+fn is_standard(rule: &CleaningRule) -> bool {
+    rule.unit == volt_core::ItemUnit::Files && !rule.needs_chosen_folder()
 }
 
 fn rules() -> CleaningRules {
@@ -459,6 +468,15 @@ fn shader_fixture(id: &str) -> Option<Tree> {
             ("DXCache/link", Link),
             ("DXCache/a/b/c/deep.nvph", TooDeep),
         ],
+        "nvidia-driver-shader-cache" => vec![
+            ("DXCache/0002a9db011577a1.nvph", Taken),
+            ("GLCache/ab/cd/shader.bin", Taken),
+            ("DXCache/limit.nvph", TakenAtAgeLimit),
+            ("GLCache/fresh.bin", TooNew),
+            ("Settings/profile.bin", NotMatching),
+            ("DXCache/link", Link),
+            ("DXCache/a/b/c/deep.nvph", TooDeep),
+        ],
         "nvidia-compute-cache" => vec![
             ("0/1.bin", Taken),
             ("5/2/3.bin", Taken),
@@ -570,7 +588,9 @@ fn dev_fixture(id: &str) -> Option<Tree> {
         | "pip-cache"
         | "nuget-http-cache"
         | "nuget-packages"
-        | "gradle-caches" => vec![
+        | "gradle-caches"
+        | "yarn-cache"
+        | "yarn-berry-cache" => vec![
             ("a/b/package.tgz", Taken),
             ("index-v5/ab/cd/entry", Taken),
             ("loose.bin", Taken),
@@ -605,79 +625,72 @@ fn dev_fixture(id: &str) -> Option<Tree> {
                 TooDeep,
             ),
         ],
-        "yarn-cache" => vec![
-            (
-                "Cache/v6/npm-left-pad-1.3.0-abc.tgz/node_modules/left-pad/index.js",
-                Taken,
-            ),
-            ("Berry/cache/left-pad-npm-1.3.0-abc.zip", Taken),
-            ("Cache/limit.tgz", TakenAtAgeLimit),
-            ("Berry/cache/fresh.zip", TooNew),
-            ("Berry/global/state.json", NotMatching),
-            ("Config/.yarnrc", NotMatching),
-            ("Cache/link", Link),
-            (
-                "Cache/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q/r/s/t/deep.tgz",
-                TooDeep,
-            ),
-        ],
         _ => return None,
     })
 }
 
 #[test]
 fn every_rule_scans_and_cleans_its_fixture_exactly() {
-    for rule in rules().rules() {
+    for rule in rules().rules().iter().filter(|rule| is_standard(rule)) {
         let tree = fixture(&rule.id).unwrap_or_else(|| panic!("no fixture for rule {}", rule.id));
         check_fixture(rule, &tree);
     }
 }
+
+/// Every rule that has a fixture; a fixture for a rule that does not exist is a leftover.
+const KNOWN_RULES: [&str; 40] = [
+    "user-temp",
+    "windows-temp",
+    "user-wer-archive",
+    "user-wer-queue",
+    "machine-wer-archive",
+    "machine-wer-queue",
+    "user-crash-dumps",
+    "thumbnail-cache",
+    "icon-cache",
+    "windows-update-logs",
+    "delivery-optimization-cache",
+    "chrome-cache",
+    "edge-cache",
+    "brave-cache",
+    "vivaldi-cache",
+    "firefox-cache",
+    "directx-shader-cache",
+    "nvidia-shader-cache",
+    "nvidia-compute-cache",
+    "amd-shader-cache",
+    "discord-cache",
+    "telegram-cache",
+    "teams-cache",
+    "teams-classic-cache",
+    "zalo-cache",
+    "npm-cache",
+    "pnpm-store",
+    "pnpm-metadata-cache",
+    "pip-cache",
+    "cargo-cache",
+    "nuget-http-cache",
+    "nuget-packages",
+    "gradle-caches",
+    "yarn-cache",
+    "yarn-berry-cache",
+    "nvidia-driver-shader-cache",
+    "huggingface-hub-cache",
+    "torch-hub-cache",
+    "ollama-models",
+    "comfyui-temp",
+];
 
 #[test]
 fn every_rule_has_a_fixture_and_every_fixture_covers_what_the_rule_allows() {
     let rules = rules();
     let ids: BTreeSet<&str> = rules.rules().iter().map(|rule| rule.id.as_str()).collect();
     // A fixture for a rule that does not exist is a leftover: it fails too.
-    for known in [
-        "user-temp",
-        "windows-temp",
-        "user-wer-archive",
-        "user-wer-queue",
-        "machine-wer-archive",
-        "machine-wer-queue",
-        "user-crash-dumps",
-        "thumbnail-cache",
-        "icon-cache",
-        "windows-update-logs",
-        "delivery-optimization-cache",
-        "chrome-cache",
-        "edge-cache",
-        "brave-cache",
-        "vivaldi-cache",
-        "firefox-cache",
-        "directx-shader-cache",
-        "nvidia-shader-cache",
-        "nvidia-compute-cache",
-        "amd-shader-cache",
-        "discord-cache",
-        "telegram-cache",
-        "teams-cache",
-        "teams-classic-cache",
-        "zalo-cache",
-        "npm-cache",
-        "pnpm-store",
-        "pnpm-metadata-cache",
-        "pip-cache",
-        "cargo-cache",
-        "nuget-http-cache",
-        "nuget-packages",
-        "gradle-caches",
-        "yarn-cache",
-    ] {
+    for known in KNOWN_RULES {
         assert!(ids.contains(known), "fixture for {known} but no such rule");
     }
 
-    for rule in rules.rules() {
+    for rule in rules.rules().iter().filter(|rule| is_standard(rule)) {
         let id = &rule.id;
         let tree = fixture(id)
             .unwrap_or_else(|| panic!("rule {id} has no fixture: add one to cleaning_rules.rs"));
@@ -835,7 +848,11 @@ fn the_other_rules_ignore_the_temp_age_setting() {
 #[test]
 fn a_refused_root_says_it_needs_administrator_rights_only_for_the_rules_that_do() {
     let rules = rules();
-    for rule in rules.rules() {
+    for rule in rules
+        .rules()
+        .iter()
+        .filter(|rule| !rule.needs_chosen_folder())
+    {
         let world = World::new();
         let root = world.root_of(rule);
         world.fs.add_dir(&root, Some(ago(400 * DAY)));
@@ -867,7 +884,12 @@ fn a_missing_root_is_nothing_to_clean_and_never_a_sign_of_missing_rights() {
     let plan = world.engine.scan_all();
     assert!(plan.is_empty());
     for scan in &plan.rules {
-        assert_eq!(scan.failure, None, "{}", scan.rule_id);
+        // A rule that waits for a folder the user adds is not scanned yet, and says so.
+        let waiting = scan.rule_id == "comfyui-temp";
+        let expected = waiting.then_some(ScanFailure::Root(
+            volt_core::clean::RootError::FolderNotChosen,
+        ));
+        assert_eq!(scan.failure, expected, "{}", scan.rule_id);
         assert!(!scan.root_exists, "{}", scan.rule_id);
         assert!(!scan.needs_administrator(), "{}", scan.rule_id);
     }
@@ -1077,9 +1099,10 @@ fn a_running_browser_is_named_by_the_scan_and_a_stopped_one_is_not() {
 
 // ---- shader caches and chat app caches --------------------------------------------------------
 
-const SHADER_RULES: [&str; 4] = [
+const SHADER_RULES: [&str; 5] = [
     "directx-shader-cache",
     "nvidia-shader-cache",
+    "nvidia-driver-shader-cache",
     "nvidia-compute-cache",
     "amd-shader-cache",
 ];
@@ -1310,7 +1333,7 @@ fn a_running_chat_app_is_named_by_the_scan() {
 
 // ---- developer tool caches ----------------------------------------------------------------------
 
-const DEV_RULES: [&str; 9] = [
+const DEV_RULES: [&str; 10] = [
     "npm-cache",
     "pnpm-store",
     "pnpm-metadata-cache",
@@ -1320,6 +1343,7 @@ const DEV_RULES: [&str; 9] = [
     "nuget-packages",
     "gradle-caches",
     "yarn-cache",
+    "yarn-berry-cache",
 ];
 
 #[test]
@@ -1347,8 +1371,8 @@ fn developer_rules_are_user_rules_in_their_own_group_that_say_what_is_downloaded
             "{id}: says what is downloaded again"
         );
         assert!(
-            text.contains("not followed") || text.contains("not touched"),
-            "{id}: says relocated caches are not followed"
+            text.contains("followed") || text.contains("not touched"),
+            "{id}: says whether relocated caches are followed"
         );
     }
 }
@@ -1357,7 +1381,7 @@ fn developer_rules_are_user_rules_in_their_own_group_that_say_what_is_downloaded
 fn developer_rules_never_list_credentials_configuration_or_installed_programs() {
     // What each tool keeps in or beside its cache at the default location. `../` climbs out of
     // the rule's root to where the tool keeps its own files.
-    let kept: [(&str, &[&str]); 9] = [
+    let kept: [(&str, &[&str]); 10] = [
         (
             "npm-cache",
             &[
@@ -1403,11 +1427,14 @@ fn developer_rules_never_list_credentials_configuration_or_installed_programs() 
         (
             "yarn-cache",
             &[
-                "Berry/global/state.json",
-                "Config/.yarnrc",
-                "../.yarnrc",
-                "../.yarnrc.yml",
+                "../Berry/global/state.json",
+                "../Config/.yarnrc",
+                "../../.yarnrc",
             ],
+        ),
+        (
+            "yarn-berry-cache",
+            &["../global/state.json", "../../Config/.yarnrc"],
         ),
     ];
     for (id, protected) in kept {
@@ -1464,4 +1491,351 @@ fn a_tool_that_is_not_installed_is_skipped_without_a_failure() {
         assert!(!scan.root_exists, "{}", scan.rule_id);
         assert!(scan.items.is_empty(), "{}", scan.rule_id);
     }
+}
+
+// ---- items and folders: AI model caches, relocated tool caches, folders the user adds --------
+
+/// The rules that follow a documented environment variable, with the variables and the folder
+/// each adds (checked against the tools' own documentation, named in the rule's `source`).
+const FOLLOWED: [(&str, &[(&str, &str)]); 11] = [
+    ("npm-cache", &[("npm_config_cache", "_cacache")]),
+    ("pnpm-store", &[("PNPM_HOME", "store")]),
+    ("pip-cache", &[("PIP_CACHE_DIR", "")]),
+    ("cargo-cache", &[("CARGO_HOME", "")]),
+    ("nuget-http-cache", &[("NUGET_HTTP_CACHE_PATH", "")]),
+    ("nuget-packages", &[("NUGET_PACKAGES", "")]),
+    ("gradle-caches", &[("GRADLE_USER_HOME", "caches")]),
+    ("yarn-cache", &[("YARN_CACHE_FOLDER", "")]),
+    (
+        "huggingface-hub-cache",
+        &[("HF_HUB_CACHE", ""), ("HF_HOME", "hub")],
+    ),
+    ("torch-hub-cache", &[("TORCH_HOME", "hub")]),
+    ("pnpm-metadata-cache", &[]),
+];
+
+#[test]
+fn rules_follow_exactly_the_documented_variables_and_name_their_source() {
+    let rules = rules();
+    for (id, expected) in FOLLOWED {
+        let rule = rules.get(id).expect("rule");
+        let found: Vec<(&str, String)> = rule
+            .follow
+            .iter()
+            .map(|follow| (follow.var.as_str(), follow.path.join("/")))
+            .collect();
+        let expected: Vec<(&str, String)> = expected
+            .iter()
+            .map(|(var, path)| (*var, (*path).to_owned()))
+            .collect();
+        assert_eq!(found, expected, "{id}");
+        for follow in &rule.follow {
+            assert!(
+                follow.source.len() >= 20,
+                "{id}: {} names where the tool documents it",
+                follow.var
+            );
+        }
+    }
+    // Nothing else follows a variable: a rule that does needs an entry above, with its source.
+    for rule in rules.rules() {
+        assert_eq!(
+            !rule.follow.is_empty(),
+            FOLLOWED
+                .iter()
+                .any(|(id, vars)| *id == rule.id && !vars.is_empty()),
+            "{}",
+            rule.id
+        );
+    }
+}
+
+#[test]
+fn every_followed_cache_is_found_through_its_variable_and_a_bad_value_is_ignored() {
+    for (id, vars) in FOLLOWED {
+        let Some(&(var, path)) = vars.first() else {
+            continue;
+        };
+        let world = World::new();
+        let rule = world.engine.rules().get(id).expect("rule").clone();
+        let default_root = world.root_of(&rule);
+        world
+            .folders
+            .set_system_folders(vec![abs("Windows"), abs("Program Files")]);
+        // A folder on another drive: where the tool keeps its cache now.
+        world.folders.set_env(var, abs("Caches/tool"));
+        let mut moved = abs("Caches/tool");
+        if !path.is_empty() {
+            moved.extend(path.split('/'));
+        }
+        let plan = world.engine.scan(&[id]).expect("scan");
+        assert_eq!(plan.rules[0].root.as_deref(), Some(moved.as_path()), "{id}");
+        assert_eq!(plan.rules[0].followed_by.as_deref(), Some(var), "{id}");
+        // A value that is a drive root, the profile or a system folder is ignored.
+        for bad in [
+            abs(""),
+            abs("Users/tester"),
+            abs("Windows"),
+            abs("Program Files/tool"),
+        ] {
+            world.folders.set_env(var, bad.clone());
+            let plan = world.engine.scan(&[id]).expect("scan");
+            assert_eq!(plan.rules[0].followed_by, None, "{id}: {bad:?}");
+            assert_eq!(
+                plan.rules[0].root.as_deref(),
+                Some(default_root.as_path()),
+                "{id}: {bad:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_nvidia_per_driver_cache_lives_in_local_low() {
+    let rules = rules();
+    let rule = rules.get("nvidia-driver-shader-cache").expect("rule");
+    assert_eq!(rule.root.location(), Location::LocalLow);
+    assert_eq!(rule.root.relative(), ["NVIDIA", "PerDriverVersion"]);
+    assert!(!rule.requires_admin);
+}
+
+const AI_RULES: [&str; 3] = ["huggingface-hub-cache", "torch-hub-cache", "ollama-models"];
+
+#[test]
+fn model_caches_are_picked_one_by_one_and_never_selected_for_the_user() {
+    let rules = rules();
+    for id in AI_RULES {
+        let rule = rules.get(id).expect("rule");
+        assert_eq!(
+            rule.category,
+            volt_core::CleanCategory::AiModelCache,
+            "{id}"
+        );
+        assert_eq!(rule.unit, volt_core::ItemUnit::Entries, "{id}");
+        assert!(rule.pick, "{id}");
+        assert_eq!(rule.risk, volt_core::Risk::Caution, "{id}");
+        assert!(!rule.requires_admin, "{id}");
+        let text = rule.description.to_lowercase();
+        assert!(text.contains("again"), "{id}: says it is downloaded again");
+    }
+}
+
+fn model_world() -> (World, PathBuf) {
+    let world = World::new();
+    let profile = abs("Users/tester");
+    (world, profile)
+}
+
+#[test]
+fn hugging_face_models_are_listed_per_repository_with_their_size_and_one_can_be_taken() {
+    let (world, profile) = model_world();
+    let hub = profile.join(".cache").join("huggingface").join("hub");
+    // Two repositories (one with a symlinked snapshot, as Windows developer mode makes), a lock
+    // folder and a file that are not models.
+    world.fs.add_file_at(
+        hub.join("models--black-forest-labs--FLUX.1-dev/blobs/aaa"),
+        6000,
+        ago(30 * DAY),
+    );
+    world.fs.add_link(
+        hub.join("models--black-forest-labs--FLUX.1-dev/snapshots/rev1/flux.safetensors"),
+    );
+    world
+        .fs
+        .add_file_at(hub.join("datasets--org--data/blobs/bbb"), 300, ago(2 * DAY));
+    world
+        .fs
+        .add_file_at(hub.join(".locks/models--x/lock"), 1, ago(2 * DAY));
+    world
+        .fs
+        .add_file_at(hub.join("version.txt"), 1, ago(2 * DAY));
+    // The access token lives beside the hub, in the folder above: out of reach.
+    world
+        .fs
+        .add_file_at(profile.join(".cache/huggingface/token"), 40, ago(2 * DAY));
+
+    let plan = world.engine.scan(&["huggingface-hub-cache"]).expect("scan");
+    let scan = &plan.rules[0];
+    assert_eq!(scan.failure, None);
+    let names: Vec<String> = scan
+        .items
+        .iter()
+        .map(|item| {
+            item.path
+                .file_name()
+                .expect("name")
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "datasets--org--data",
+            "models--black-forest-labs--FLUX.1-dev"
+        ]
+    );
+    assert_eq!(scan.items[1].size_bytes, 6000);
+    assert!(
+        plan.confirm().rules().is_empty(),
+        "nothing is taken by default"
+    );
+
+    let confirmed = plan
+        .confirm_selection(&[volt_core::RuleSelection {
+            rule_id: "huggingface-hub-cache".to_owned(),
+            items: Some(vec![1]),
+        }])
+        .expect("confirmed");
+    let report = world.engine.clean(&confirmed, Source::Manual);
+    assert_eq!(report.skipped_count(), 0, "{report:?}");
+    assert_eq!(
+        world.fs.trashed(),
+        [hub.join("models--black-forest-labs--FLUX.1-dev")],
+        "the repository goes in one move"
+    );
+    assert!(world.fs.exists(&hub.join("datasets--org--data/blobs/bbb")));
+    assert!(world.fs.exists(&profile.join(".cache/huggingface/token")));
+    assert!(world.fs.exists(&hub.join(".locks/models--x/lock")));
+}
+
+#[test]
+fn torch_hub_and_ollama_list_their_stores_and_leave_keys_and_settings_alone() {
+    let (world, profile) = model_world();
+    let torch = profile.join(".cache").join("torch").join("hub");
+    world
+        .fs
+        .add_file_at(torch.join("checkpoints/resnet50.pth"), 900, ago(20 * DAY));
+    world.fs.add_file_at(
+        torch.join("pytorch_vision_main/hubconf.py"),
+        5,
+        ago(20 * DAY),
+    );
+    world
+        .fs
+        .add_file_at(torch.join("trusted_list"), 5, ago(20 * DAY));
+    let ollama = profile.join(".ollama");
+    world
+        .fs
+        .add_file_at(ollama.join("models/blobs/sha256-abc"), 4000, ago(20 * DAY));
+    world.fs.add_file_at(
+        ollama.join("models/manifests/registry/library/llama/latest"),
+        2,
+        ago(20 * DAY),
+    );
+    world
+        .fs
+        .add_file_at(ollama.join("id_ed25519"), 2, ago(20 * DAY));
+    world
+        .fs
+        .add_file_at(ollama.join("history"), 2, ago(20 * DAY));
+
+    let plan = world
+        .engine
+        .scan(&["torch-hub-cache", "ollama-models"])
+        .expect("scan");
+    let listed = |index: usize| -> Vec<String> {
+        plan.rules[index]
+            .items
+            .iter()
+            .map(|item| {
+                item.path
+                    .file_name()
+                    .expect("name")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect()
+    };
+    assert_eq!(
+        listed(0),
+        ["checkpoints", "pytorch_vision_main"],
+        "trusted_list stays"
+    );
+    assert_eq!(
+        listed(1),
+        ["models"],
+        "one item, not the keys or the history"
+    );
+    assert_eq!(plan.rules[1].items[0].size_bytes, 4002);
+    assert_eq!(plan.rules[1].items[0].file_count, 2);
+}
+
+#[test]
+fn comfyui_temp_needs_a_folder_the_user_adds_and_never_offers_output() {
+    let world = World::new();
+    let before = world.engine.scan(&["comfyui-temp"]).expect("scan");
+    assert_eq!(
+        before.rules[0].failure,
+        Some(ScanFailure::Root(
+            volt_core::clean::RootError::FolderNotChosen
+        ))
+    );
+    let rule = world
+        .engine
+        .rules()
+        .get("comfyui-temp")
+        .expect("rule")
+        .clone();
+    assert!(rule.needs_chosen_folder());
+
+    let comfy = abs("AI/ComfyUI");
+    world.fs.add_dir(&comfy, Some(ago(400 * DAY)));
+    world.fs.add_file_at(
+        comfy.join("temp/ComfyUI_temp_abc_00001_.png"),
+        50,
+        ago(5 * DAY),
+    );
+    world
+        .fs
+        .add_file_at(comfy.join("temp/fresh.png"), 50, ago(0));
+    world
+        .fs
+        .add_file_at(comfy.join("temp/output/mine.png"), 50, ago(5 * DAY));
+    world
+        .fs
+        .add_file_at(comfy.join("output/ComfyUI_00001_.png"), 50, ago(5 * DAY));
+    world.fs.add_file_at(
+        comfy.join("models/checkpoints/m.safetensors"),
+        50,
+        ago(5 * DAY),
+    );
+    world
+        .fs
+        .add_file_at(comfy.join("custom_nodes/x/__init__.py"), 5, ago(5 * DAY));
+    world
+        .engine
+        .choose_folder("comfyui-temp", &comfy)
+        .expect("chosen");
+
+    let plan = world.engine.scan(&["comfyui-temp"]).expect("scan");
+    let scan = &plan.rules[0];
+    assert_eq!(scan.failure, None);
+    assert_eq!(
+        scan.items
+            .iter()
+            .map(|item| item.path.clone())
+            .collect::<Vec<_>>(),
+        [comfy.join("temp/ComfyUI_temp_abc_00001_.png")]
+    );
+    let report = world.engine.clean(&plan.confirm(), Source::Manual);
+    assert_eq!(report.moved_files(), 1);
+    for kept in [
+        "output/ComfyUI_00001_.png",
+        "temp/output/mine.png",
+        "temp/fresh.png",
+        "models/checkpoints/m.safetensors",
+        "custom_nodes/x/__init__.py",
+    ] {
+        assert!(world.fs.exists(&comfy.join(kept)), "{kept} must stay");
+    }
+
+    // The output folder itself cannot be added.
+    world.fs.add_dir(comfy.join("output"), None);
+    assert!(
+        world
+            .engine
+            .choose_folder("comfyui-temp", &comfy.join("output"))
+            .is_err()
+    );
 }

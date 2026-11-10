@@ -6,10 +6,13 @@ import {
   type CleanRunResult,
   type CleanScanResult,
   cancelCleaningScan,
+  chooseCleaningFolder,
   cleanSelectedRules,
+  forgetCleaningFolder,
   IpcCommandError,
   listCleaningRules,
   onCleanScanProgress,
+  pickScanFolder,
   scanCleaning,
   scanCleaningRules,
 } from '../../shared/ipc';
@@ -18,7 +21,10 @@ import { Button, Card, Dialog, ListGroup, PageHeader, SegmentedControl } from '.
 import { LargeFilesView } from './LargeFilesView';
 import {
   categoryName,
+  cleanRuleIds,
   describeError,
+  type Picks,
+  pickList,
   resultMessage,
   ruleTitle,
   runningBrowserRules,
@@ -26,6 +32,7 @@ import {
   selectionText,
   tickedByDefault,
   truncatedRuleIds,
+  withPick,
 } from './messages';
 import { RecycleBinCard } from './RecycleBinCard';
 import { RuleRow } from './RuleRow';
@@ -141,6 +148,7 @@ function JunkClean({ movedElsewhere }: { movedElsewhere: number }) {
   const [phase, setPhase] = useState<Phase>('idle');
   const [scan, setScan] = useState<CleanScanResult | null>(null);
   const [ticked, setTicked] = useState<ReadonlySet<string>>(new Set());
+  const [picks, setPicks] = useState<Picks>(new Map());
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const [partial, setPartial] = useState(false);
@@ -171,6 +179,17 @@ function JunkClean({ movedElsewhere }: { movedElsewhere: number }) {
 
   useEffect(() => readRules(), [readRules]);
 
+  /** Reads the rules again without hiding the list (a folder was added or removed). */
+  const refreshRules = useCallback(() => {
+    listCleaningRules()
+      .then((rules) => {
+        if (alive.current) setRulesLoad({ status: 'ready', rules });
+      })
+      .catch((error: unknown) => {
+        if (alive.current) setNotice(describeError(error));
+      });
+  }, []);
+
   /** Scans every rule, or only `only` (the rest of the rules a clean did not finish). */
   const startScan = async (only?: readonly string[]) => {
     setPhase('scanning');
@@ -197,6 +216,7 @@ function JunkClean({ movedElsewhere }: { movedElsewhere: number }) {
       setPartial(found.cancelled);
       setScan(found);
       setTicked(new Set(found.rules.filter((r) => tickedByDefault(r.rule)).map((r) => r.rule.id)));
+      setPicks(new Map());
       setPhase('idle');
     } catch (error) {
       if (alive.current) {
@@ -222,6 +242,40 @@ function JunkClean({ movedElsewhere }: { movedElsewhere: number }) {
     });
   };
 
+  /**
+   * Adds a folder for a rule that needs one, from the native folder dialog. The scan on screen was
+   * made without it, so it is dropped: scan again to see what the folder holds.
+   */
+  const chooseFolder = async (rule: CleaningRuleInfo) => {
+    try {
+      const folder = await pickScanFolder();
+      if (folder === null || !alive.current) return;
+      await chooseCleaningFolder(rule.id, folder);
+      if (!alive.current) return;
+      setScan(null);
+      setTicked(new Set());
+      setPicks(new Map());
+      setPartial(false);
+      refreshRules();
+    } catch (error) {
+      if (alive.current) setNotice(t('clean.folder.failed', { error: describeError(error) }));
+    }
+  };
+
+  const forgetFolder = async (rule: CleaningRuleInfo) => {
+    try {
+      await forgetCleaningFolder(rule.id);
+      if (!alive.current) return;
+      setScan(null);
+      setTicked(new Set());
+      setPicks(new Map());
+      setPartial(false);
+      refreshRules();
+    } catch (error) {
+      if (alive.current) setNotice(t('clean.folder.failed', { error: describeError(error) }));
+    }
+  };
+
   const clean = async () => {
     if (!scan) return;
     setConfirming(false);
@@ -229,7 +283,11 @@ function JunkClean({ movedElsewhere }: { movedElsewhere: number }) {
     setNotice(null);
     try {
       const rest = truncatedRuleIds(scan.rules, ticked);
-      const done = await cleanSelectedRules(scan.planId, [...ticked]);
+      const done = await cleanSelectedRules(
+        scan.planId,
+        cleanRuleIds(scan.rules, ticked, picks),
+        pickList(scan.rules, picks),
+      );
       if (!alive.current) return;
       setResult(done);
       setRestIds(rest);
@@ -237,6 +295,7 @@ function JunkClean({ movedElsewhere }: { movedElsewhere: number }) {
       // The scan is used up: what it listed has moved, so a new scan is needed to clean again.
       setScan(null);
       setTicked(new Set());
+      setPicks(new Map());
       setBinKey((key) => key + 1);
     } catch (error) {
       if (!alive.current) return;
@@ -255,8 +314,8 @@ function JunkClean({ movedElsewhere }: { movedElsewhere: number }) {
   );
   const groups = useMemo(() => groupByCategory(listed), [listed]);
   const viewById = useMemo(() => new Map(views.map((view) => [view.rule.id, view])), [views]);
-  const selection = useMemo(() => selectionOf(views, ticked), [views, ticked]);
-  const nothingSelected = selection.files + selection.folders === 0;
+  const selection = useMemo(() => selectionOf(views, ticked, picks), [views, ticked, picks]);
+  const nothingSelected = selection.files + selection.folders === 0 && picks.size === 0;
   const runningBrowsers = useMemo(() => runningBrowserRules(views, ticked), [views, ticked]);
   const scanning = phase === 'scanning';
   const cleaning = phase === 'cleaning';
@@ -390,6 +449,12 @@ function JunkClean({ movedElsewhere }: { movedElsewhere: number }) {
                       checked={ticked.has(rule.id)}
                       enabled={!cleaning}
                       onCheckedChange={(on) => toggle(rule.id, on)}
+                      picked={picks.get(rule.id)}
+                      onPickItem={(index, on) =>
+                        setPicks((current) => withPick(current, rule.id, index, on))
+                      }
+                      onChooseFolder={() => void chooseFolder(rule)}
+                      onForgetFolder={() => void forgetFolder(rule)}
                     />
                   ))}
                 </ListGroup>

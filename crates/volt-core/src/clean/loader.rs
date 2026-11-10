@@ -13,7 +13,9 @@ use toml::{Table, Value};
 
 use super::folders::Location;
 use super::glob::{Pattern, PatternError};
-use super::rule::{CleanCategory, CleaningRule, Constraints, MAX_DEPTH_LIMIT, RuleRoot};
+use super::rule::{
+    CleanCategory, CleaningRule, Constraints, Follow, ItemUnit, MAX_DEPTH_LIMIT, RuleRoot,
+};
 use crate::label::Risk;
 
 const RULE_KEYS: &[&str] = &[
@@ -29,6 +31,9 @@ const RULE_KEYS: &[&str] = &[
     "requires_admin",
     "min_age_setting",
     "locked_by",
+    "unit",
+    "pick",
+    "follow",
 ];
 const MAX_MIN_AGE_DAYS: u32 = 3650;
 const MAX_RELATIVE_COMPONENTS: usize = 16;
@@ -163,14 +168,16 @@ impl CleaningRules {
     /// title = "Temporary files"
     /// description = "Files programs left in the temp folder and no longer use."
     /// category = "temporary_files"      # temporary_files, application_cache, browser_cache,
-    ///                                   # shader_cache, chat_app_cache, developer_cache, logs, crash_reports, windows_update
+    ///                                   # shader_cache, chat_app_cache, developer_cache,
+    ///                                   # ai_model_cache, logs, crash_reports, windows_update
     /// risk = "safe"                     # safe, caution, advanced
     /// include = ["**"]                  # files to take, relative to the root, `/` separated
     /// exclude = ["*.lock", "keep/**"]   # optional: left alone (a matching folder is not entered)
     ///
     /// [rule.root]
     /// location = "user_temp"            # user_temp, local_app_data, roaming_app_data,
-    ///                                   # program_data, windows, user_profile
+    ///                                   # program_data, windows, user_profile, local_low,
+    ///                                   # chosen_folder (a folder the user adds; needs a path)
     /// path = ""                         # relative path below the location; empty only for user_temp
     ///
     /// [rule.constraints]
@@ -184,6 +191,14 @@ impl CleaningRules {
     /// administrator rights (default `false`), and `min_age_setting =
     /// "clean.temp_min_age_days"` names the settings key that may override
     /// `constraints.min_age_days` (see [`CleanEngine::with_settings`](super::CleanEngine::with_settings)).
+    ///
+    /// Three more optional fields change what an item is and where the root is. `unit =
+    /// "entries"` makes every entry directly inside the root one item, a folder being taken whole
+    /// in one move (`include` is then matched against the entry's name); `pick = true` (needs
+    /// `unit = "entries"`) makes the user pick the items one by one; `follow = [{ var =
+    /// "CARGO_HOME", path = "", source = "..." }]` moves the root to the folder an environment
+    /// variable names, plus `path`, when it is set to a plausible folder (`source` says where the
+    /// tool documents the variable).
     ///
     /// Patterns support `*`, `?` and `**` as a whole component and ignore case
     /// (see [`Pattern`]). A root is never an absolute path: it is a named
@@ -341,6 +356,33 @@ impl Reader<'_> {
         };
         let min_age_setting = self.min_age_setting(table);
         let locked_by = self.locked_by(table);
+        let unit = match table.get("unit") {
+            None => Some(ItemUnit::Files),
+            Some(value) => self.convert::<ItemUnit>(value, "unit".to_owned()),
+        };
+        let pick = match table.get("pick") {
+            None => Some(false),
+            Some(value) => self.convert::<bool>(value, "pick".to_owned()),
+        };
+        let follow = self.follow(table);
+        if pick == Some(true) && unit.is_some_and(|unit| unit != ItemUnit::Entries) {
+            self.report(
+                "pick".to_owned(),
+                RuleIssueKind::Invalid("needs `unit = \"entries\"`".to_owned()),
+            );
+        }
+        if let (Some(root), Some(follow)) = (&root, &follow)
+            && root.location == Location::ChosenFolder
+            && !follow.is_empty()
+        {
+            self.report(
+                "follow".to_owned(),
+                RuleIssueKind::Invalid(
+                    "a rule that works in a folder the user chose cannot follow a variable"
+                        .to_owned(),
+                ),
+            );
+        }
 
         if self.issues.len() > before {
             return None;
@@ -358,7 +400,73 @@ impl Reader<'_> {
             requires_admin: requires_admin?,
             min_age_setting,
             locked_by: locked_by?,
+            unit: unit?,
+            pick: pick?,
+            follow: follow?,
         })
+    }
+
+    /// The optional list of environment variables that move the root, each with the documentation
+    /// that names it. `None` after a reported problem.
+    fn follow(&mut self, table: &Table) -> Option<Vec<Follow>> {
+        let Some(value) = table.get("follow") else {
+            return Some(Vec::new());
+        };
+        let Some(items) = value.as_array() else {
+            self.report(
+                "follow".to_owned(),
+                RuleIssueKind::Invalid(
+                    "must be an array of tables such as { var = \"CARGO_HOME\", source = \"...\" }"
+                        .to_owned(),
+                ),
+            );
+            return None;
+        };
+        let mut follows = Vec::with_capacity(items.len());
+        let mut ok = true;
+        for (index, item) in items.iter().enumerate() {
+            let path = format!("follow[{index}]");
+            let Some(inner) = item.as_table() else {
+                self.report(path, RuleIssueKind::Invalid("must be a table".to_owned()));
+                ok = false;
+                continue;
+            };
+            self.only_keys(inner, &format!("{path}."), &["var", "path", "source"]);
+            let var = self.text(inner, &format!("{path}."), "var");
+            let source = self.text(inner, &format!("{path}."), "source");
+            let relative = match inner.get("path") {
+                None => Some(String::new()),
+                Some(Value::String(text)) => Some(text.clone()),
+                Some(_) => {
+                    self.report(
+                        format!("{path}.path"),
+                        RuleIssueKind::Invalid("must be a string".to_owned()),
+                    );
+                    None
+                }
+            };
+            if let Some(name) = &var
+                && !is_variable_name(name)
+            {
+                self.report(
+                    format!("{path}.var"),
+                    RuleIssueKind::Malformed(
+                        "must be letters, digits and underscores, at most 64 characters".to_owned(),
+                    ),
+                );
+                ok = false;
+            }
+            let components = match relative {
+                Some(text) if text.is_empty() => Some(Vec::new()),
+                Some(text) => self.relative_path(&format!("{path}.path"), &text),
+                None => None,
+            };
+            match (var, source, components) {
+                (Some(var), Some(source), Some(path)) => follows.push(Follow { var, path, source }),
+                _ => ok = false,
+            }
+        }
+        ok.then_some(follows)
     }
 
     /// The optional list of program names that hold the rule's files open.
@@ -461,21 +569,26 @@ impl Reader<'_> {
     /// The components of a relative root path, or `None` after reporting why
     /// it is refused.
     fn relative_root(&mut self, location: Location, path: &str) -> Option<Vec<String>> {
-        use RuleIssueKind::{Malformed, UnsafeRoot};
-        let field = "root.path".to_owned();
         if path.is_empty() {
             if location.allows_empty_path() {
                 return Some(Vec::new());
             }
             self.report(
-                field,
-                UnsafeRoot(format!(
+                "root.path".to_owned(),
+                RuleIssueKind::UnsafeRoot(format!(
                     "the root would be the whole `{location}` folder; give a relative path \
                      below it"
                 )),
             );
             return None;
         }
+        self.relative_path("root.path", path)
+    }
+
+    /// The components of a non-empty relative path, or `None` after reporting why it is refused.
+    fn relative_path(&mut self, field: &str, path: &str) -> Option<Vec<String>> {
+        use RuleIssueKind::{Malformed, UnsafeRoot};
+        let field = field.to_owned();
         if path.chars().any(char::is_control) {
             self.report(
                 field,
@@ -700,6 +813,13 @@ fn is_setting_key(key: &str) -> bool {
             chars.next().is_some_and(|c| c.is_ascii_lowercase())
                 && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
         })
+}
+
+/// Whether `name` is a well formed environment variable name.
+fn is_variable_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Whether `name` is a plain executable file name (`chrome.exe`).

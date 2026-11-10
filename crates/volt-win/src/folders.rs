@@ -8,9 +8,9 @@ use volt_core::{KnownFolders, Location, PortError};
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::UI::Shell::{
     FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_LocalAppData,
-    FOLDERID_Music, FOLDERID_Pictures, FOLDERID_Profile, FOLDERID_ProgramData,
-    FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86, FOLDERID_RoamingAppData, FOLDERID_Videos,
-    FOLDERID_Windows, KF_FLAG_DEFAULT, SHGetKnownFolderPath,
+    FOLDERID_LocalAppDataLow, FOLDERID_Music, FOLDERID_Pictures, FOLDERID_Profile,
+    FOLDERID_ProgramData, FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86, FOLDERID_RoamingAppData,
+    FOLDERID_Videos, FOLDERID_Windows, KF_FLAG_DEFAULT, SHGetKnownFolderPath,
 };
 use windows::core::GUID;
 
@@ -74,6 +74,7 @@ impl KnownFolders for WinKnownFolders {
             Location::ProgramData => shell_folder(&FOLDERID_ProgramData, "ProgramData"),
             Location::Windows => shell_folder(&FOLDERID_Windows, "Windows"),
             Location::UserProfile => shell_folder(&FOLDERID_Profile, "Profile"),
+            Location::LocalLow => shell_folder(&FOLDERID_LocalAppDataLow, "LocalAppDataLow"),
             // `Location` is non-exhaustive: a location this adapter does not
             // know is refused, never guessed.
             other => Err(PortError::Unsupported(format!("location {other}"))),
@@ -95,6 +96,7 @@ impl KnownFolders for WinKnownFolders {
             (&FOLDERID_ProgramData, "ProgramData"),
             (&FOLDERID_LocalAppData, "LocalAppData"),
             (&FOLDERID_RoamingAppData, "RoamingAppData"),
+            (&FOLDERID_LocalAppDataLow, "LocalAppDataLow"),
             (&FOLDERID_Desktop, "Desktop"),
             (&FOLDERID_Documents, "Documents"),
             (&FOLDERID_Downloads, "Downloads"),
@@ -115,6 +117,13 @@ impl KnownFolders for WinKnownFolders {
             .collect();
         folders.extend(extra);
         Ok(folders)
+    }
+
+    fn env_folder(&self, variable: &str) -> Option<PathBuf> {
+        // `var_os` is case-insensitive on Windows, like the variables themselves.
+        let value = std::env::var_os(variable)?;
+        let path = PathBuf::from(value);
+        (path.is_absolute() && !path.as_os_str().is_empty()).then_some(path)
     }
 
     fn system_folders(&self) -> Result<Vec<PathBuf>, PortError> {
@@ -151,6 +160,29 @@ mod tests {
             assert!(path.is_absolute(), "{location}: {path:?}");
             assert!(path.is_dir(), "{location}: {path:?}");
         }
+    }
+
+    #[test]
+    fn local_low_resolves_to_the_low_integrity_folder_of_the_profile() {
+        // The folder may not exist on a machine nobody has used much, so only its name is checked.
+        let folders = WinKnownFolders::new();
+        let low = folders.location(Location::LocalLow).expect("resolves");
+        let profile = folders.location(Location::UserProfile).expect("profile");
+        assert!(low.is_absolute() && low.starts_with(&profile), "{low:?}");
+        assert!(low.ends_with("LocalLow"), "{low:?}");
+    }
+
+    #[test]
+    fn an_environment_variable_names_a_folder_only_when_it_is_an_absolute_path() {
+        let folders = WinKnownFolders::new();
+        // PATH is always set but is a list, never a plain absolute folder here; a variable that
+        // does not exist is nothing.
+        assert_eq!(folders.env_folder("VOLT_TEST_SURELY_NOT_SET_7f3a"), None);
+        assert!(
+            folders
+                .env_folder("SystemRoot")
+                .is_some_and(|p| p.is_absolute())
+        );
     }
 
     #[test]

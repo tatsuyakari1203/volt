@@ -29,6 +29,9 @@ pub enum ItemKind {
     /// A folder that is empty, or will be once the plan's files in it are
     /// moved. Only planned when the rule removes empty folders.
     EmptyDirectory,
+    /// A whole folder with everything in it, moved in one go (a rule with
+    /// [`ItemUnit::Entries`](super::ItemUnit::Entries)). Its size is the sum of the files in it.
+    Folder,
 }
 
 /// One path a clean would move to the Recycle Bin.
@@ -42,9 +45,13 @@ pub struct CleanItem {
     pub path: PathBuf,
     /// File or empty folder.
     pub kind: ItemKind,
-    /// Size in bytes as seen by the scan (logical size, 0 for a folder).
+    /// Size in bytes as seen by the scan (logical size; 0 for an empty folder, the sum of the
+    /// files for a whole folder).
     pub size_bytes: u64,
-    /// Last modification time as seen by the scan.
+    /// How many files the item holds: 1 for a file, the number of files inside for a whole
+    /// folder, 0 for an empty folder.
+    pub file_count: u64,
+    /// Last modification time as seen by the scan (for a whole folder, the newest file in it).
     pub modified: Option<Timestamp>,
 }
 
@@ -178,6 +185,10 @@ impl fmt::Display for ScanFailure {
 /// The scan of one rule.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent fact about the rule or the scan, not a state"
+)]
 pub struct RuleScan {
     /// The rule's id.
     pub rule_id: String,
@@ -217,6 +228,12 @@ pub struct RuleScan {
     /// hold open are skipped by a clean. Empty when none runs, or when the
     /// engine has no way to list processes.
     pub running_programs: Vec<String>,
+    /// Whether the user picks the items one by one (the rule's
+    /// [`pick`](super::CleaningRule::pick)): `items` is then the list to pick from.
+    pub pick: bool,
+    /// The environment variable the root was found through, when the tool's cache was moved
+    /// with it (see [`Follow`](super::Follow)).
+    pub followed_by: Option<String>,
 }
 
 impl RuleScan {
@@ -231,19 +248,21 @@ impl RuleScan {
                 || self.counts.access_denied > 0)
     }
 
-    /// Number of files that would be moved.
+    /// Number of files that would be moved, those inside whole folders included.
     #[must_use]
     pub fn file_count(&self) -> usize {
-        self.items
-            .iter()
-            .filter(|item| item.kind == ItemKind::File)
-            .count()
+        self.items.iter().fold(0_usize, |sum, item| {
+            sum.saturating_add(usize::try_from(item.file_count).unwrap_or(usize::MAX))
+        })
     }
 
     /// Number of empty folders that would be moved.
     #[must_use]
     pub fn directory_count(&self) -> usize {
-        self.items.len() - self.file_count()
+        self.items
+            .iter()
+            .filter(|item| item.kind == ItemKind::EmptyDirectory)
+            .count()
     }
 
     /// Total size of the files that would be moved, in bytes.
@@ -296,17 +315,25 @@ impl CleanPlan {
     }
 
     /// Confirms the whole plan: the caller has shown it to the user and the
-    /// user agreed.
+    /// user agreed. A rule the user picks by item ([`RuleScan::pick`]) is left
+    /// out: only [`confirm_selection`](Self::confirm_selection) takes picked
+    /// items, so nothing of it is ever taken by default.
     #[must_use]
     pub fn confirm(&self) -> ConfirmedPlan {
         ConfirmedPlan {
             scanned_at: self.scanned_at,
-            rules: self.rules.clone(),
+            rules: self
+                .rules
+                .iter()
+                .filter(|rule| !rule.pick)
+                .cloned()
+                .collect(),
         }
     }
 
     /// Confirms only the rules with these ids (the user unticked the others).
-    /// Ids that are not in the plan are ignored.
+    /// Ids that are not in the plan are ignored, and so is a rule picked by
+    /// item (see [`confirm`](Self::confirm)).
     #[must_use]
     pub fn confirm_rules<S: AsRef<str>>(&self, rule_ids: &[S]) -> ConfirmedPlan {
         ConfirmedPlan {
@@ -314,11 +341,40 @@ impl CleanPlan {
             rules: self
                 .rules
                 .iter()
+                .filter(|rule| !rule.pick)
                 .filter(|rule| rule_ids.iter().any(|id| id.as_ref() == rule.rule_id))
                 .cloned()
                 .collect(),
         }
     }
+}
+
+/// What the user chose of one rule: all of it, or only some of its items.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleSelection {
+    /// The rule's id.
+    pub rule_id: String,
+    /// Positions in [`RuleScan::items`] of the items the user picked. `None`: the whole rule,
+    /// which is only allowed for a rule the user does not pick by item.
+    pub items: Option<Vec<usize>>,
+}
+
+/// Why a selection cannot be confirmed.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum SelectionError {
+    /// The rule is not part of the plan.
+    #[error("rule \"{0}\" is not part of this scan")]
+    NotInPlan(String),
+    /// The rule is picked by item and no item was picked.
+    #[error("rule \"{0}\" is picked by item: choose at least one item")]
+    NothingPicked(String),
+    /// Items were named for a rule that is not picked by item.
+    #[error("rule \"{0}\" is not picked by item")]
+    NotPickable(String),
+    /// An item position is not in the rule's list.
+    #[error("rule \"{0}\" has no item {1}")]
+    NoSuchItem(String, usize),
 }
 
 /// A plan the user confirmed. It is the only thing
@@ -328,6 +384,52 @@ impl CleanPlan {
 pub struct ConfirmedPlan {
     scanned_at: Timestamp,
     rules: Vec<RuleScan>,
+}
+
+impl CleanPlan {
+    /// Confirms what the user chose: whole rules, and for a rule picked by item only the picked
+    /// items. A rule picked by item with nothing picked, items named for a rule that is not
+    /// picked by item, an unknown rule and an item that is not in the list are all refused, so
+    /// nothing is ever taken that the user did not pick.
+    pub fn confirm_selection(
+        &self,
+        selections: &[RuleSelection],
+    ) -> Result<ConfirmedPlan, SelectionError> {
+        let mut rules = Vec::with_capacity(selections.len());
+        for selection in selections {
+            let Some(scan) = self.rules.iter().find(|r| r.rule_id == selection.rule_id) else {
+                return Err(SelectionError::NotInPlan(selection.rule_id.clone()));
+            };
+            let mut scan = scan.clone();
+            match (&selection.items, scan.pick) {
+                (None, false) => {}
+                (None, true) => return Err(SelectionError::NothingPicked(scan.rule_id)),
+                (Some(_), false) => return Err(SelectionError::NotPickable(scan.rule_id)),
+                (Some(picked), true) => {
+                    if picked.is_empty() {
+                        return Err(SelectionError::NothingPicked(scan.rule_id));
+                    }
+                    if let Some(&bad) = picked.iter().find(|&&index| index >= scan.items.len()) {
+                        return Err(SelectionError::NoSuchItem(scan.rule_id, bad));
+                    }
+                    let mut keep = 0_usize;
+                    scan.items = std::mem::take(&mut scan.items)
+                        .into_iter()
+                        .filter(|_| {
+                            let wanted = picked.contains(&keep);
+                            keep += 1;
+                            wanted
+                        })
+                        .collect();
+                }
+            }
+            rules.push(scan);
+        }
+        Ok(ConfirmedPlan {
+            scanned_at: self.scanned_at,
+            rules,
+        })
+    }
 }
 
 impl ConfirmedPlan {
