@@ -5,6 +5,9 @@ node_modules/
 # Tauri generated schemas and capability manifests
 **/src-tauri/gen/
 
+# Maintainers' internal plan (Backlog.md). Private: never commit.
+.backlog/
+
 # Local tool state (rebuilt on demand)
 .codegraph/
 .claude/worktrees/
