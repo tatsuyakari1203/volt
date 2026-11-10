@@ -118,7 +118,9 @@ fn reconcile_marks_applied_entries_applied_so_they_can_be_undone() {
     assert_eq!(report.outcomes[0].resolution, Resolution::ConfirmedApplied);
     assert_eq!(entry_state(&system, id), EntryState::Applied);
 
-    executor.revert_entry(id).expect("revert");
+    executor
+        .revert_entry(id, Source::Manual, None)
+        .expect("revert");
     assert_eq!(
         system.registry.get(&value_ref("A")),
         Some(RegistryValue::Dword(1))
@@ -631,7 +633,9 @@ fn reverting_a_value_that_did_not_exist_deletes_it() {
         Some(RegistryValue::Dword(1))
     );
 
-    executor.revert_entry(id).expect("revert succeeds");
+    executor
+        .revert_entry(id, Source::Manual, None)
+        .expect("revert succeeds");
 
     assert_eq!(
         system.registry.get(&value_ref("New")),
@@ -668,7 +672,7 @@ fn reverting_a_delete_restores_the_exact_previous_value_and_type() {
     assert_eq!(system.registry.get(&value_ref("Path")), None);
 
     executor
-        .revert_entry(applied_entry(&report, 0))
+        .revert_entry(applied_entry(&report, 0), Source::Manual, None)
         .expect("revert succeeds");
 
     assert_eq!(system.registry.get(&value_ref("Path")), Some(original));
@@ -694,7 +698,7 @@ fn deleting_an_already_absent_value_is_a_journaled_no_op_that_reverts_cleanly() 
 
     assert!(report.is_success());
     executor
-        .revert_entry(applied_entry(&report, 0))
+        .revert_entry(applied_entry(&report, 0), Source::Manual, None)
         .expect("revert succeeds");
     assert_eq!(system.registry.get(&value_ref("Gone")), None);
 }
@@ -719,7 +723,9 @@ fn revert_batch_undoes_everything_newest_first_and_cannot_run_twice() {
         .apply(&plan, Source::Manual)
         .expect("batch is created");
 
-    let reverted = executor.revert_batch(report.batch).expect("journal reads");
+    let reverted = executor
+        .revert_batch(report.batch, Source::Manual, None)
+        .expect("journal reads");
 
     assert!(reverted.is_complete());
     assert_eq!(
@@ -741,18 +747,18 @@ fn revert_batch_undoes_everything_newest_first_and_cannot_run_twice() {
     );
 
     assert_eq!(
-        executor.revert_entry(EntryId(1)),
+        executor.revert_entry(EntryId(1), Source::Manual, None),
         Err(RevertError::NotRevertible(EntryState::Reverted))
     );
     assert!(
         executor
-            .revert_batch(report.batch)
+            .revert_batch(report.batch, Source::Manual, None)
             .expect("journal reads")
             .outcomes
             .is_empty()
     );
     assert_eq!(
-        executor.revert_entry(EntryId(99)),
+        executor.revert_entry(EntryId(99), Source::Manual, None),
         Err(RevertError::EntryNotFound(EntryId(99)))
     );
 }
@@ -771,7 +777,7 @@ fn a_failed_revert_leaves_the_entry_applied_so_it_can_be_retried() {
         PortError::AccessDenied("locked".to_owned()),
     );
 
-    let result = executor.revert_entry(id);
+    let result = executor.revert_entry(id, Source::Manual, None);
 
     assert!(matches!(
         result,
@@ -796,7 +802,7 @@ fn a_pending_entry_cannot_be_reverted_through_the_public_api() {
         .expect("batch is created");
 
     assert_eq!(
-        executor.revert_entry(EntryId(1)),
+        executor.revert_entry(EntryId(1), Source::Manual, None),
         Err(RevertError::NotRevertible(EntryState::Pending))
     );
 }

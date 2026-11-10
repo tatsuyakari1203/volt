@@ -24,8 +24,8 @@ use volt_core::{
 use volt_desktop_lib::IpcError;
 use volt_desktop_lib::api::{
     ActivityItem, ActivityStatus, ApplyStatus, ChangeState, ExportResult, UndoStatus, apply_tweak,
-    export_activity_text, export_file_name, history_status, list_activity, preview_undo_batch,
-    preview_undo_entry, undo_batch, undo_entry, write_export,
+    clear_history, export_activity_text, export_file_name, history_status, list_activity,
+    preview_undo_batch, preview_undo_entry, undo_batch, undo_entry, write_export,
 };
 use volt_desktop_lib::wiring::{AppCore, build_core, windows_ports};
 use volt_win::WinRegistry;
@@ -682,4 +682,33 @@ fn the_history_notice_stays_once_an_activity_write_failed() {
     core.note_history_incomplete();
     assert!(history_status(&core).expect("status").incomplete);
     assert!(history_status(&core).expect("status").incomplete);
+}
+
+// ---- clearing the history --------------------------------------------------------------------
+
+#[test]
+fn clearing_the_history_keeps_what_can_still_be_undone_and_never_touches_the_journal() {
+    let dir = TempDir::new().expect("temp dir");
+    let subkey = r"Software\VoltTest\FakeClear";
+    let (_system, core) = fake_core(&dir, subkey);
+    apply_tweak(&core, "e2e-flag").expect("apply");
+    let rows = items(&core);
+    let batch = rows[0].batch.clone().expect("batch");
+
+    // Everything is still undoable: nothing is removed.
+    assert_eq!(clear_history(&core).expect("clear").removed, 0);
+    assert_eq!(items(&core).len(), rows.len());
+
+    undo_batch(&core, &batch).expect("undo");
+    let before = items(&core).len();
+    assert_eq!(before, 4);
+    // The applied records stay as undone history; once nothing can be undone they all go.
+    let removed = clear_history(&core).expect("clear").removed;
+    assert_eq!(removed as usize, before);
+    assert!(items(&core).is_empty());
+    // The journal still has its (reverted) entries.
+    let entries = core
+        .journal
+        .batch_entries(BatchId(batch.parse().expect("id")));
+    assert_eq!(entries.expect("entries").len(), 2);
 }

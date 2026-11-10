@@ -408,6 +408,14 @@ pub struct ActivityExport {
     pub records: u32,
 }
 
+/// How many records [`clear_history`] removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ClearResult {
+    /// Records removed from the activity history.
+    pub removed: u32,
+}
+
 /// How [`export_activity`] ended.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -713,7 +721,10 @@ pub fn undo_entry(core: &AppCore, entry: &str) -> Result<UndoResult, IpcError> {
         return Ok(undo_result(core, &RevertReport::default()));
     }
     let failures_before = core.engine.activity_write_failures();
-    let result = core.engine.executor().revert_entry(id);
+    let result = core
+        .engine
+        .executor()
+        .revert_entry(id, Source::Manual, None);
     warn_if_history_incomplete(core, failures_before, "undoing a change");
     let report = RevertReport {
         outcomes: vec![RevertOutcome { entry: id, result }],
@@ -735,7 +746,10 @@ pub fn undo_batch(core: &AppCore, batch: &str) -> Result<UndoResult, IpcError> {
         return Ok(undo_result(core, &RevertReport::default()));
     }
     let failures_before = core.engine.activity_write_failures();
-    let report = core.engine.executor().revert_batch(batch);
+    let report = core
+        .engine
+        .executor()
+        .revert_batch(batch, Source::Manual, None);
     warn_if_history_incomplete(core, failures_before, "undoing a batch");
     Ok(undo_result(core, &report.map_err(revert_ipc_error)?))
 }
@@ -790,6 +804,16 @@ fn undo_preview(core: &AppCore, applied: &[JournalEntry]) -> Result<UndoPreview,
         })
         .collect();
     Ok(UndoPreview { items, overwrites })
+}
+
+/// Clears the activity history. Only the log is touched: the undo journal is not, and the records
+/// of changes that can still be undone stay so they remain on the Undo page.
+pub fn clear_history(core: &AppCore) -> Result<ClearResult, IpcError> {
+    let _exclusive = core.exclusive();
+    let removed = core.activity.clear().map_err(IpcError::from)?;
+    Ok(ClearResult {
+        removed: u32::try_from(removed).unwrap_or(u32::MAX),
+    })
 }
 
 /// Whether the activity history is complete, for the notice on the Undo page.

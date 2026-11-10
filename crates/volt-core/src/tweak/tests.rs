@@ -1280,7 +1280,7 @@ fn reset_removes_the_values_of_a_tweak_set_outside_volt_and_can_be_undone() {
     assert_eq!(batches.len(), 1);
     engine
         .executor()
-        .revert_batch_labelled(batches[0], Some("reg-tweak:reset"))
+        .revert_batch(batches[0], Source::Manual, Some("reg-tweak:reset"))
         .expect("undo");
     assert_eq!(
         system.registry.get(&registry_ref("Flag")),

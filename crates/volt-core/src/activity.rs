@@ -125,6 +125,53 @@ pub trait ActivityLog: Send + Sync {
         limit: usize,
         before: Option<ActivityId>,
     ) -> Result<Vec<ActivityRecord>, PortError>;
+
+    /// Removes records that are older than `retention.max_age_ms` before `now`, or beyond the
+    /// newest `retention.max_records`. Returns how many were removed. Touches the activity log
+    /// only, and keeps every record linked to a journal entry that can still be undone (the
+    /// Undo page lists those changes from the log).
+    fn prune(&self, retention: Retention, now: Timestamp) -> Result<u64, PortError>;
+
+    /// Removes every record except those linked to a journal entry that can still be undone.
+    /// Returns how many were removed. Never touches the journal.
+    fn clear(&self) -> Result<u64, PortError>;
+}
+
+/// How much activity history is kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Retention {
+    /// Records older than this many milliseconds are removed.
+    pub max_age_ms: i64,
+    /// Only this many of the newest records are kept.
+    pub max_records: usize,
+}
+
+impl Retention {
+    /// The fixed default: 90 days and 5000 records, whichever removes more.
+    pub const DEFAULT: Self = Self {
+        max_age_ms: 90 * 24 * 60 * 60 * 1000,
+        max_records: 5000,
+    };
+}
+
+/// The journal's failure text for an entry, redacted for display or export. Only the error class
+/// is ever shown: a command's output stored by an older build in the entry error is dropped.
+#[must_use]
+pub fn redacted_entry_error(entry: &crate::journal::JournalEntry) -> Option<String> {
+    entry.error.as_deref().map(|stored| {
+        const CLASSES: [&str; 5] = [
+            "not found",
+            "access denied",
+            "unsupported",
+            "invalid input",
+            "error",
+        ];
+        CLASSES
+            .iter()
+            .find(|class| **class == stored)
+            .map_or("error", |class| class)
+            .to_owned()
+    })
 }
 
 /// Renders records as plain text, one line per record, in the order given

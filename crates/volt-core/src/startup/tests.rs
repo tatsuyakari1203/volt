@@ -483,7 +483,7 @@ fn enabling_writes_the_enabled_record_and_undo_puts_the_disabled_one_back() {
     };
     f.manager
         .executor
-        .revert_entry(entry)
+        .revert_entry(entry, Source::Manual, None)
         .expect("undoes the enable");
     assert_eq!(f.system.registry.get(&user_approval("Sample")), disabled);
 }
@@ -500,7 +500,10 @@ fn undoing_the_first_disable_removes_the_record_it_created() {
         panic!("expected a change");
     };
 
-    f.manager.executor.revert_entry(entry).expect("undoes");
+    f.manager
+        .executor
+        .revert_entry(entry, Source::Manual, None)
+        .expect("undoes");
 
     assert_eq!(f.system.registry.get(&user_approval("Sample")), None);
     assert_eq!(
@@ -558,7 +561,10 @@ fn the_activity_records_say_in_plain_words_what_happened() {
     let ChangeOutcome::Changed { entry, .. } = disable.outcome else {
         panic!("expected a change");
     };
-    f.manager.executor.revert_entry(entry).expect("undoes");
+    f.manager
+        .executor
+        .revert_entry(entry, Source::Manual, None)
+        .expect("undoes");
     f.manager
         .set_enabled("user-folder/Notes.lnk", true, Source::Manual)
         .expect("enables the shortcut");
@@ -604,7 +610,10 @@ fn undoing_a_disable_that_replaced_a_disabled_record_says_it_is_disabled_again()
     let ChangeOutcome::Changed { entry, .. } = change.outcome else {
         panic!("expected a change");
     };
-    f.manager.executor.revert_entry(entry).expect("undoes");
+    f.manager
+        .executor
+        .revert_entry(entry, Source::Manual, None)
+        .expect("undoes");
 
     assert_eq!(
         summaries(&f),

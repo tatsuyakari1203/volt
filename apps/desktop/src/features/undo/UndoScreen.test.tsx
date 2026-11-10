@@ -14,6 +14,7 @@ const ipc = vi.hoisted(() => ({
   historyStatus: vi.fn(),
   exportActivity: vi.fn(),
   exportActivityText: vi.fn(),
+  clearHistory: vi.fn(),
 }));
 vi.mock('../../shared/ipc', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../shared/ipc')>()),
@@ -613,4 +614,27 @@ it('keeps every loaded row, also beyond one page of 200, when the list is read a
   await screen.findByText('Row 401');
   expect(ipc.listActivity).toHaveBeenLastCalledWith(200, '202');
   await vi.waitFor(() => expect(rows()).toHaveLength(301));
+});
+
+it('clears the history after a confirmation that says undoable changes stay', async () => {
+  const user = userEvent.setup();
+  ipc.listActivity.mockResolvedValueOnce(page([undoable('1'), item('2')]));
+  ipc.clearHistory.mockResolvedValue({ removed: 1 });
+  render(<UndoScreen />);
+  await user.click(await screen.findByRole('button', { name: 'Clear' }));
+  expect(await screen.findByText(/Changes that can still be undone stay/)).toBeDefined();
+  expect(ipc.clearHistory).not.toHaveBeenCalled();
+  ipc.listActivity.mockResolvedValue(page([undoable('1')]));
+  await user.click(screen.getByRole('button', { name: 'Clear history' }));
+  expect(await screen.findByText(/Cleared 1 record\./)).toBeDefined();
+  expect(ipc.clearHistory).toHaveBeenCalledTimes(1);
+});
+
+it('does not clear when the confirmation is cancelled', async () => {
+  const user = userEvent.setup();
+  ipc.listActivity.mockResolvedValue(page([item('2')]));
+  render(<UndoScreen />);
+  await user.click(await screen.findByRole('button', { name: 'Clear' }));
+  await user.click(await screen.findByRole('button', { name: 'Cancel' }));
+  expect(ipc.clearHistory).not.toHaveBeenCalled();
 });

@@ -398,6 +398,11 @@ fn build_core_inner(
         .reconcile_pending();
     log_reconcile(&reconcile);
 
+    // Keep the activity history bounded: drop old records at start (undoable changes stay).
+    if let Err(error) = activity.prune(volt_core::Retention::DEFAULT, clock.now()) {
+        log::warn!("could not prune the activity log: {error}");
+    }
+
     let clean = CleanEngine::new(
         rules,
         cleaning.folders,
