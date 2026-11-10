@@ -1,0 +1,40 @@
+name: Bug report
+description: Something Volt did wrong
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected and what happened instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Volt version
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version and build
+      placeholder: Windows 11 Pro 26200
+    validations:
+      required: true
+  - type: dropdown
+    id: changed-system
+    attributes:
+      label: Did Volt change something it should not have?
+      options:
+        - "No"
+        - "Yes, and Undo restored it"
+        - "Yes, and Undo did not restore it"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Activity log
+      description: Paste the relevant entries. Remove personal paths if you prefer.
+      render: text

@@ -1,0 +1,15 @@
+[package]
+name = "volt-win"
+description = "Windows adapters for the volt-core ports. The only crate that may contain unsafe code."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+volt-core.workspace = true

@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "backlog": {
+      "type": "stdio",
+      "command": "cmd",
+      "args": ["/c", "pnpm", "exec", "backlog", "mcp", "start"]
+    },
+    "codegraph": {
+      "type": "stdio",
+      "command": "cmd",
+      "args": ["/c", "pnpm", "exec", "codegraph", "serve", "--mcp"],
+      "env": {
+        "CODEGRAPH_MCP_TOOLS": "explore,node,search,callers,callees,impact,files,status",
+        "CODEGRAPH_TELEMETRY": "0"
+      }
+    }
+  }
+}

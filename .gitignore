@@ -1,0 +1,27 @@
+# Build output
+target/
+dist/
+node_modules/
+
+# Local tool state (rebuilt on demand)
+.codegraph/
+*.tsbuildinfo
+
+# Logs and OS noise
+*.log
+Thumbs.db
+.DS_Store
+
+# Secrets and signing material: never commit
+.env
+.env.*
+!.env.example
+*.key
+*.key.pub
+*.pfx
+*.p12
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea/

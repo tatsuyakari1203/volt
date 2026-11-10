@@ -1,0 +1,21 @@
+project_name: "Volt"
+default_status: "To Do"
+statuses: ["To Do", "In Progress", "Done"]
+labels: ["core", "win", "store", "desktop", "ui", "cli", "memory", "cleaner", "tweaks", "startup", "process", "apps", "health", "monitor", "automation", "safety", "devflow", "ci", "docs", "release", "spike"]
+definition_of_done:
+  - "`pnpm check` passes locally (fmt, clippy, tests, architecture rules, Biome)"
+  - "New behaviour is covered by tests; OS-touching logic is tested through fakes of the port traits"
+  - "Anything that modifies the system supports dry-run and is recorded in the undo journal"
+  - "Feature matrix, docs and decision records are updated when behaviour or a decision changed"
+date_format: yyyy-mm-dd
+max_column_width: 20
+auto_open_browser: false
+default_port: 6420
+remote_operations: false
+auto_commit: false
+filesystem_only: false
+zero_padded_ids: 3
+bypass_git_hooks: false
+check_active_branches: true
+active_branch_days: 30
+task_prefix: "task"

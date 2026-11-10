@@ -1,0 +1,27 @@
+# Git hooks. Installed by `pnpm install` (the `prepare` script runs `lefthook install`).
+# Keep pre-commit fast; the full gate runs on pre-push and in CI.
+
+pre-commit:
+  parallel: true
+  jobs:
+    - name: rustfmt
+      glob: "*.rs"
+      run: cargo fmt --all -- --check
+
+    - name: biome
+      glob: "*.{js,mjs,cjs,ts,tsx,jsx,json,jsonc,css}"
+      run: pnpm exec biome check --no-errors-on-unmatched --files-ignore-unknown=true {staged_files}
+
+    - name: architecture
+      glob: "{Cargo.toml,**/Cargo.toml,scripts/check-arch.mjs}"
+      run: node scripts/check-arch.mjs
+
+commit-msg:
+  jobs:
+    - name: commitlint
+      run: pnpm exec commitlint --edit {1}
+
+pre-push:
+  jobs:
+    - name: check
+      run: pnpm check

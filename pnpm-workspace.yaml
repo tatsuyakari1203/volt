@@ -1,0 +1,7 @@
+packages:
+  - "apps/*"
+
+# pnpm 10 blocks dependency install scripts by default. lefthook's own postinstall is
+# not needed: the root `prepare` script runs `lefthook install`.
+ignoredBuiltDependencies:
+  - lefthook
