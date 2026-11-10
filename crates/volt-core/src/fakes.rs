@@ -558,6 +558,8 @@ impl FileSystem for FakeFileSystem {
 pub struct FakeProcesses {
     processes: Mutex<Vec<ProcessInfo>>,
     terminate_failures: Mutex<HashMap<u32, PortError>>,
+    /// Creation times `list` reports instead of the real ones (a pid reused after the listing).
+    listed_creation: Mutex<HashMap<u32, u64>>,
     log: EventLog,
 }
 
@@ -597,7 +599,39 @@ impl FakeProcesses {
             name: name.to_owned(),
             working_set_bytes,
             cpu_time_100ns,
+            created_at_100ns: 0,
+            path: None,
+            session_id: 1,
         });
+    }
+
+    /// Sets the executable path of a running process.
+    pub fn set_path(&self, pid: u32, path: &str) {
+        self.update(pid, |p| p.path = Some(path.to_owned()));
+    }
+
+    /// Sets the Windows session of a running process.
+    pub fn set_session(&self, pid: u32, session_id: u32) {
+        self.update(pid, |p| p.session_id = session_id);
+    }
+
+    /// Sets when a running process started.
+    pub fn set_created(&self, pid: u32, created_at_100ns: u64) {
+        self.update(pid, |p| p.created_at_100ns = created_at_100ns);
+    }
+
+    /// Makes `list` report `shown` as the creation time of `pid` while the real process keeps its
+    /// own: the listing is stale, as if the id had been reused after it was read.
+    pub fn list_stale_creation(&self, pid: u32, shown: u64) {
+        lock(&self.listed_creation).insert(pid, shown);
+    }
+
+    fn update(&self, pid: u32, change: impl Fn(&mut ProcessInfo)) {
+        for process in lock(&self.processes).iter_mut() {
+            if process.pid == pid {
+                change(process);
+            }
+        }
     }
 
     /// Sets the CPU time a running process has used so far.
@@ -617,16 +651,22 @@ impl FakeProcesses {
 
 impl Processes for FakeProcesses {
     fn list(&self) -> Result<Vec<ProcessInfo>, PortError> {
-        Ok(lock(&self.processes).clone())
+        let mut list = lock(&self.processes).clone();
+        for process in &mut list {
+            if let Some(shown) = lock(&self.listed_creation).get(&process.pid) {
+                process.created_at_100ns = *shown;
+            }
+        }
+        Ok(list)
     }
 
-    fn terminate(&self, pid: u32) -> Result<(), PortError> {
+    fn terminate(&self, pid: u32, created_at_100ns: u64) -> Result<(), PortError> {
         if let Some(error) = lock(&self.terminate_failures).get(&pid) {
             return Err(error.clone());
         }
         let mut processes = lock(&self.processes);
         let before = processes.len();
-        processes.retain(|p| p.pid != pid);
+        processes.retain(|p| !(p.pid == pid && p.created_at_100ns == created_at_100ns));
         if processes.len() == before {
             return Err(PortError::NotFound(format!("process {pid}")));
         }
@@ -1449,10 +1489,10 @@ mod tests {
         let processes = FakeProcesses::new();
         processes.add(10, "a.exe", 100);
         processes.add(11, "b.exe", 200);
-        processes.terminate(10).expect("terminate");
+        processes.terminate(10, 0).expect("terminate");
         assert_eq!(processes.list().expect("list").len(), 1);
         assert!(matches!(
-            processes.terminate(10),
+            processes.terminate(10, 0),
             Err(PortError::NotFound(_))
         ));
     }

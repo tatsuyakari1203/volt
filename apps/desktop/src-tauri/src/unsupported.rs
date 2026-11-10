@@ -23,7 +23,7 @@ impl Processes for UnsupportedProcesses {
         Err(unsupported("listing processes"))
     }
 
-    fn terminate(&self, _pid: u32) -> Result<(), PortError> {
+    fn terminate(&self, _pid: u32, _created_at_100ns: u64) -> Result<(), PortError> {
         Err(unsupported("ending a process"))
     }
 }
@@ -42,7 +42,7 @@ mod tests {
         );
         assert!(
             UnsupportedProcesses
-                .terminate(1)
+                .terminate(1, 0)
                 .is_err_and(|e| is_unsupported(&e))
         );
     }

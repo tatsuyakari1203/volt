@@ -1413,13 +1413,18 @@ status: EndStatusView }
  */
 export type ProcessGroupView = { 
 /**
- * Stable identity of the row (the executable name in lower case); pass it to `endApp`.
+ * Stable identity of the row (the executable path in lower case, or the name when the path
+ * is not known); pass it to `endApp`.
  */
 id: string; 
 /**
  * The executable name.
  */
 name: string; 
+/**
+ * The executable path, when it could be read. Tells apart apps with the same file name.
+ */
+path: string | null; 
 /**
  * How many processes run it.
  */
