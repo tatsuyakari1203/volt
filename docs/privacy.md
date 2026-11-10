@@ -98,19 +98,25 @@ How the app is locked down today:
   - The installer does not download or install the runtime either: webviewInstallMode is skip,
     so setup makes no network call. Windows 11 ships WebView2. On a Windows 10 machine without it,
     install the runtime from Microsoft first, or Volt will not start.
-  - Volt does not configure, install or update the runtime and passes it no browser arguments, so
-    it runs with the defaults of the Tauri runtime (`wry`). At the version used here those are
-    `--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection` (among other things this turns
-    off the SmartScreen URL reputation lookup) and `--autoplay-policy=no-user-gesture-required`.
+  - Volt does not install or update the runtime. It passes the runtime three extra browser
+    arguments for its own window only (`additionalBrowserArgs` in `tauri.conf.json`):
+    `--disable-component-update`, `--disable-domain-reliability` and `--no-pings`, next to the
+    defaults of the Tauri runtime (`wry`) that setting the option would otherwise drop:
+    `--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection` (among other things this
+    turns off the SmartScreen URL reputation lookup) and
+    `--autoplay-policy=no-user-gesture-required`. They affect only Volt's own WebView, not Edge
+    or other apps, and change nothing on the machine. What they achieved is recorded below.
   - The runtime keeps its user data in `%LOCALAPPDATA%\io.github.tatsuyakari1203.volt\EBWebView`,
     a folder of Volt's own that is not shared with Edge.
   - The page Volt loads cannot reach any server (content security policy), so these connections do
     not come from Volt's page or code.
-  - What the runtime sends, to whom and why is not something Volt has verified or can promise
-    anything about. Microsoft's documentation and your Windows diagnostic data settings govern it.
-    A test with extra Chromium switches (`--disable-background-networking`,
-    `--disable-component-update`, `--disable-domain-reliability`, `--no-pings`) did not stop the
-    browser process connecting (below), so Volt does not set them and does not claim to.
+  - What the runtime sends is not something Volt can promise anything about. Microsoft documents
+    that the runtime reports diagnostic data according to the Windows diagnostic data setting and
+    updates itself through its own updater (see the Microsoft Learn pages "WebView2 data and
+    privacy" under `microsoft-edge/webview2/concepts/privacy` and "Distribution of apps using
+    WebView2" under `microsoft-edge/webview2/concepts/distribution`). Volt did not read the
+    content of the connections (TLS); the purposes below are inferred from those pages and from
+    the destinations, not observed.
 - **Windows itself**, antivirus and any network monitoring tool on your machine.
 - **Your own actions.** Opening a link from outside Volt, or running a tool Volt only points to,
   is not Volt sending anything.
@@ -124,32 +130,49 @@ in a running app.
 
 <!-- runtime-verification -->
 
-**Method.** A release build of the desktop app (`pnpm tauri build --no-bundle`) was started by hand with the window open and left alone for 65 seconds. Every second the
-process tree of `volt-desktop.exe` (the app and all of its `msedgewebview2.exe` descendants) was
-listed and every TCP connection and UDP endpoint owned by those processes was read with
-`Get-NetTCPConnection` and `Get-NetUDPEndpoint`. Anything not on loopback was recorded. Only the
-processes the test started were stopped afterwards. The window was also screenshotted to confirm
-the interface renders under the content security policy.
+**Method.** `scripts/observe-webview2.ps1` (read-only, repeatable) starts the release build
+(`pnpm tauri build --no-bundle`), leaves the window open and alone for 70 seconds, and every second
+lists the process tree of `volt-desktop.exe` (the app and its `msedgewebview2.exe` descendants) with
+every TCP connection and UDP endpoint those processes own that is not loopback or a listener. It
+stops only the processes it started. `-BrowserArgs` puts a test value in
+`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` of that one process; nothing on the machine is changed.
 
-**Result, 2026-11-10 (Windows 11, WebView2 runtime 157.0.4341.42, IPv6 network).** Four runs; the
-three on the shipped configuration agree.
+**Result, 2026-11-10 (Windows 11, WebView2 runtime 157.0.4341.42, IPv6 network).** One run of 70 s
+per row, repeated where noted. Browser = the `msedgewebview2.exe` browser process; network service =
+its `network.mojom.NetworkService` utility process. `volt-desktop.exe` had no TCP connection and no
+UDP endpoint in any run, and no process of the tree used UDP or loopback.
 
-| What                                            | Observed                                                                                                                                                          |
-| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `volt-desktop.exe` (Volt's own process)         | No TCP connection and no UDP endpoint of any kind, in every run                                                                                                   |
-| Loopback traffic                                | None seen from any process of the tree                                                                                                                            |
-| UDP endpoints, whole tree                       | None                                                                                                                                                              |
-| WebView2 browser process (`msedgewebview2.exe`) | Two HTTPS connections (port 443) to Microsoft addresses about 7 to 14 s after launch, closed within 30 s                                                          |
-| WebView2 network service process                | One HTTPS connection to `2620:1ec:33::11`, about 64 s after launch (in the third run the same address was seen from a WebView2 child whose type was not recorded) |
+| Option tried (own WebView only)                                                                                              | Browser, port 443                      | Network service, port 443    |
+| ---------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- | ---------------------------- |
+| None (baseline)                                                                                                              | `2603:1046:c01:...::2`, from 3 s, held | `2620:1ec:33::11`, from 61 s |
+| `--disable-background-networking`                                                                                            | same                                   | same                         |
+| `--disable-sync --disable-breakpad --metrics-recording-only --disable-client-side-phishing-detection --disable-default-apps` | same                                   | same                         |
+| `--disable-component-update --disable-domain-reliability --no-pings` (2 runs)                                                | same                                   | gone in both runs            |
+| All of the above plus `--disable-features=...,msEdgeUpdate,OptimizationHints,MediaRouter,Translate,msEdgeShopping` (2 runs)  | same                                   | gone in both runs            |
+| Shipped: the three-switch option set in `tauri.conf.json` (2 runs)                                                           | same                                   | gone in both runs            |
 
-The destinations could not be named by reverse lookup. `2620:1ec:33::11` is one of the two
-addresses `edge.microsoft.com` resolved to on the test machine; the `2603:1046:c01:...` addresses
-of the browser process were not identified. Nothing about the content of the connections was
-inspected (they are TLS). So the honest statement is: **Volt's own code and page made no
-connection; the WebView2 runtime that Windows provides did connect to Microsoft services.** This is
-the runtime's behaviour, it is outside the check above, and it is why the first line of this page
-is limited to what Volt does. Whether a machine with the runtime's data collection or updates
-turned off by policy behaves differently was not tested.
+`2620:1ec:33::11` is one of the two addresses `edge.microsoft.com` resolved to on the test machine
+(the Edge services host, plausibly its component or configuration service). The browser process
+connection goes to a `2603:1046:...` address, a Microsoft block whose name was not identified; it
+begins 3 to 7 s after launch and stays open to the end of every run, whatever switch was set. No
+tested switch stopped it, so Volt does not claim it is off. The window and its renderer, GPU and
+utility processes started in every shipped run (7 processes); the page itself was not
+re-screenshotted for this change.
 
-This is one machine, one minute and one WebView2 version, repeated three times. It is a look, not
-a proof. Repeat it after a WebView2 major update or when the loaded page changes.
+**What this means.** Volt's own code and page made no connection. The shipped switches stop the
+one network-service connection seen in all 3 runs without them; one persistent HTTPS connection
+from the WebView2 browser process to Microsoft remains and is outside Volt's control. Each row is
+one machine and few runs: a look, not a proof. Repeat the script after a WebView2 major update or
+when the loaded page changes.
+
+**Untested options (they change the machine or the runtime, so were not tried).**
+
+- Edge/WebView2 policies in the registry (`HKLM\Software\Policies\Microsoft\Edge` and the
+  `EdgeUpdate` policy keys, for example diagnostic data and update policy). Applies to Edge and
+  every WebView2 app on the PC, needs administrator rights, may block security updates.
+- A firewall rule for `msedgewebview2.exe` or the Microsoft destinations. Machine-wide, can break
+  other WebView2 apps, and addresses change.
+- A `hosts` file entry for `edge.microsoft.com`. Same trade-offs, plus it is fragile.
+- The fixed-version runtime shipped inside Volt. It has no shared updater, so the update check
+  would stop, but Volt would then have to ship every WebView2 security update itself and the
+  installer grows by over 100 MB. Whether it removes the remaining connection is unknown.
