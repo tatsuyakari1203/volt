@@ -144,7 +144,7 @@ impl LogonTasks for WinLogonTasks {
             unsafe { CoCreateInstance(&TaskScheduler, None, CLSCTX_INPROC_SERVER) }
                 .map_err(|e| com_error(&e, "creating the Task Scheduler client"))?;
         let empty = VARIANT::default();
-        // SAFETY: four valid empty VARIANTs: connect to the local service as
+        // SAFETY: four valid empty VARIANT values: connect to the local service as
         // the current user.
         unsafe { service.Connect(&empty, &empty, &empty, &empty) }
             .map_err(|e| com_error(&e, "connecting to the Task Scheduler"))?;
