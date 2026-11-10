@@ -5,6 +5,8 @@ node_modules/
 
 # Local tool state (rebuilt on demand)
 .codegraph/
+.claude/worktrees/
+.claude/settings.local.json
 *.tsbuildinfo
 
 # Logs and OS noise
