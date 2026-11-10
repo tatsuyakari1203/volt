@@ -66,7 +66,7 @@ function CommandText({ entry }: { entry: StartupEntryView }) {
 
 /**
  * The Startup screen: what starts with Windows, with a switch to turn each entry on or off the way
- * Windows does (Task Manager and Settings show the same state). Every change goes through the undo
+ * Windows does (it keeps the entry and records that it is off). Every change goes through the undo
  * journal and can be undone on the Undo page. Entries that apply to every user are listed but
  * cannot be changed yet, because that needs administrator rights. All rules live in the Rust core:
  * this renders what the commands report.
@@ -166,7 +166,7 @@ export function StartupScreen() {
     <>
       <PageHeader
         title="Startup"
-        description="Programs that start when you sign in. Turning one off keeps it listed, and Task Manager shows the same state."
+        description="Programs that start when you sign in. Turning one off keeps it listed, so you can turn it back on."
       />
       <div className="flex flex-col gap-3">
         {notice ? (

@@ -1,6 +1,5 @@
 import {
   Cpu,
-  HeartPulse,
   House,
   type LucideIcon,
   MemoryStick,
@@ -19,7 +18,6 @@ export type SectionId =
   | 'tweaks'
   | 'startup'
   | 'processes'
-  | 'health'
   | 'settings'
   | 'undo';
 
@@ -37,7 +35,6 @@ export const mainSections: readonly Section[] = [
   { id: 'tweaks', label: 'Tweaks', icon: SlidersHorizontal },
   { id: 'startup', label: 'Startup', icon: Power },
   { id: 'processes', label: 'Processes', icon: Cpu },
-  { id: 'health', label: 'Health', icon: HeartPulse },
 ];
 
 /** Sections pinned to the bottom of the rail. */

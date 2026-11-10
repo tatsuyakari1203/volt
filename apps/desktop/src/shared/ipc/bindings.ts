@@ -238,8 +238,8 @@ async exportActivityText() : Promise<Result<ActivityExport, IpcError>> {
 }
 },
 /**
- * Tauri command: lists everything that starts with Windows (Run keys and Startup folders) with
- * the state Task Manager shows. Reads the system only.
+ * Tauri command: lists everything that starts with Windows (Run keys and Startup folders), each
+ * with whether it is enabled. Reads the system only.
  */
 async listStartupEntries() : Promise<Result<StartupList, IpcError>> {
     try {

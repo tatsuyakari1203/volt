@@ -99,8 +99,8 @@ pub(crate) async fn list_activity(
     .await
 }
 
-/// Tauri command: lists everything that starts with Windows (Run keys and Startup folders) with
-/// the state Task Manager shows. Reads the system only.
+/// Tauri command: lists everything that starts with Windows (Run keys and Startup folders), each
+/// with whether it is enabled. Reads the system only.
 #[tauri::command]
 #[specta::specta]
 pub(crate) async fn list_startup_entries(

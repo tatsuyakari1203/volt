@@ -32,6 +32,20 @@ impl BoostRunning {
     fn finish(&self) {
         self.0.store(false, Ordering::SeqCst);
     }
+
+    /// A guard that clears the flag when dropped, also when the worker returns early or panics.
+    fn guard(&self) -> RunningGuard<'_> {
+        RunningGuard(self)
+    }
+}
+
+/// Clears [`BoostRunning`] on drop, so a failed or panicked Boost cannot block later ones.
+struct RunningGuard<'a>(&'a BoostRunning);
+
+impl Drop for RunningGuard<'_> {
+    fn drop(&mut self) {
+        self.0.finish();
+    }
 }
 
 /// One entry of the tray menu.
@@ -138,6 +152,8 @@ fn start_boost<R: Runtime>(app: &AppHandle<R>) {
     }
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let running = app.state::<BoostRunning>();
+        let _clears_the_flag = running.guard();
         let outcome = app
             .state::<AppState>()
             .core()
@@ -150,7 +166,6 @@ fn start_boost<R: Runtime>(app: &AppHandle<R>) {
             // A failed emit only means nobody is listening.
             let _ = BoostFinished(result).emit(&app);
         }
-        app.state::<BoostRunning>().finish();
     });
 }
 
@@ -215,6 +230,33 @@ mod tests {
         assert!(!running.try_start(), "the second click does nothing");
         running.finish();
         assert!(running.try_start(), "it can run again afterwards");
+    }
+
+    #[test]
+    fn the_flag_is_cleared_when_the_worker_fails_or_panics() {
+        let running = BoostRunning::default();
+
+        assert!(running.try_start());
+        {
+            let _guard = running.guard();
+            // The worker returns early with an error: the guard drops here.
+        }
+        assert!(
+            running.try_start(),
+            "a failed Boost does not block the next"
+        );
+        running.finish();
+
+        assert!(running.try_start());
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = running.guard();
+            panic!("the worker panics");
+        }));
+        assert!(panicked.is_err());
+        assert!(
+            running.try_start(),
+            "a panicked Boost does not block the next"
+        );
     }
 
     #[test]

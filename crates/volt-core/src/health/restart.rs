@@ -11,8 +11,9 @@ const WINDOWS_UPDATE_KEY: &str =
     "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WindowsUpdate\\Auto Update\\RebootRequired";
 /// Subkey of the session manager, which holds the list of files to rename or delete at boot.
 const SESSION_MANAGER_KEY: &str = "SYSTEM\\CurrentControlSet\\Control\\Session Manager";
-/// Installers queue file replacements here when a file is in use: a non-empty list means
-/// something finishes at the next start.
+/// Installers queue file replacements here when a file is in use. The value is a list of
+/// pairs (source, destination). An empty destination means "delete the source at the next
+/// start", which needs no restart from the user; a destination means a real rename.
 const PENDING_FILE_RENAMES_VALUE: &str = "PendingFileRenameOperations";
 
 /// Which well-known marker says that Windows waits for a restart.
@@ -23,7 +24,7 @@ pub enum RestartMarker {
     ComponentServicing,
     /// `HKLM\...\WindowsUpdate\Auto Update\RebootRequired` exists.
     WindowsUpdate,
-    /// `HKLM\...\Session Manager\PendingFileRenameOperations` holds at least one entry.
+    /// `HKLM\...\Session Manager\PendingFileRenameOperations` holds at least one rename (a pair with a destination).
     PendingFileRename,
 }
 
@@ -67,7 +68,7 @@ pub fn pending_restart_markers(registry: &dyn Registry) -> Result<Vec<RestartMar
     );
     note(
         registry.read_value(&renames).map(|value| match value {
-            Some(RegistryValue::MultiSz(entries)) => !entries.is_empty(),
+            Some(RegistryValue::MultiSz(entries)) => has_rename(&entries),
             // Another kind in this value is not what Windows writes; it queues nothing.
             _ => false,
         }),
@@ -78,4 +79,13 @@ pub fn pending_restart_markers(registry: &dyn Registry) -> Result<Vec<RestartMar
         Some(error) if found.is_empty() => Err(error),
         _ => Ok(found),
     }
+}
+
+/// Whether the pairs (source, destination) hold a real rename. A pair without a destination
+/// (empty, or cut off because trailing empty strings are not stored) only deletes a file.
+fn has_rename(entries: &[String]) -> bool {
+    entries.chunks(2).any(|pair| {
+        pair.get(1)
+            .is_some_and(|destination| !destination.is_empty())
+    })
 }

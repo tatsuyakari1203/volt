@@ -9,6 +9,9 @@ use crate::registry::{RegistryHive, RegistryValue, RegistryValueRef, RegistryVie
 
 const GB: u64 = GIB;
 
+/// A startup load that costs nothing, for tests about the other checks.
+const QUIET: Option<StartupLoad> = Some(StartupLoad { enabled_apps: 1 });
+
 fn disk(total: u64, free: u64) -> DiskSpace {
     DiskSpace {
         mount: "C:\\".into(),
@@ -23,7 +26,7 @@ fn healthy() -> HealthInputs {
         system_disk: Some(disk(500 * GB, 200 * GB)),
         memory_used_percent: Some(40.0),
         restart_pending: Some(false),
-        startup_load: None,
+        startup_load: Some(StartupLoad { enabled_apps: 3 }),
     }
 }
 
@@ -196,31 +199,36 @@ fn a_pending_restart_takes_10_points_and_says_to_restart() {
 
 #[test]
 fn startup_load_is_judged_only_when_it_is_known() {
-    // Not known yet: no deduction, and not listed as unchecked either.
-    let report = assess(&healthy());
+    // Not known: no deduction, and listed as unchecked.
+    let report = assess(&HealthInputs {
+        startup_load: None,
+        ..healthy()
+    });
     assert!(report.deductions().is_empty());
-    assert!(!report.unchecked().contains(&HealthCheck::Startup));
+    assert_eq!(report.unchecked(), [HealthCheck::Startup]);
 
     let cases = [
         (0, None),
-        (1, None),
-        (2, Some(("startup.some", STARTUP_SOME_POINTS))),
-        (3, Some(("startup.some", STARTUP_SOME_POINTS))),
-        (4, Some(("startup.many", STARTUP_MANY_POINTS))),
-        (30, Some(("startup.many", STARTUP_MANY_POINTS))),
+        (7, None),
+        (8, Some(("startup.some", STARTUP_SOME_POINTS))),
+        (14, Some(("startup.some", STARTUP_SOME_POINTS))),
+        (15, Some(("startup.many", STARTUP_MANY_POINTS))),
+        (40, Some(("startup.many", STARTUP_MANY_POINTS))),
     ];
     for (apps, expected) in cases {
         let report = assess(&HealthInputs {
-            startup_load: Some(StartupLoad {
-                high_impact_apps: apps,
-            }),
+            startup_load: Some(StartupLoad { enabled_apps: apps }),
             ..healthy()
         });
         let found = report.deductions().first().map(|d| (d.id, d.points));
         assert_eq!(found, expected, "apps = {apps}");
         if let Some(deduction) = report.deductions().first() {
             assert_eq!(deduction.fix, FixAction::OpenStartup);
-            assert!(deduction.reason.starts_with(&format!("{apps} apps")));
+            assert!(
+                deduction
+                    .reason
+                    .starts_with(&format!("{apps} startup entries"))
+            );
         }
     }
 }
@@ -231,9 +239,7 @@ fn deductions_are_listed_in_rule_order_and_add_up() {
         system_disk: Some(disk(100 * GB, 2 * GB)),
         memory_used_percent: Some(95.0),
         restart_pending: Some(true),
-        startup_load: Some(StartupLoad {
-            high_impact_apps: 9,
-        }),
+        startup_load: Some(StartupLoad { enabled_apps: 20 }),
     });
     assert_eq!(
         ids(&report),
@@ -261,7 +267,11 @@ fn an_input_that_could_not_be_read_is_listed_and_costs_nothing() {
     assert_eq!(report.score(), 100);
     assert_eq!(
         report.unchecked(),
-        [HealthCheck::SystemDisk, HealthCheck::PendingRestart]
+        [
+            HealthCheck::SystemDisk,
+            HealthCheck::PendingRestart,
+            HealthCheck::Startup
+        ]
     );
     // Something ran, so there is still a grade.
     assert_eq!(report.level(), HealthLevel::Good);
@@ -288,9 +298,52 @@ fn when_nothing_could_be_checked_there_is_no_grade() {
         [
             HealthCheck::SystemDisk,
             HealthCheck::Memory,
-            HealthCheck::PendingRestart
+            HealthCheck::PendingRestart,
+            HealthCheck::Startup
         ]
     );
+}
+
+// --- Startup load from the startup manager --------------------------------------------------------
+
+fn startup_entry(name: &str, state: StartupState) -> crate::startup::StartupEntry {
+    crate::startup::StartupEntry {
+        id: format!("user-run/{name}"),
+        name: name.to_owned(),
+        origin: crate::startup::StartupOrigin::UserRun,
+        command: format!("{name}.exe"),
+        program: None,
+        publisher: None,
+        state,
+    }
+}
+
+#[test]
+fn the_startup_load_counts_the_enabled_entries_only() {
+    let listing = StartupListing {
+        entries: vec![
+            startup_entry("a", StartupState::Enabled),
+            startup_entry("b", StartupState::Disabled),
+            startup_entry("c", StartupState::Enabled),
+        ],
+        problems: vec![],
+    };
+    assert_eq!(
+        StartupLoad::from_listing(&listing),
+        Some(StartupLoad { enabled_apps: 2 })
+    );
+}
+
+#[test]
+fn a_startup_list_with_an_unreadable_source_gives_no_load() {
+    let listing = StartupListing {
+        entries: vec![startup_entry("a", StartupState::Enabled)],
+        problems: vec![crate::startup::SourceProblem {
+            origin: crate::startup::StartupOrigin::MachineRun,
+            reason: "access denied",
+        }],
+    };
+    assert_eq!(StartupLoad::from_listing(&listing), None);
 }
 
 #[test]
@@ -385,23 +438,13 @@ fn grid() -> Vec<HealthInputs> {
     let restart = [None, Some(false), Some(true)];
     let startup = [
         None,
+        Some(StartupLoad { enabled_apps: 0 }),
+        Some(StartupLoad { enabled_apps: 7 }),
+        Some(StartupLoad { enabled_apps: 8 }),
+        Some(StartupLoad { enabled_apps: 14 }),
+        Some(StartupLoad { enabled_apps: 15 }),
         Some(StartupLoad {
-            high_impact_apps: 0,
-        }),
-        Some(StartupLoad {
-            high_impact_apps: 1,
-        }),
-        Some(StartupLoad {
-            high_impact_apps: 2,
-        }),
-        Some(StartupLoad {
-            high_impact_apps: 3,
-        }),
-        Some(StartupLoad {
-            high_impact_apps: 4,
-        }),
-        Some(StartupLoad {
-            high_impact_apps: u32::MAX,
+            enabled_apps: u32::MAX,
         }),
     ];
     let mut inputs = Vec::new();
@@ -584,7 +627,7 @@ fn each_marker_alone_says_a_restart_is_pending() {
     let registry = FakeRegistry::new();
     registry.set(
         &rename_value(),
-        RegistryValue::MultiSz(vec!["\\??\\C:\\old.dll".into(), String::new()]),
+        RegistryValue::MultiSz(vec!["\\??\\C:\\old.dll".into(), "\\??\\C:\\new.dll".into()]),
     );
     assert_eq!(
         pending_restart_markers(&registry),
@@ -596,6 +639,15 @@ fn each_marker_alone_says_a_restart_is_pending() {
 fn an_empty_or_odd_file_rename_value_is_not_a_marker() {
     for value in [
         RegistryValue::MultiSz(vec![]),
+        // Delete-only entries: an empty destination, or one cut off by the trailing terminator.
+        RegistryValue::MultiSz(vec!["\\??\\C:\\tmp.dll".into(), String::new()]),
+        RegistryValue::MultiSz(vec!["\\??\\C:\\tmp.dll".into()]),
+        RegistryValue::MultiSz(vec![
+            "\\??\\C:\\a.tmp".into(),
+            String::new(),
+            "\\??\\C:\\b.tmp".into(),
+            String::new(),
+        ]),
         RegistryValue::Dword(1),
         RegistryValue::Sz("x".into()),
     ] {
@@ -606,11 +658,32 @@ fn an_empty_or_odd_file_rename_value_is_not_a_marker() {
 }
 
 #[test]
+fn a_rename_among_deletes_still_counts() {
+    let registry = FakeRegistry::new();
+    registry.set(
+        &rename_value(),
+        RegistryValue::MultiSz(vec![
+            "\\??\\C:\\a.tmp".into(),
+            String::new(),
+            "\\??\\C:\\old.dll".into(),
+            "!\\??\\C:\\new.dll".into(),
+        ]),
+    );
+    assert_eq!(
+        pending_restart_markers(&registry),
+        Ok(vec![RestartMarker::PendingFileRename])
+    );
+}
+
+#[test]
 fn all_markers_set_are_all_reported() {
     let registry = FakeRegistry::new();
     registry.add_key(RegistryHive::LocalMachine, CBS, RegistryView::Native);
     registry.add_key(RegistryHive::LocalMachine, WU, RegistryView::Native);
-    registry.set(&rename_value(), RegistryValue::MultiSz(vec!["a".into()]));
+    registry.set(
+        &rename_value(),
+        RegistryValue::MultiSz(vec!["a".into(), "b".into()]),
+    );
     assert_eq!(
         pending_restart_markers(&registry),
         Ok(vec![
@@ -687,7 +760,7 @@ fn inspect_reads_the_system_disk_memory_and_markers_once() {
         &[("D:\\", 1000 * GB, GB), ("C:\\", 476 * GB, 24 * GB)],
     ));
 
-    let inputs = read_inputs(&registry, &metrics, "c:", None);
+    let inputs = read_inputs(&registry, &metrics, "c:", QUIET);
     assert_eq!(inputs.system_disk, Some(disk(476 * GB, 24 * GB)));
     assert_eq!(inputs.restart_pending, Some(true));
     assert!(
@@ -697,7 +770,7 @@ fn inspect_reads_the_system_disk_memory_and_markers_once() {
     );
     assert_eq!(metrics.reads(), 1);
 
-    let report = inspect(&registry, &metrics, "C:\\", None);
+    let report = inspect(&registry, &metrics, "C:\\", QUIET);
     assert_eq!(
         ids(&report),
         ["disk.low", "memory.critical", "restart.pending"]
@@ -709,7 +782,7 @@ fn inspect_reads_the_system_disk_memory_and_markers_once() {
 fn a_failed_sample_leaves_disk_and_memory_unchecked_but_the_restart_is_still_read() {
     let registry = FakeRegistry::new();
     let metrics = FakeMetrics::scripted(vec![Err(PortError::Other("counters broke".into()))]);
-    let report = inspect(&registry, &metrics, "C:", None);
+    let report = inspect(&registry, &metrics, "C:", QUIET);
     assert_eq!(
         report.unchecked(),
         [HealthCheck::SystemDisk, HealthCheck::Memory]
@@ -722,7 +795,7 @@ fn a_failed_sample_leaves_disk_and_memory_unchecked_but_the_restart_is_still_rea
 fn a_missing_system_disk_is_unchecked_not_healthy() {
     let registry = FakeRegistry::new();
     let metrics = FakeMetrics::constant(sample(16 * GB, 8 * GB, &[("D:\\", 100 * GB, 50 * GB)]));
-    let report = inspect(&registry, &metrics, "C:", None);
+    let report = inspect(&registry, &metrics, "C:", QUIET);
     assert_eq!(report.unchecked(), [HealthCheck::SystemDisk]);
 }
 
@@ -736,7 +809,7 @@ fn an_unreadable_registry_leaves_the_restart_unchecked() {
         PortError::AccessDenied("hklm".into()),
     );
     let metrics = FakeMetrics::constant(sample(16 * GB, 8 * GB, &[("C:\\", 500 * GB, 300 * GB)]));
-    let report = inspect(&registry, &metrics, "C:", None);
+    let report = inspect(&registry, &metrics, "C:", QUIET);
     assert_eq!(report.unchecked(), [HealthCheck::PendingRestart]);
     assert_eq!(report.score(), 100);
 }
