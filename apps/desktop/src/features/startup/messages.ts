@@ -127,3 +127,8 @@ export function shortenCommand(command: string, max = 56): string {
   const head = max - 1 - tail;
   return `${text.slice(0, head).trimEnd()}…${text.slice(text.length - tail).trimStart()}`;
 }
+
+/** One sentence when the scheduled tasks could not be read. */
+export function describeTasksProblem(reason: string | null): string | null {
+  return reason ? t('startup.tasks.problem', { reason }) : null;
+}

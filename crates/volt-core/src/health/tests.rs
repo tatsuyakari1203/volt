@@ -327,6 +327,16 @@ fn the_startup_load_counts_the_enabled_entries_only() {
             startup_entry("c", StartupState::Enabled),
         ],
         problems: vec![],
+        tasks: vec![crate::startup::ScheduledTaskEntry {
+            name: "T".into(),
+            folder: "\\".into(),
+            command: String::new(),
+            program: None,
+            publisher: None,
+            enabled: true,
+            microsoft: false,
+        }],
+        tasks_problem: None,
     };
     assert_eq!(
         StartupLoad::from_listing(&listing),
@@ -342,6 +352,7 @@ fn a_startup_list_with_an_unreadable_source_gives_no_load() {
             origin: crate::startup::StartupOrigin::MachineRun,
             reason: "access denied",
         }],
+        ..StartupListing::default()
     };
     assert_eq!(StartupLoad::from_listing(&listing), None);
 }

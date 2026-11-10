@@ -79,6 +79,8 @@ impl Sandbox {
             StartupWiring {
                 sources: self.sources(),
                 publisher: Arc::new(WinFilePublisher::new()),
+                shortcuts: None,
+                logon_tasks: None,
             },
         )
         .expect("core builds")

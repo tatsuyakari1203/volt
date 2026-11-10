@@ -21,6 +21,15 @@
 //! was none"), labelled [`STARTUP_LABEL`], undoable, and recorded in the
 //! activity log with a summary in plain words (`Disabled startup entry: Name`).
 //!
+//! # Shortcuts and scheduled tasks
+//!
+//! A Startup folder shortcut (`.lnk`) is resolved through the optional
+//! [`ShortcutResolver`] port, so the entry shows the command it really starts
+//! (target and arguments) and the publisher of the target. Scheduled tasks with
+//! a logon trigger come from the optional [`LogonTasks`] port and are listed in
+//! [`StartupListing::tasks`], read-only: they are not entries, have no state
+//! the manager can change and never count towards the switchable entries.
+//!
 //! Entries that apply to every user (the machine-wide Run keys and the common
 //! Startup folder) can be listed but not changed: that needs administrator
 //! rights and the elevation model is not decided, so
@@ -82,6 +91,64 @@ impl FilePublisher for NoPublisher {
     }
 }
 
+/// What a shortcut points at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShortcutTarget {
+    /// The program the shortcut starts, as stored (environment variable
+    /// references are not expanded).
+    pub target: String,
+    /// The arguments, possibly empty.
+    pub arguments: String,
+}
+
+/// Port: reads where a `.lnk` shortcut points. Read-only; the shortcut is never
+/// followed or run.
+pub trait ShortcutResolver: Send + Sync {
+    /// The target of the shortcut file at `shortcut`, or `Ok(None)` when it has
+    /// no file target (for example a shortcut to a folder or a special item).
+    fn resolve(&self, shortcut: &Path) -> Result<Option<ShortcutTarget>, PortError>;
+}
+
+/// A scheduled task that runs when a user signs in, as a port reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogonTask {
+    /// The full path of the task in the Task Scheduler library, like
+    /// `\Microsoft\Windows\Foo\Bar`.
+    pub path: String,
+    /// The program of the first program action, as written, or empty.
+    pub program: String,
+    /// The arguments of that action.
+    pub arguments: String,
+    /// Whether the task and one of its logon triggers are enabled.
+    pub enabled: bool,
+}
+
+/// Port: lists scheduled tasks that have a logon trigger. Read-only; tasks the
+/// user cannot read are left out, not reported as errors.
+pub trait LogonTasks: Send + Sync {
+    /// The logon tasks the current user can read.
+    fn logon_tasks(&self) -> Result<Vec<LogonTask>, PortError>;
+}
+
+/// A logon scheduled task, read-only: it has no switch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScheduledTaskEntry {
+    /// The task's name (the last part of its path).
+    pub name: String,
+    /// The folder of the task in the library, like `\Microsoft\Windows`.
+    pub folder: String,
+    /// The command (program and arguments); empty when the task runs no program.
+    pub command: String,
+    /// The program, when there is one.
+    pub program: Option<String>,
+    /// Who published the program, when its version information says.
+    pub publisher: Option<String>,
+    /// Whether the task will run at logon.
+    pub enabled: bool,
+    /// Whether the task is part of Windows (it lives under `\Microsoft\`).
+    pub microsoft: bool,
+}
+
 /// One thing that starts with Windows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartupEntry {
@@ -120,6 +187,12 @@ pub struct StartupListing {
     pub entries: Vec<StartupEntry>,
     /// Sources that could not be read.
     pub problems: Vec<SourceProblem>,
+    /// Logon scheduled tasks, read-only, sorted by name. Empty when there is no
+    /// task source.
+    pub tasks: Vec<ScheduledTaskEntry>,
+    /// Why the scheduled tasks could not be read (a failure class), if so.
+    /// Kept apart from `problems` because tasks are not switchable entries.
+    pub tasks_problem: Option<&'static str>,
 }
 
 /// What [`StartupManager::set_enabled`] did.
@@ -190,6 +263,8 @@ pub struct StartupManager {
     executor: Executor,
     clock: Arc<dyn Clock>,
     sources: StartupSources,
+    shortcuts: Option<Arc<dyn ShortcutResolver>>,
+    tasks: Option<Arc<dyn LogonTasks>>,
 }
 
 impl fmt::Debug for StartupManager {
@@ -227,7 +302,24 @@ impl StartupManager {
             executor,
             clock,
             sources,
+            shortcuts: None,
+            tasks: None,
         }
+    }
+
+    /// Resolves Startup folder shortcuts through `resolver`, so they show the
+    /// command they start and its publisher.
+    #[must_use]
+    pub fn with_shortcut_resolver(mut self, resolver: Arc<dyn ShortcutResolver>) -> Self {
+        self.shortcuts = Some(resolver);
+        self
+    }
+
+    /// Lists logon scheduled tasks (read-only) from `tasks`.
+    #[must_use]
+    pub fn with_logon_tasks(mut self, tasks: Arc<dyn LogonTasks>) -> Self {
+        self.tasks = Some(tasks);
+        self
     }
 
     /// Lists everything that starts with Windows. Read-only.
@@ -249,7 +341,42 @@ impl StartupManager {
         listing
             .entries
             .sort_by_cached_key(|entry| (entry.name.to_lowercase(), entry.origin.id()));
+        if let Some(tasks) = &self.tasks {
+            match tasks.logon_tasks() {
+                Ok(found) => {
+                    listing.tasks = found.iter().map(|task| self.task_entry(task)).collect();
+                    listing
+                        .tasks
+                        .sort_by_cached_key(|task| (task.name.to_lowercase(), task.folder.clone()));
+                }
+                Err(error) => listing.tasks_problem = Some(error_class(&error)),
+            }
+        }
         listing
+    }
+
+    fn task_entry(&self, task: &LogonTask) -> ScheduledTaskEntry {
+        let (folder, name) = task
+            .path
+            .rsplit_once('\\')
+            .unwrap_or(("", task.path.as_str()));
+        let program = Some(task.program.trim().to_owned()).filter(|text| !text.is_empty());
+        let command = program
+            .as_deref()
+            .map(|program| join_command(program, &task.arguments))
+            .unwrap_or_default();
+        let publisher = program
+            .as_deref()
+            .and_then(|program| self.publisher_of(program));
+        ScheduledTaskEntry {
+            name: name.to_owned(),
+            folder: if folder.is_empty() { "\\" } else { folder }.to_owned(),
+            command,
+            program,
+            publisher,
+            enabled: task.enabled,
+            microsoft: task.path.to_lowercase().starts_with("\\microsoft\\"),
+        }
     }
 
     /// The dry run of [`StartupManager::set_enabled`]: the plan it would
@@ -372,11 +499,14 @@ impl StartupManager {
                 continue;
             }
             let path = folder.join(&item.name);
-            let command = path.to_string_lossy().into_owned();
-            // A shortcut's target is not resolved: only a program placed in the
-            // folder itself has version information of its own.
-            let is_program = has_extension(&name, "exe");
-            let program = is_program.then(|| command.clone());
+            let mut command = path.to_string_lossy().into_owned();
+            let mut program = has_extension(&name, "exe").then(|| command.clone());
+            if has_extension(&name, "lnk")
+                && let Some(target) = self.shortcut_target(&path)
+            {
+                command = join_command(&target.target, &target.arguments);
+                program = Some(target.target);
+            }
             let publisher = program
                 .as_deref()
                 .and_then(|program| self.publisher_of(program));
@@ -392,6 +522,19 @@ impl StartupManager {
             });
         }
         Ok(entries)
+    }
+
+    /// Where a shortcut points. A shortcut that cannot be read keeps showing
+    /// its file path, so a failure is not an error here.
+    fn shortcut_target(&self, shortcut: &Path) -> Option<ShortcutTarget> {
+        let resolver = self.shortcuts.as_ref()?;
+        match resolver.resolve(shortcut) {
+            Ok(target) => target.filter(|target| !target.target.trim().is_empty()),
+            Err(error) => {
+                log::debug!("cannot read a shortcut: {}", error_class(&error));
+                None
+            }
+        }
     }
 
     /// The publisher of a program, or `None` when it cannot be told. A failure
@@ -548,6 +691,23 @@ fn is_single_component(name: &str) -> bool {
         (components.next(), components.next()),
         (Some(std::path::Component::Normal(part)), None) if part == name
     )
+}
+
+/// A program and its arguments as one command line; a program path with spaces
+/// is quoted.
+fn join_command(program: &str, arguments: &str) -> String {
+    let program = program.trim();
+    let program = if program.contains(' ') && !program.starts_with('"') {
+        format!("\"{program}\"")
+    } else {
+        program.to_owned()
+    };
+    let arguments = arguments.trim();
+    if arguments.is_empty() {
+        program
+    } else {
+        format!("{program} {arguments}")
+    }
 }
 
 fn has_extension(name: &str, extension: &str) -> bool {

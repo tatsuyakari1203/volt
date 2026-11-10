@@ -913,3 +913,109 @@ fn a_state_that_cannot_be_read_is_an_error_not_a_guess() {
     ));
     assert!(system.journal.entries().is_empty());
 }
+
+// ---- shortcut targets and logon tasks ------------------------------------------------------
+
+use super::fakes::{FakeLogonTasks, FakeShortcuts};
+
+fn logon_task(path: &str, program: &str, arguments: &str, enabled: bool) -> LogonTask {
+    LogonTask {
+        path: path.to_owned(),
+        program: program.to_owned(),
+        arguments: arguments.to_owned(),
+        enabled,
+    }
+}
+
+#[test]
+fn a_shortcut_shows_its_target_command_and_the_publisher_of_the_target() {
+    let f = fixture();
+    let shortcuts = Arc::new(FakeShortcuts::new());
+    shortcuts.set(
+        "Notes.lnk",
+        r"C:\Program Files\Notes\notes.exe",
+        "--minimized",
+    );
+    shortcuts.fail_on("Broken.lnk", PortError::AccessDenied("x".into()));
+    f.publisher
+        .set(r"C:\Program Files\Notes\notes.exe", "Notes Inc.");
+    for name in ["Notes.lnk", "Broken.lnk", "Folder.lnk"] {
+        f.system
+            .file_system
+            .add_file(format!("{USER_FOLDER}/{name}"), 1);
+    }
+    let manager = f.manager.with_shortcut_resolver(shortcuts);
+
+    let listing = manager.list();
+    let notes = find(&listing, "user-folder/Notes.lnk");
+    assert_eq!(
+        notes.command,
+        r#""C:\Program Files\Notes\notes.exe" --minimized"#
+    );
+    assert_eq!(
+        notes.program.as_deref(),
+        Some(r"C:\Program Files\Notes\notes.exe")
+    );
+    assert_eq!(notes.publisher.as_deref(), Some("Notes Inc."));
+    // A shortcut that cannot be read, or has no file target, keeps its file path.
+    for id in ["user-folder/Broken.lnk", "user-folder/Folder.lnk"] {
+        let entry = find(&listing, id);
+        assert!(
+            std::path::Path::new(&entry.command)
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("lnk")),
+            "{}",
+            entry.command
+        );
+        assert_eq!(entry.program, None);
+    }
+}
+
+#[test]
+fn logon_tasks_are_listed_read_only_with_publisher_and_origin() {
+    let f = fixture();
+    f.publisher.set(r"C:\Tools\sync.exe", "Sync Ltd");
+    let tasks = FakeLogonTasks::new(vec![
+        logon_task(r"\Sync Updater", r"C:\Tools\sync.exe", "/quiet", true),
+        logon_task(
+            r"\Microsoft\Windows\Foo\Bar",
+            r"%windir%\system32\bar.exe",
+            "",
+            false,
+        ),
+        logon_task(r"\Odd", "", "", true),
+    ]);
+    let manager = f.manager.with_logon_tasks(Arc::new(tasks));
+
+    let listing = manager.list();
+    assert_eq!(listing.tasks_problem, None);
+    let names: Vec<_> = listing.tasks.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(names, ["Bar", "Odd", "Sync Updater"]);
+    let bar = &listing.tasks[0];
+    assert!(bar.microsoft && !bar.enabled);
+    assert_eq!(bar.folder, r"\Microsoft\Windows\Foo");
+    let sync = &listing.tasks[2];
+    assert!(!sync.microsoft && sync.enabled);
+    assert_eq!(sync.folder, r"\");
+    assert_eq!(sync.command, r"C:\Tools\sync.exe /quiet");
+    assert_eq!(sync.publisher.as_deref(), Some("Sync Ltd"));
+    assert_eq!(listing.tasks[1].command, "");
+    // Tasks are not entries: they never reach the switchable list.
+    assert!(listing.entries.is_empty());
+}
+
+#[test]
+fn unreadable_tasks_are_a_problem_class_and_leave_the_entries_alone() {
+    let f = fixture();
+    add_run(&f, "Alpha", r"C:\a.exe");
+    let manager =
+        f.manager
+            .with_logon_tasks(Arc::new(FakeLogonTasks::failing(PortError::AccessDenied(
+                "secret".into(),
+            ))));
+    let listing = manager.list();
+    assert_eq!(listing.entries.len(), 1);
+    assert!(listing.tasks.is_empty());
+    assert_eq!(listing.tasks_problem, Some("access denied"));
+    assert!(listing.problems.is_empty());
+}

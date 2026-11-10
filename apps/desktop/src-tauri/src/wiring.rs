@@ -19,14 +19,14 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use tauri::{AppHandle, Manager as _};
 use volt_core::{
     ActivityLog, Catalogue, CatalogueError, CleanEngine, CleaningRules, Clock, Executor,
-    FilePublisher, Journal, KnownFolders, LargeFilesFinder, MemoryCleaner, PortError, Ports,
-    ProcessMonitor, ReconcileReport, RecycleBinManager, Resolution, RulesError, Settings,
-    StartupManager, StartupSources, SystemClock, TweakEngine,
+    FilePublisher, Journal, KnownFolders, LargeFilesFinder, LogonTasks, MemoryCleaner, PortError,
+    Ports, ProcessMonitor, ReconcileReport, RecycleBinManager, Resolution, RulesError, Settings,
+    ShortcutResolver, StartupManager, StartupSources, SystemClock, TweakEngine,
 };
 use volt_store::{CorruptionRecovery, OpenOutcome, Store, StoreError};
 use volt_win::{
-    WinCommands, WinFilePublisher, WinFileSystem, WinKnownFolders, WinMemory, WinProcesses,
-    WinRecycleBin, WinRegistry, WinServices,
+    WinCommands, WinFilePublisher, WinFileSystem, WinKnownFolders, WinLogonTasks, WinMemory,
+    WinProcesses, WinRecycleBin, WinRegistry, WinServices, WinShortcuts,
 };
 
 use crate::IpcError;
@@ -337,6 +337,10 @@ pub struct StartupWiring {
     pub sources: StartupSources,
     /// Reads the publisher of a program.
     pub publisher: Arc<dyn FilePublisher>,
+    /// Reads where Startup folder shortcuts point; `None` shows the shortcut file itself.
+    pub shortcuts: Option<Arc<dyn ShortcutResolver>>,
+    /// Lists logon scheduled tasks (read-only); `None` lists none.
+    pub logon_tasks: Option<Arc<dyn LogonTasks>>,
 }
 
 impl fmt::Debug for StartupWiring {
@@ -355,6 +359,8 @@ impl StartupWiring {
         Self {
             sources: StartupSources::windows(&WinKnownFolders::new()),
             publisher: Arc::new(WinFilePublisher::new()),
+            shortcuts: Some(Arc::new(WinShortcuts::new())),
+            logon_tasks: Some(Arc::new(WinLogonTasks::new())),
         }
     }
 }
@@ -462,7 +468,8 @@ fn build_core_inner(
     let engine = TweakEngine::new(catalogue, ports, journal.clone(), clock)
         .with_activity_log(activity.clone());
     let startup_apps = startup.map(|wiring| {
-        StartupManager::new(
+        let (shortcuts, logon_tasks) = (wiring.shortcuts, wiring.logon_tasks);
+        let mut manager = StartupManager::new(
             registry,
             file_system,
             wiring.publisher,
@@ -471,7 +478,14 @@ fn build_core_inner(
             engine.executor().clone(),
             startup_clock,
             wiring.sources,
-        )
+        );
+        if let Some(resolver) = shortcuts {
+            manager = manager.with_shortcut_resolver(resolver);
+        }
+        if let Some(tasks) = logon_tasks {
+            manager = manager.with_logon_tasks(tasks);
+        }
+        manager
     });
     let core = AppCore::new(
         engine,
