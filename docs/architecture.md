@@ -359,6 +359,16 @@ What `volt-core` contains today:
     it, compares the plan with the expectation, then cleans the plan against the fake and checks
     that exactly the planned entries moved. A guard test fails when a rule has no fixture or a
     fixture lacks a kind of entry the rule's shape makes possible.
+  - **Large files finder** (`volt_core::large_files`). Beside the rules, the Clean page can list
+    the biggest files under a folder the user picks. The scan is read-only and goes through the
+    `FileSystem` port: an iterative walk that never enters a reparse point, with a bounded heap
+    that keeps the top 200. Moving the chosen files to the Recycle Bin re-checks each file's size
+    and modification time and reuses `FileSystem::move_to_trash` and `CleanSkipReason`. One
+    activity record is written, label `large_files`, with counts only. Exclusions:
+    `KnownFolders::system_folders` (Windows, both Program Files folders and ProgramData; a scan
+    root inside them is refused, and if the port cannot name them the scan refuses to run), the
+    names `pagefile.sys`, `hiberfil.sys` and `swapfile.sys`, `$Recycle.Bin` and
+    `System Volume Information`.
 
 ## Persistence
 
@@ -471,23 +481,21 @@ file-publisher ports with the Windows API: `WinRegistry`, `WinServices`, `WinFil
   `GlobalMemoryStatusEx`, disks are `GetLogicalDrives` filtered to `DRIVE_FIXED` with
   `GetDiskFreeSpaceExW` (removable drives, optical drives and network shares are never touched; a
   volume that cannot be read, such as a locked BitLocker volume, is left out). The GPU part
-  (`gpu.rs`) uses the performance counters `GPU Engine(*)\Utilization Percentage` and
-  `GPU Adapter Memory(*)\Dedicated Usage` through PDH (the English counter paths, so the display
-  language does not matter) and DXGI for the adapter name and the installed dedicated memory
-  (software adapters are skipped). The processes sharing a GPU engine are added up per engine and
-  the busiest engine represents the adapter, which is how Task Manager reports it. The counter
-  instance parsing and the aggregation are pure functions tested on strings. A GPU that cannot be
-  read (no counters, a virtual machine, a driver without WDDM 2) reads as an empty list and one
-  warning in the diagnostic log, never as an error. **NVML is not used**: the counters already
-  cover NVIDIA, AMD and Intel, and a run-time-loaded NVML would be an optional refinement for a
-  later task. Opening a `WinMetrics` opens a PDH query, so it is created when sampling starts and
-  dropped when it stops. Reading is allowed in tests (it changes nothing); they assert
+  (`gpu.rs`) uses `D3DKMTQueryStatistics`, the interface Task Manager uses, and needs no vendor
+  library or elevation. The adapter query gives the segment and node counts. The segment query
+  gives `BytesResident`, and `Aperture` marks shared memory, so dedicated memory is the sum over
+  the non-aperture segments. The node query gives `GlobalInformation.RunningTime` in 100 ns units,
+  and utilisation is the busiest node's delta over the clock delta. DXGI still supplies the
+  adapter name and the installed dedicated memory (software adapters are skipped). A GPU that
+  cannot be read (a virtual machine, a driver without WDDM 2) reads as an empty list and one
+  warning in the diagnostic log, never as an error. **NVML is not used**: the statistics cover
+  NVIDIA, AMD and Intel. Reading is allowed in tests (it changes nothing); they assert
   plausibility, not exact values.
 - `WinRegistry::key_exists` opens the key with query access only: not found is `false`, access
   denied is `true` (the key exists), anything else is an error. Its test is part of the registry
   contract that both the fake and the real adapter pass, on a throwaway `HKCU\Software\VoltTest`
   key; reading the real `HKLM` markers is read-only and is only done at run time.
-- `WinMetrics::without_gpu()` is a source that never opens the performance-counter query, for a
+- `WinMetrics::without_gpu()` is a source that never queries the GPU, for a
   one-off read of CPU time, memory and disks (the health check): three cheap calls that leave
   nothing open.
 - Changing a real service's start type is deliberately not covered by an automated test, because
@@ -530,17 +538,37 @@ file-publisher ports with the Windows API: `WinRegistry`, `WinServices`, `WinFil
 ## Process and elevation model
 
 Volt itself never runs elevated. Administrator work goes to a second, small program, `volt-helper`
-(crate `crates/volt-helper`), that the UI will start through one UAC prompt and that serves ONE
-connection from that UI over a private named pipe. Built so far: the wire protocol and the
-`Elevator` port (`volt-core::elevation`, a closed request set of `hello`, `memory_purge` and `bye`,
-1 KiB messages, strictly ordered ids, unknown fields refused), the pipe, the client check that
-binds the helper to the UI that launched it (process id, creation time, image path), the install
-folder check, the helper's self-hardening and the strict command line (`volt-win::helper`), and the
-serve loop with its idle limit, hard cap and quotas. Nothing starts the helper yet: launching it,
-the installer change and the Memory page are the next part. The helper's build is
-`scripts/build-helper.ps1` (static CRT, `requireAdministrator` manifest, no test modes: those are
-compiled in only outside release builds). Everything below works unelevated and does not depend
-on the helper, except where it says so.
+(crate `crates/volt-helper`, a composition root over `volt-core` and `volt-win` with its own rule in
+`check-arch.mjs`) that the UI will start through one UAC prompt and that serves ONE connection from
+that UI over a private named pipe. Built so far, and tested without elevation:
+
+- **Protocol** (`volt-core::elevation`, the `Elevator` port): JSON, one message per pipe message,
+  1 KiB request cap, a closed request set (`hello`, `memory_purge`, `bye`), unknown fields refused,
+  ids exactly 1, 2, 3. A framing or order violation gets an error reply and the connection is
+  closed. A request that is valid but refused (no areas, rate limited) keeps the connection and
+  never extends the idle clock.
+- **The process** (`volt-win::helper`, `volt-helper::run`). It hardens itself first: environment
+  scrub, DLL search limited to System32, working directory System32, five process mitigation
+  policies (among them no child process) and privileges cut to three. Then it parses the one
+  accepted command line (`serve --pipe volt-<32 hex> --ui-pid N --ui-created TICKS`), checks that
+  it runs from the Program Files install folder (owner and ACL of the image, the folder and the
+  state folder, no reparse points), verifies the UI process it is bound to, creates the pipe and
+  serves. Exit codes are in `run::exit`; 6 means the helper's user is not the UI's user.
+- **The pipe.** A unique first instance, one instance, remote clients rejected, message mode,
+  overlapped I/O with timeouts, so the idle limit (10 minutes), the hard cap (60 minutes) and the
+  exit on disconnect need no watchdog thread. A client is served only if it is the bound process
+  (pid, creation time, image path) and passes the token rules (same user, same session, at least
+  Medium integrity). Any other client is disconnected and counted, and the helper keeps
+  listening. Quotas: one memory purge per 5 seconds and 30 changing requests per minute.
+- **The build** is `scripts/build-helper.ps1`. The release helper has the `requireAdministrator`
+  manifest, a static CRT and the Dependent Load Flag, and no test modes. One cfg
+  (`helper_release`, set by the build script from the release profile) gates both the manifest and
+  the debug-only test modes, so they cannot coexist. The build script refuses a release build
+  without `crt-static`.
+
+Not built yet: the UAC launch with the process handle, the UI wiring, the installer change, the
+confirmation desktop and the helper's own store. Nothing starts the helper yet. Everything below
+works unelevated and does not depend on the helper, except where it says so.
 
 What already depends on it: the machine-wide cleaning rules (`windows-temp`, `machine-wer-*`,
 `windows-update-logs`, `delivery-optimization-cache`) are flagged `requires_admin`. Unelevated they
@@ -618,12 +646,18 @@ switches entries on and off the way Windows does, so Task Manager and Settings s
   views on the development machine; `HKLM` in the 64-bit view and in the 32-bit view, which is
   `WOW6432Node` and holds different values) and the per-user and common Startup folders. Every
   `StartupEntry` has a stable id (`<origin>/<name>`), name, origin, the command as written, the
-  program of the command, an optional publisher and the state. A Startup folder item shows its
-  file path as its command; only plain files count (not folders, links or `desktop.ini`), and a
-  `.lnk` is shown without its extension. A shortcut's target is not resolved (it would need the
-  shell's link API), so a shortcut has no publisher. A source that cannot be read (access denied)
-  is a `SourceProblem` in the result; the rest of the list is still valid. `RunOnce`, services,
-  scheduled tasks and the other autostart places are not listed.
+  program of the command, an optional publisher and the state. A Startup folder item is a plain
+  file (not a folder, link or `desktop.ini`), and a `.lnk` is shown without its extension. With
+  the optional `ShortcutResolver` port (`WinShortcuts`, shell link COM, read-only) a shortcut
+  shows its target as the command and the target's publisher; without it, or when the link cannot
+  be read, it shows its file path and has no publisher. A source that cannot be read (access
+  denied) is a `SourceProblem` in the result; the rest of the list is still valid.
+  **Logon scheduled tasks** come from the optional `LogonTasks` port (`WinLogonTasks`, Task
+  Scheduler COM, read-only, unreadable tasks skipped) and are returned in `StartupListing.tasks`,
+  apart from the switchable entries. They have no switch and are not counted in the health
+  startup load. A failed task read is reported as `tasks_problem`, not as a source problem. Both
+  COM adapters call `CoInitializeEx` on the calling thread and uninitialise it afterwards.
+  `RunOnce`, services and the other autostart places are not listed.
 - **The command line** (`parse_command_line`, pure): a quoted program ends at the closing quote;
   an unquoted one ends at the first whitespace after `.exe`, `.com`, `.bat`, `.cmd`, `.lnk` or
   `.scr`, which handles paths with spaces, and otherwise at the first word. Environment variable
@@ -679,7 +713,7 @@ switches entries on and off the way Windows does, so Task Manager and Settings s
   temp folders with the same shape, which is how the adapter and the integration tests run without
   touching the real Run or `StartupApproved` keys.
 - **Known limits.** Task Manager can also show "Startup impact" and entries from places Volt does
-  not list; shortcuts are not resolved; the "Task Manager shows the same state" claim rests on the
+  not list; tasks have no switch; the "Task Manager shows the same state" claim rests on the
   layout above and has not been checked by changing a real entry. That check is manual: switch an
   entry off in Volt and see it off in Task Manager's Startup apps tab, then the other way round.
 
@@ -720,7 +754,7 @@ window is open. The code is `apps/desktop/src-tauri/src/sampler.rs` (the sampler
   also checks on every tick that the window still exists and ends by itself within one interval
   if it does not.
 - **Nothing is held while idle.** The thread builds its `WinMetrics` when it starts and drops it
-  when it ends, so a closed window holds no performance-counter query, and `latest_metrics`
+  when it ends, so a closed window holds no sampler state, and `latest_metrics`
   answers `null` again. The diagnostic log has one line when sampling starts and one when it stops
   (`live metrics sampling stopped after N samples`), which is how a real run is checked.
 - **Timing.** One second between samples. `run_loop` waits on a channel with a timeout (so a
@@ -754,23 +788,23 @@ the WebView2 processes. The diagnostic log was read to confirm the sampler start
 
 - **CPU while sampling:** 1.8 to 4.1 ms of CPU per second, about 0.2 to 0.4 % of one core. In the
   91 second run the whole 375 ms was spent on one thread (the `volt-metrics` thread); every other
-  thread used none. Nearly all of it is the GPU counters: in a debug test run one GPU read cost
-  about 8 ms, against about 0.1 ms for the disks and 0.2 ms for CPU and memory together. CPU and
-  memory alone would cost far less than this; the GPU part is the price of vendor-neutral GPU
-  numbers without administrator rights.
+  thread used none. These figures were taken with the earlier performance-counter (PDH) GPU read, which
+  was nearly all of the cost (about 8 ms per read in a debug run, against about 0.1 ms for the
+  disks and 0.2 ms for CPU and memory together); the D3DKMT read has not been timed separately.
 - **CPU after the window closes:** zero. The log shows `live metrics sampling started` when the
   window is created and `live metrics sampling stopped after N samples` at the moment it is
   closed (for example 111 samples over a 111 second window); nothing is read afterwards.
-- **Memory, an honest cost:** the first use of the performance counters (PDH) loads
-  process-wide counter tables that closing the query does not release. An A/B run of a debug
-  build with the real page loaded, a trivial fake metrics source against `WinMetrics`, left 3.7 MB
-  against 8.0 MB after one open and close; a standalone test process shows the same step (about
-  3 MB for the first counter of any kind, about 2 MB more for the GPU counters) and the thread
-  count is the same in both runs. So after the first time the window is opened, an idle Volt keeps
-  about 4 to 5 MB more than before (roughly 8 MB instead of the 3.8 MB in the idle table above);
-  a Volt that stays in the tray without ever opening its window is unchanged. The query itself,
-  the thread and the snapshot are freed at stop. Getting this back means reading the GPU through
-  `D3DKMTQueryStatistics` instead of PDH, which is a possible later task.
+- **Memory.** The earlier PDH read left process-wide counter tables behind after the first use,
+  which kept the private working set at about 10 MB with the window open and 8 to 9 MB after it
+  was closed. Reading the GPU through D3DKMT removed that. Private working set of the release
+  build, before the window / window open 15 s / 10 s after close, three runs each:
+  - With PDH: 2.21/10.11/8.45, 2.18/10.38/8.78 and 2.18/10.17/8.50 MB.
+  - With D3DKMT: 2.32/4.76/4.69, 2.23/4.55/4.58 and 2.25/4.54/4.46 MB.
+
+  Measured on 2026-11-10 with `pnpm tauri build --no-bundle`, launching `--background`, then a
+  second launch to open the window, then `CloseMainWindow`. The 3.8 MB in the idle table was
+  measured differently (30 s after close); the remaining difference from it is about 0.8 MB, with
+  the window opened once.
 
 ## Frontend
 
@@ -802,7 +836,12 @@ the WebView2 processes. The diagnostic log was read to confirm the sampler start
 - `features/clean` is the Clean page: scan, a per-rule review, confirm, and the Recycle Bin card.
   Safe rules are ticked by default; browser, shader, chat app and developer caches are not. Rules that need administrator rights
   are shown but cannot be cleaned, and a note names running browsers whose open files are skipped.
-  Screenshot: `docs/design/clean-light-460x700.png`.
+  Screenshot: `docs/design/clean-light-460x700.png`. The page has two views, Junk and Large
+  files, both kept mounted so a result survives switching. The Large files view lists the biggest
+  files under a chosen folder and moves ticked ones to the Recycle Bin; screenshot:
+  `docs/design/clean-large-files-light-460x700.png` (sample data, mocked IPC).
+- `shared/i18n` is a foundation module (see Localisation). `Shell` remounts the current page when
+  the language changes, so every string is read again.
 - `features/memory` is the Memory page (state, and a choice of the five purge areas; the three
   admin-only ones are disabled with the reason). Screenshot: `docs/design/memory-light-460x700.png`.
   Byte formatting lives in `shared/text/size.ts`: `formatBytes` for memory and disk, `formatSize`
@@ -879,6 +918,12 @@ the WebView2 processes. The diagnostic log was read to confirm the sampler start
     samples. A scan can be cancelled (`cancelCleaningScan`). Rules with `requires_admin` are
     scanned but refused at clean (the elevation model is undecided). The Recycle Bin status and
     empty commands sit beside them.
+  - **Large files commands** (`src-tauri/src/large_files.rs`). The shell keeps the scan in
+    `LargeFilesSession` and sends the UI the full paths (the user asked to see them), but takes
+    back only the scan id and row numbers. A trash removes the moved rows from the stored scan and
+    returns the renumbered list. `reveal_large_file` runs `explorer.exe /select` on a path from the
+    stored scan only. The folder dialog is opened from Rust (`pick_scan_folder`); the UI has no
+    dialog permission.
   - **Tweak commands.** `get_tweak_plan` returns the plan of a tweak and `reset_tweak` turns off a
     tweak set outside Volt. `TweakInfo` carries `needsAdmin` and `appliedByVolt`;
     `NeedsAdministrator` maps to `IpcError::AccessDenied`.
@@ -1009,10 +1054,15 @@ is visible, so every record Volt writes is listed and says whether it can be tak
 - **Two changes to one value.** An undo restores the value the journal recorded before that
   change. Before a single or batch undo, `journal::overwrites_of` looks for a later applied entry
   on the same registry value or service. `preview_undo_entry` and `preview_undo_batch` report it
-  and the UI asks for a confirmation that names the later change.
+  and the UI asks for a confirmation that names the later change. The core enforces it:
+  `undo_entry` and `undo_batch` take the later-entry ids the caller showed the user, and if any
+  overwrite found is not in that list they return `UndoStatus::NeedsAcknowledgement` with the
+  overwrites and change nothing. The check runs under the exclusive lock, so a change that appears
+  after the preview is refused too. UI flows pass what they displayed.
 - **Incomplete history and clearing.** When `history_status` says the history is incomplete the
   page shows a notice. A Clear button (`clear_history`, with a confirmation) removes the history
-  within the retention rules above. After an undo the refresh pages through the log up to the
+  within the retention rules above; its result also reports `kept`, counted by paging the activity
+  log after the clear. After an undo the refresh pages through the log up to the
   oldest loaded row.
 - **Export.** The activity log can be saved as a text file (Export) or put on the clipboard
   (Copy). `export_activity_text` renders every record with `volt_core::render_text` (UTC time,
@@ -1032,6 +1082,26 @@ is visible, so every record Volt writes is listed and says whether it can be tak
 - Screenshots with sample data (a mocked IPC) are in `docs/design`: `undo-light-460x700.png` and
   `undo-dark-460x700.png`, and the confirmation dialog as `undo-confirm-light-460x700.png` and
   `undo-confirm-dark-460x700.png`.
+
+## Localisation
+
+The UI is available in English and Vietnamese.
+
+- **Files.** The locale files are in `apps/desktop/src/shared/i18n/locales`: `en.json` (the
+  source), `vi.json` and `vi.catalogue.json` (Vietnamese for core text, filed under tweak, rule and
+  category ids). The translator is `shared/i18n/translate.ts` (`t`, `tn`, `tx`, `tNodes`) and has
+  no dependency.
+- **Core text stays English.** `volt-core` and the catalogue TOML hold English only; never put
+  Vietnamese there. The UI looks Vietnamese up by id and falls back to the core's English. Health
+  reasons are translated by deduction id, with the figures read back out of the English sentence.
+- **The setting.** The language is System, `en` or `vi`, stored under the settings key
+  `ui.language` as `{choice, system}`. The window reports what System means on this PC at every
+  start, so the tray can use it with no window open (`language.rs` in the shell). The window
+  applies a change at once. The tray menu follows at the next start; the tooltip and the Boost
+  notification follow at once.
+- **Quality gate.** The `i18n` step of `pnpm check`, also run by name in CI
+  (`scripts/check-i18n.mjs`, with a test), fails on a key present in only one locale, on
+  placeholder mismatches, and on a tweak, rule or category without Vietnamese text.
 
 ## Testing strategy
 
@@ -1058,10 +1128,10 @@ by the owner.
 ## Quality gates
 
 `pnpm check` (`scripts/check.ps1`) runs one step per gate and CI runs the same script: rustfmt,
-clippy, tests, bindings, architecture, privacy, Biome, typecheck, Vitest and the UI boundary rule;
-`cargo-deny` and `typos` join when installed (CI always has them). It does not stop at the first
-failure and lists every failed step at the end. The step count is not written down anywhere: the
-script prints it.
+clippy, tests, bindings, architecture, privacy, i18n, Biome, typecheck, Vitest and the UI boundary rule
+(11 steps);
+`cargo-deny` and `typos` join when installed (CI always has them). The `i18n` step (`scripts/check-i18n.mjs`, with a test) also runs by name in CI. It does not stop at the first
+failure and lists every failed step at the end. The script prints the count.
 
 ## Privacy and offline guarantee
 
