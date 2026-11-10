@@ -10,6 +10,7 @@ mod commands;
 pub mod health;
 mod ipc;
 pub mod language;
+pub mod large_files;
 mod logging;
 pub mod memory;
 pub mod metrics;

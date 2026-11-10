@@ -19,6 +19,7 @@ pub struct FakeKnownFolders {
     locations: Mutex<HashMap<Location, PathBuf>>,
     protected: Mutex<Vec<PathBuf>>,
     protected_failure: Mutex<Option<PortError>>,
+    system: Mutex<Option<Vec<PathBuf>>>,
 }
 
 impl FakeKnownFolders {
@@ -36,6 +37,11 @@ impl FakeKnownFolders {
     /// Adds a protected folder.
     pub fn protect(&self, path: impl Into<PathBuf>) {
         lock(&self.protected).push(path.into());
+    }
+
+    /// Sets the folders `system_folders` returns (unset: it fails).
+    pub fn set_system_folders(&self, folders: Vec<PathBuf>) {
+        *lock(&self.system) = Some(folders);
     }
 
     /// Makes `protected_folders` fail, or stop failing with `None`.
@@ -57,6 +63,12 @@ impl KnownFolders for FakeKnownFolders {
             return Err(error);
         }
         Ok(lock(&self.protected).clone())
+    }
+
+    fn system_folders(&self) -> Result<Vec<PathBuf>, PortError> {
+        lock(&self.system)
+            .clone()
+            .ok_or_else(|| PortError::Unsupported("system folders".to_owned()))
     }
 }
 

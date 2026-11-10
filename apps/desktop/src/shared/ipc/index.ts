@@ -28,6 +28,9 @@ import {
   type Lang,
   type LanguageChoice,
   type LanguageSetting,
+  type LargeFilesProgress,
+  type LargeFilesResult,
+  type LargeFilesTrashResult,
   type MemoryAreaView,
   type MemoryCleanResult,
   type MemoryState,
@@ -73,6 +76,7 @@ export type {
   EndStatusView,
   EvidenceLevel,
   ExportResult,
+  FileGroupView,
   FixActionView,
   GpuView,
   HealthCheckView,
@@ -83,6 +87,10 @@ export type {
   Lang,
   LanguageChoice,
   LanguageSetting,
+  LargeFilesProgress,
+  LargeFilesResult,
+  LargeFilesTrashResult,
+  LargeFileView,
   MemoryAreaView,
   MemoryCleanResult,
   MemoryListsView,
@@ -433,6 +441,48 @@ export async function getRecycleBinStatus(): Promise<RecycleBinView> {
 /** Permanently deletes everything in the Recycle Bin. Cannot be undone: confirm with the user first. */
 export async function emptyRecycleBin(): Promise<EmptyBinResult> {
   return call(() => commands.emptyRecycleBin());
+}
+
+/**
+ * Scans a folder for its biggest files (the system drive when `root` is `null`), read-only. Runs in
+ * the background: listen with `onLargeFilesProgress` and call `cancelLargeFilesScan` to stop it
+ * (the result then has `cancelled: true`). The result names the scan, which the calls below need.
+ */
+export async function scanLargeFiles(root: string | null): Promise<LargeFilesResult> {
+  return call(() => commands.scanLargeFiles(root));
+}
+
+/** Asks the running large files scan to stop. Does nothing when none runs. */
+export async function cancelLargeFilesScan(): Promise<void> {
+  await call(() => commands.cancelLargeFilesScan());
+}
+
+/** Calls `handler` every so often while a large files scan runs. Returns the unlisten function. */
+export function onLargeFilesProgress(
+  handler: (progress: LargeFilesProgress) => void,
+): Promise<() => void> {
+  return events.largeFilesProgress.listen((event) => handler(event.payload));
+}
+
+/**
+ * Moves the files at the given rows of scan `scanId` to the Recycle Bin (never a permanent
+ * delete). The result says what moved, what was left, and the list that remains.
+ */
+export async function trashLargeFiles(
+  scanId: string,
+  indices: number[],
+): Promise<LargeFilesTrashResult> {
+  return call(() => commands.trashLargeFiles(scanId, indices));
+}
+
+/** Opens the folder of the file at `index` of scan `scanId` in Explorer, file selected. */
+export async function revealLargeFile(scanId: string, index: number): Promise<void> {
+  await call(() => commands.revealLargeFile(scanId, index));
+}
+
+/** Shows the native folder dialog. The chosen folder, or `null` when it was closed. */
+export async function pickScanFolder(): Promise<string | null> {
+  return call(() => commands.pickScanFolder());
 }
 
 /**

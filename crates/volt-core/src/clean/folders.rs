@@ -76,4 +76,12 @@ pub trait KnownFolders: Send + Sync {
     /// similar. A rule whose resolved root equals one of them, or is a folder
     /// above one of them, is refused. The comparison ignores case.
     fn protected_folders(&self) -> Result<Vec<PathBuf>, PortError>;
+
+    /// Absolute folders the large files finder never looks into: the Windows
+    /// directory, Program Files (both) and `ProgramData`. The default is an
+    /// error, so an adapter that cannot name them makes the finder refuse to
+    /// scan rather than scan the system folders.
+    fn system_folders(&self) -> Result<Vec<PathBuf>, PortError> {
+        Err(PortError::Unsupported("system folders".to_owned()))
+    }
 }

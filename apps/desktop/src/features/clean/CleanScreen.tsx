@@ -13,7 +13,8 @@ import {
   scanCleaning,
 } from '../../shared/ipc';
 import { formatSize } from '../../shared/text/size';
-import { Button, Card, Dialog, ListGroup, PageHeader } from '../../shared/ui';
+import { Button, Card, Dialog, ListGroup, PageHeader, SegmentedControl } from '../../shared/ui';
+import { LargeFilesView } from './LargeFilesView';
 import {
   categoryName,
   describeError,
@@ -108,12 +109,12 @@ function ResultCard({ result, onScanAgain }: { result: CleanRunResult; onScanAga
 }
 
 /**
- * The Clean screen: scan, see per rule how much would go, untick what you want to keep, confirm,
+ * The junk view of the Clean screen: scan, see per rule how much would go, untick what you want to keep, confirm,
  * and read an honest result. Files only ever move to the Recycle Bin, which keeps their space until
  * it is emptied: the separate card below does that, for good, after its own confirmation. All
  * rules live in the Rust core; this renders what the commands report.
  */
-export function CleanScreen() {
+function JunkClean({ movedElsewhere }: { movedElsewhere: number }) {
   const [rulesLoad, setRulesLoad] = useState<RulesLoad>({ status: 'loading' });
   const [phase, setPhase] = useState<Phase>('idle');
   const [scan, setScan] = useState<CleanScanResult | null>(null);
@@ -231,7 +232,6 @@ export function CleanScreen() {
 
   return (
     <>
-      <PageHeader title={t('nav.clean')} description={t('clean.description')} />
       <div className="flex flex-col gap-3">
         {notice ? <Notice message={notice} onDismiss={() => setNotice(null)} /> : null}
 
@@ -356,7 +356,7 @@ export function CleanScreen() {
             ))
           : null}
 
-        <RecycleBinCard refreshKey={binKey} />
+        <RecycleBinCard refreshKey={binKey + movedElsewhere} />
       </div>
 
       <Dialog
@@ -373,6 +373,40 @@ export function CleanScreen() {
           </>
         }
       />
+    </>
+  );
+}
+
+type View = 'junk' | 'large';
+
+/**
+ * The Clean screen: a switch between the junk scan and the large files finder. Both stay mounted
+ * (the inactive one is hidden), so a scan result survives switching views. A move in the large
+ * files view makes the Recycle Bin card of the junk view read the bin again.
+ */
+export function CleanScreen() {
+  const [view, setView] = useState<View>('junk');
+  const [moves, setMoves] = useState(0);
+  return (
+    <>
+      <PageHeader title={t('nav.clean')} description={t('clean.description')} />
+      <div className="mb-3">
+        <SegmentedControl
+          label={t('clean.view.label')}
+          value={view}
+          onValueChange={setView}
+          options={[
+            { value: 'junk', label: t('clean.view.junk') },
+            { value: 'large', label: t('clean.view.large') },
+          ]}
+        />
+      </div>
+      <div hidden={view !== 'junk'}>
+        <JunkClean movedElsewhere={moves} />
+      </div>
+      <div hidden={view !== 'large'}>
+        <LargeFilesView onMoved={() => setMoves((count) => count + 1)} />
+      </div>
     </>
   );
 }

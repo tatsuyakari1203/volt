@@ -202,7 +202,7 @@ fn counted(files: usize, directories: usize) -> String {
 }
 
 /// `1.5 MB` style size (powers of 1024, one decimal).
-pub(super) fn human_bytes(bytes: u64) -> String {
+pub(crate) fn human_bytes(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     if bytes < 1024 {
         return format!("{bytes} B");

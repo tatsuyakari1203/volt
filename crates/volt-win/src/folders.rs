@@ -116,6 +116,20 @@ impl KnownFolders for WinKnownFolders {
         folders.extend(extra);
         Ok(folders)
     }
+
+    fn system_folders(&self) -> Result<Vec<PathBuf>, PortError> {
+        let mut folders = vec![shell_folder(&FOLDERID_Windows, "Windows")?];
+        for (id, name) in [
+            (&FOLDERID_ProgramFiles, "ProgramFiles"),
+            (&FOLDERID_ProgramFilesX86, "ProgramFilesX86"),
+            (&FOLDERID_ProgramData, "ProgramData"),
+        ] {
+            if let Ok(folder) = shell_folder(id, name) {
+                folders.push(folder);
+            }
+        }
+        Ok(folders)
+    }
 }
 
 #[cfg(test)]
