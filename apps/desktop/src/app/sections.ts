@@ -1,10 +1,10 @@
 import {
+  Cpu,
   HeartPulse,
   House,
   type LucideIcon,
   MemoryStick,
   Power,
-  Rocket,
   Settings,
   SlidersHorizontal,
   Sparkles,
@@ -18,7 +18,7 @@ export type SectionId =
   | 'memory'
   | 'tweaks'
   | 'startup'
-  | 'apps'
+  | 'processes'
   | 'health'
   | 'settings'
   | 'undo';
@@ -36,7 +36,7 @@ export const mainSections: readonly Section[] = [
   { id: 'memory', label: 'Memory', icon: MemoryStick },
   { id: 'tweaks', label: 'Tweaks', icon: SlidersHorizontal },
   { id: 'startup', label: 'Startup', icon: Power },
-  { id: 'apps', label: 'Apps and Startup', icon: Rocket },
+  { id: 'processes', label: 'Processes', icon: Cpu },
   { id: 'health', label: 'Health', icon: HeartPulse },
 ];
 

@@ -41,6 +41,11 @@
 //! reports memory by list before and after, and it is recorded as an activity that cannot be
 //! undone (it releases reclaimable memory; there is no earlier value to restore).
 //!
+//! The process list and ending an app are the [`process`] module: processes are grouped by
+//! executable name, CPU load comes from two samples, and ending a group refuses what Windows
+//! needs and Volt itself (in the core, not only in the UI) and is recorded as an activity that
+//! cannot be undone.
+//!
 //! # Fakes
 //!
 //! In-memory fakes of every port live in the `fakes` module, compiled for this
@@ -62,6 +67,7 @@ pub mod metrics;
 pub mod operation;
 pub mod plan;
 pub mod ports;
+pub mod process;
 pub mod registry;
 pub mod service;
 pub mod settings;
@@ -109,6 +115,10 @@ pub use plan::{OperationRequest, Plan, PlanItem, Preview};
 pub use ports::{
     Availability, DirEntry, EntryInfo, EntryKind, FileStat, FileSystem, Memory, MemoryArea,
     MemoryLists, MemoryStatus, Ports, ProcessInfo, Processes, PurgeOutcome, Services,
+};
+pub use process::{
+    EndError, EndReport, EndStatus, Endability, PROCESS_END_LABEL, ProcessEnd, ProcessGroup,
+    ProcessMonitor, ProcessSample, Protection, is_windows_critical,
 };
 pub use registry::{
     NamedValue, Registry, RegistryHive, RegistryKeyRef, RegistryValue, RegistryValueRef,

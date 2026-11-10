@@ -9,7 +9,7 @@ import {
 } from '../../shared/ipc';
 
 /** The sections Home can send the user to. A subset of the shell's sections. */
-export type HomeTarget = 'clean' | 'memory' | 'apps';
+export type HomeTarget = 'clean' | 'memory' | 'startup';
 
 /** Where a fix leads and what its button says. */
 export interface FixLink {
@@ -30,7 +30,7 @@ export function fixLink(fix: FixActionView | null): FixLink | null {
     case 'openMemory':
       return { target: 'memory', label: 'Open Memory' };
     case 'openStartup':
-      return { target: 'apps', label: 'Open Startup' };
+      return { target: 'startup', label: 'Open Startup' };
     case 'restartWindows':
       return null;
     default:

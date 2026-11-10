@@ -104,7 +104,7 @@ describe('messages', () => {
   it('maps each fix to a button, except Restart Windows which is a sentence', () => {
     expect(fixLink('openCleaner')).toEqual({ target: 'clean', label: 'Open Cleaner' });
     expect(fixLink('openMemory')).toEqual({ target: 'memory', label: 'Open Memory' });
-    expect(fixLink('openStartup')).toEqual({ target: 'apps', label: 'Open Startup' });
+    expect(fixLink('openStartup')).toEqual({ target: 'startup', label: 'Open Startup' });
     expect(fixLink('restartWindows')).toBeNull();
     expect(fixLink(null)).toBeNull();
     expect(fixHint('restartWindows')).toMatch(/Restart Windows/);

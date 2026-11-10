@@ -171,7 +171,7 @@ describe('the health score', () => {
     expect(onNavigate).toHaveBeenCalledTimes(2);
   });
 
-  it('sends a startup deduction to Apps and Startup', async () => {
+  it('sends a startup deduction to Startup', async () => {
     ipc.getHealthReport.mockResolvedValue(
       report({
         score: 85,
@@ -190,7 +190,7 @@ describe('the health score', () => {
     const user = userEvent.setup();
     const onNavigate = renderHome();
     await user.click(await screen.findByRole('button', { name: /Open Startup/ }));
-    expect(onNavigate).toHaveBeenCalledWith('apps');
+    expect(onNavigate).toHaveBeenCalledWith('startup');
   });
 
   it('shows a restart as a sentence, because Volt has no restart button', async () => {

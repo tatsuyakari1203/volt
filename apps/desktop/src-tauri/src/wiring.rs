@@ -19,9 +19,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use tauri::{AppHandle, Manager as _};
 use volt_core::{
     ActivityLog, Catalogue, CatalogueError, CleanEngine, CleaningRules, Clock, Executor,
-    FilePublisher, Journal, KnownFolders, MemoryCleaner, PortError, Ports, ReconcileReport,
-    RecycleBinManager, Resolution, RulesError, Settings, StartupManager, StartupSources,
-    SystemClock, TweakEngine,
+    FilePublisher, Journal, KnownFolders, MemoryCleaner, PortError, Ports, ProcessMonitor,
+    ReconcileReport, RecycleBinManager, Resolution, RulesError, Settings, StartupManager,
+    StartupSources, SystemClock, TweakEngine,
 };
 use volt_store::{CorruptionRecovery, OpenOutcome, Store, StoreError};
 use volt_win::{
@@ -112,6 +112,7 @@ pub struct AppCore {
     clean_session: CleanSession,
     recycle_bin: Option<RecycleBinManager>,
     memory_cleaner: Option<MemoryCleaner>,
+    process_monitor: Option<ProcessMonitor>,
 }
 
 impl fmt::Debug for AppCore {
@@ -148,6 +149,7 @@ impl AppCore {
             clean_session: CleanSession::default(),
             recycle_bin: None,
             memory_cleaner: None,
+            process_monitor: None,
         }
     }
 
@@ -200,6 +202,23 @@ impl AppCore {
             .as_ref()
             .ok_or_else(|| IpcError::Unsupported {
                 message: "memory cleaning is not available in this build".to_owned(),
+            })
+    }
+
+    /// The same core with the process monitor attached. [`build_core`] always does; a core
+    /// assembled by hand has none until this is called.
+    #[must_use]
+    pub fn with_process_monitor(mut self, monitor: ProcessMonitor) -> Self {
+        self.process_monitor = Some(monitor);
+        self
+    }
+
+    /// The process monitor, or the error the process commands return without one.
+    pub fn process_monitor(&self) -> Result<&ProcessMonitor, IpcError> {
+        self.process_monitor
+            .as_ref()
+            .ok_or_else(|| IpcError::Unsupported {
+                message: "the process list is not available in this build".to_owned(),
             })
     }
 
@@ -392,6 +411,17 @@ fn build_core_inner(
     let memory_cleaner =
         MemoryCleaner::new(ports.memory.clone(), clock.clone()).with_activity_log(activity.clone());
 
+    // Volt's own id lets the monitor protect Volt and the WebView it started.
+    let logical_cpus = std::thread::available_parallelism()
+        .map_or(1, |n| u32::try_from(n.get()).unwrap_or(u32::MAX));
+    let process_monitor = ProcessMonitor::new(
+        ports.processes.clone(),
+        clock.clone(),
+        std::process::id(),
+        logical_cpus,
+    )
+    .with_activity_log(activity.clone());
+
     let (registry, file_system) = (ports.registry.clone(), ports.file_system.clone());
     let startup_clock = clock.clone();
     let engine = TweakEngine::new(catalogue, ports, journal.clone(), clock)
@@ -420,7 +450,8 @@ fn build_core_inner(
         },
     )
     .with_clean_engine(clean)
-    .with_memory_cleaner(memory_cleaner);
+    .with_memory_cleaner(memory_cleaner)
+    .with_process_monitor(process_monitor);
     Ok(match startup_apps {
         Some(manager) => core.with_startup_apps(manager),
         None => core,

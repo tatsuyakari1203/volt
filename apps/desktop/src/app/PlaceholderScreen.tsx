@@ -3,7 +3,6 @@ import type { Section } from './sections';
 
 /** Plain-language description of what each not-yet-built section will hold. */
 const plans: Record<string, string> = {
-  apps: 'Review installed apps and choose what starts with Windows, with the startup cost of each.',
   health: 'Check disk, battery and system health, and see what changed since the last check.',
 };
 
