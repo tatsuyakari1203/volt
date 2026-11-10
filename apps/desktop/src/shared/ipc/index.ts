@@ -610,8 +610,9 @@ export async function listApps(): Promise<AppListView> {
  * Removes one app by running its own registered uninstaller (or asking Windows to remove a
  * packaged app) and waits until it exits. The result says whether the app is gone, still installed
  * or could not be started, with the list as it is now. Volt cannot undo it. The id comes from
- * listApps; a command is never passed.
+ * listApps; a command is never passed. System components and updates are refused unless
+ * `includeSystem` is set, which the screen does only while "Show system components" is on.
  */
-export async function uninstallApp(id: string): Promise<UninstallResult> {
-  return call(() => commands.uninstallApp(id));
+export async function uninstallApp(id: string, includeSystem: boolean): Promise<UninstallResult> {
+  return call(() => commands.uninstallApp(id, includeSystem));
 }

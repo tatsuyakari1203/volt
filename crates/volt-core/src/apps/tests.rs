@@ -520,6 +520,47 @@ fn nothing_is_started_for_an_unknown_or_unremovable_entry() {
 }
 
 #[test]
+fn a_system_component_or_an_update_is_removed_only_when_the_caller_asks_for_system_entries() {
+    let f = fixture();
+    let core = machine64("Core");
+    add_entry(
+        &f.registry,
+        &core,
+        &[
+            ("DisplayName", sz("Core Runtime")),
+            ("SystemComponent", RegistryValue::Dword(1)),
+            ("UninstallString", sz(r"C:\Vendor\core.exe")),
+        ],
+    );
+    add_entry(
+        &f.registry,
+        &machine64("KB5001234"),
+        &[
+            ("DisplayName", sz("Security Update")),
+            ("UninstallString", sz(r"C:\Vendor\kb.exe")),
+        ],
+    );
+    for id in ["win32:m64:core", "win32:m64:kb5001234"] {
+        assert_eq!(
+            f.manager.uninstall(id, Source::Manual).unwrap_err(),
+            UninstallError::HiddenByDefault,
+            "{id}"
+        );
+    }
+    assert!(f.uninstaller.runs().is_empty());
+    assert!(f.records().is_empty());
+
+    f.uninstaller
+        .removes_key_when_run(r"C:\Vendor\core.exe", f.registry.clone(), core);
+    let report = f
+        .manager
+        .uninstall_including_system("win32:m64:core", Source::Manual)
+        .expect("started");
+    assert_eq!(report.outcome, UninstallOutcome::Removed);
+    assert_eq!(f.uninstaller.runs().len(), 1);
+}
+
+#[test]
 fn a_second_removal_while_one_runs_is_refused() {
     let f = fixture();
     f.add("A", "A", r"C:\Vendor\u.exe");

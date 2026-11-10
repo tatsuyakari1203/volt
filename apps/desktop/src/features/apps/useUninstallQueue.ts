@@ -63,7 +63,10 @@ export function useUninstallQueue(onListing: (listing: AppListView) => void) {
   }, []);
 
   const start = useCallback(
-    async (apps: ReadonlyArray<{ id: string; name: string; source: AppSourceView }>) => {
+    async (
+      apps: ReadonlyArray<{ id: string; name: string; source: AppSourceView }>,
+      includeSystem: boolean,
+    ) => {
       if (busy.current || apps.length === 0) return;
       busy.current = true;
       stopRequested.current = false;
@@ -90,7 +93,7 @@ export function useUninstallQueue(onListing: (listing: AppListView) => void) {
         }
         patch(index, { status: 'running' });
         try {
-          const result = await uninstallApp(app.id);
+          const result = await uninstallApp(app.id, includeSystem);
           if (alive.current) listing.current(result.listing);
           patch(index, { status: statusOf(result.outcome) });
         } catch (error) {

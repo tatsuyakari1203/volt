@@ -210,6 +210,21 @@ describe('uninstalling', () => {
     expect(ipc.uninstallApp).not.toHaveBeenCalled();
   });
 
+  it('tells the backend system entries are shown only when the switch is on', async () => {
+    const user = userEvent.setup();
+    ipc.uninstallApp.mockResolvedValue(result({ id: 'win32:m64:e', name: 'Epsilon Runtime' }));
+    renderScreen();
+    await screen.findByRole('list', { name: 'Installed apps' });
+    await user.click(screen.getByRole('switch', { name: 'Show system components' }));
+    await user.click(screen.getByRole('checkbox', { name: 'Select Epsilon Runtime' }));
+    await user.click(screen.getByRole('button', { name: 'Uninstall 1 app' }));
+    await user.click(
+      within(screen.getByRole('dialog')).getByRole('button', { name: 'Uninstall 1 app' }),
+    );
+    await waitFor(() => expect(ipc.uninstallApp).toHaveBeenCalledTimes(1));
+    expect(ipc.uninstallApp.mock.calls[0]?.[1]).toBe(true);
+  });
+
   it('runs the queue one app at a time, in order, and reports how each ended', async () => {
     const user = userEvent.setup();
     const gates: Array<(value: UninstallResult) => void> = [];
@@ -225,7 +240,7 @@ describe('uninstalling', () => {
 
     // Only the first one has started.
     await waitFor(() => expect(ipc.uninstallApp).toHaveBeenCalledTimes(1));
-    expect(ipc.uninstallApp).toHaveBeenLastCalledWith('win32:m64:a');
+    expect(ipc.uninstallApp).toHaveBeenLastCalledWith('win32:m64:a', false);
     const queue = screen.getByRole('region', { name: 'Uninstalling' });
     expect(within(queue).getAllByText('Waiting for its uninstaller to finish...')).toHaveLength(1);
     // The other two wait their turn.
@@ -235,7 +250,7 @@ describe('uninstalling', () => {
     const afterFirst = list(sample.apps.filter((a) => a.id !== 'win32:m64:a'));
     gates[0]?.(result({ id: 'win32:m64:a', name: 'Alpha Editor', listing: afterFirst }));
     await waitFor(() => expect(ipc.uninstallApp).toHaveBeenCalledTimes(2));
-    expect(ipc.uninstallApp).toHaveBeenLastCalledWith('win32:m64:b');
+    expect(ipc.uninstallApp).toHaveBeenLastCalledWith('win32:m64:b', false);
     expect(screen.queryByRole('checkbox', { name: 'Select Alpha Editor' })).toBeNull();
 
     gates[1]?.(

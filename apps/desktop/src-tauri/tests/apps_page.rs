@@ -204,7 +204,7 @@ fn the_list_comes_from_the_registry_with_hidden_reasons_and_one_app_is_removed_a
     let mine = list.apps.iter().find(|a| a.name == "Mine").expect("mine");
     assert_eq!(mine.source, AppSourceView::CurrentUser);
 
-    let done = uninstall_app_of(&core, &mine.id).expect("removed");
+    let done = uninstall_app_of(&core, &mine.id, false).expect("removed");
     assert_eq!(done.outcome, UninstallOutcomeView::Removed);
     assert!(done.recorded);
     assert!(done.listing.apps.iter().all(|app| app.name != "Mine"));
@@ -221,7 +221,7 @@ fn the_list_comes_from_the_registry_with_hidden_reasons_and_one_app_is_removed_a
     assert!(page.items[0].entry.is_none(), "not an undoable change");
 
     // A packaged app goes through the package manager double.
-    let notes = uninstall_app_of(&core, "pkg:Contoso.Notes_1.0_x64__abc").expect("notes");
+    let notes = uninstall_app_of(&core, "pkg:Contoso.Notes_1.0_x64__abc", false).expect("notes");
     assert_eq!(notes.outcome, UninstallOutcomeView::Removed);
     assert_eq!(packages.removed(), ["Contoso.Notes_1.0_x64__abc"]);
 }
@@ -238,16 +238,31 @@ fn an_unknown_id_and_an_app_that_cannot_be_removed_are_refused_before_anything_r
             ("UninstallString", sz(r"C:\Vendor\remove-locked.exe")),
         ],
     );
+    sandbox.entry(
+        "user",
+        "Hidden",
+        &[
+            ("DisplayName", sz("Hidden")),
+            ("SystemComponent", RegistryValue::Dword(1)),
+            ("UninstallString", sz(r"C:\Vendor\remove-hidden.exe")),
+        ],
+    );
     let core = sandbox.core(Arc::new(FakePackages::new()));
     assert!(matches!(
-        uninstall_app_of(&core, "win32:user:Nope"),
+        uninstall_app_of(&core, "win32:user:Nope", false),
         Err(IpcError::NotFound { .. })
     ));
     assert!(matches!(
-        uninstall_app_of(&core, "win32:user:Locked"),
+        uninstall_app_of(&core, "win32:user:Locked", false),
         Err(IpcError::InvalidInput { .. })
     ));
     assert!(sandbox.exists("user", "Locked"));
+    // A system component stays out of reach unless the caller says system entries are shown.
+    assert!(matches!(
+        uninstall_app_of(&core, "win32:user:Hidden", false),
+        Err(IpcError::InvalidInput { .. })
+    ));
+    assert!(sandbox.exists("user", "Hidden"));
     assert!(
         list_activity(&core, 10, None)
             .expect("activity")
@@ -270,7 +285,7 @@ fn a_core_without_the_apps_manager_answers_unsupported() {
         Err(IpcError::Unsupported { .. })
     ));
     assert!(matches!(
-        uninstall_app_of(&core, "win32:m64:x"),
+        uninstall_app_of(&core, "win32:m64:x", false),
         Err(IpcError::Unsupported { .. })
     ));
 }

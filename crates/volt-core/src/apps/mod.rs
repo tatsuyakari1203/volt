@@ -331,6 +331,10 @@ pub enum UninstallError {
     /// Another removal is running.
     #[error("another app is being removed; wait for it to finish")]
     Busy,
+    /// The entry is a system component or an update, which stay hidden until the user asked for
+    /// them.
+    #[error("this entry is hidden by default; show system components first")]
+    HiddenByDefault,
 }
 
 /// Lists installed apps and removes them, over the ports.
@@ -459,8 +463,29 @@ impl AppManager {
     /// uninstaller exits, reads the list again and records the result.
     ///
     /// The command to start is always the one in the fresh reading, never one passed in. One
-    /// removal runs at a time: a second call while one runs is [`UninstallError::Busy`].
+    /// removal runs at a time: a second call while one runs is [`UninstallError::Busy`]. A system
+    /// component or an update is refused ([`UninstallError::HiddenByDefault`]); see
+    /// [`AppManager::uninstall_including_system`].
     pub fn uninstall(&self, id: &str, source: Source) -> Result<UninstallReport, UninstallError> {
+        self.uninstall_with(id, source, false)
+    }
+
+    /// Like [`AppManager::uninstall`], but also removes a system component or an update. The
+    /// caller passes this only when the user turned on "Show system components".
+    pub fn uninstall_including_system(
+        &self,
+        id: &str,
+        source: Source,
+    ) -> Result<UninstallReport, UninstallError> {
+        self.uninstall_with(id, source, true)
+    }
+
+    fn uninstall_with(
+        &self,
+        id: &str,
+        source: Source,
+        include_system: bool,
+    ) -> Result<UninstallReport, UninstallError> {
         let _running = match self.running.try_lock() {
             Ok(guard) => guard,
             Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
@@ -474,6 +499,14 @@ impl AppManager {
             .ok_or(UninstallError::NotFound)?;
         if !app.uninstallable() {
             return Err(UninstallError::NotUninstallable);
+        }
+        if !include_system
+            && matches!(
+                app.hidden,
+                Some(HiddenReason::SystemComponent | HiddenReason::Update)
+            )
+        {
+            return Err(UninstallError::HiddenByDefault);
         }
         let started = match &app.removal {
             Removal::Command(command) => self.uninstaller.run(command),

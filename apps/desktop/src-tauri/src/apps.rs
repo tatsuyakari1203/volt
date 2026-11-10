@@ -233,9 +233,20 @@ pub fn list_apps_of(core: &AppCore) -> Result<AppListView, IpcError> {
 }
 
 /// Removes the app `id` and waits for its uninstaller. Refuses an id that is not in a fresh
-/// reading and an app that cannot be removed, before anything is started.
-pub fn uninstall_app_of(core: &AppCore, id: &str) -> Result<UninstallResult, IpcError> {
-    let report = core.apps()?.uninstall(id, Source::Manual)?;
+/// reading and an app that cannot be removed, before anything is started. A system component or
+/// an update is refused unless `include_system` is set (the user turned on "Show system
+/// components"), so a call that skips the UI cannot reach one by default.
+pub fn uninstall_app_of(
+    core: &AppCore,
+    id: &str,
+    include_system: bool,
+) -> Result<UninstallResult, IpcError> {
+    let apps = core.apps()?;
+    let report = if include_system {
+        apps.uninstall_including_system(id, Source::Manual)?
+    } else {
+        apps.uninstall(id, Source::Manual)?
+    };
     if report.activity_write_failed {
         core.note_history_incomplete();
     }
@@ -258,6 +269,10 @@ pub(crate) async fn list_apps(state: tauri::State<'_, AppState>) -> Result<AppLi
 pub(crate) async fn uninstall_app(
     state: tauri::State<'_, AppState>,
     id: String,
+    include_system: bool,
 ) -> Result<UninstallResult, IpcError> {
-    blocking(&state, move |core| uninstall_app_of(core, &id)).await
+    blocking(&state, move |core| {
+        uninstall_app_of(core, &id, include_system)
+    })
+    .await
 }

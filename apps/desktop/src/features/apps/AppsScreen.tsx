@@ -147,7 +147,7 @@ export function AppsScreen() {
   const confirm = () => {
     setConfirming(false);
     setTicked(new Set());
-    void start(chosen);
+    void start(chosen, showSystem);
   };
 
   const problems = load.status === 'ready' ? load.list.problems : [];

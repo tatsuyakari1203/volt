@@ -518,9 +518,9 @@ async listApps() : Promise<Result<AppListView, IpcError>> {
  * Windows to remove a packaged app) and waits for it. This cannot be undone by Volt, so it is
  * recorded in the activity log but not in the undo journal. The UI asks first.
  */
-async uninstallApp(id: string) : Promise<Result<UninstallResult, IpcError>> {
+async uninstallApp(id: string, includeSystem: boolean) : Promise<Result<UninstallResult, IpcError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("uninstall_app", { id }) };
+    return { status: "ok", data: await TAURI_INVOKE("uninstall_app", { id, includeSystem }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
