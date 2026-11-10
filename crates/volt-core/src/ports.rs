@@ -4,6 +4,7 @@
 //! All ports are synchronous, object-safe and `Send + Sync`. File system,
 //! process and memory ports are deliberately minimal; later tasks extend them.
 
+use std::ffi::OsString;
 use std::fmt;
 use std::path::Path;
 use std::sync::Arc;
@@ -14,6 +15,7 @@ use crate::command::Commands;
 use crate::error::PortError;
 use crate::registry::Registry;
 use crate::service::ServiceStartType;
+use crate::time::Timestamp;
 
 /// Port: Windows services.
 pub trait Services: Send + Sync {
@@ -33,11 +35,62 @@ pub struct FileStat {
     pub is_dir: bool,
 }
 
+/// What a directory entry is. A reparse point (junction, symbolic link, mount
+/// point, cloud placeholder) is never reported as a file or a directory, so a
+/// caller cannot treat one as the thing it points to by accident.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum EntryKind {
+    /// A plain file.
+    File,
+    /// A plain directory.
+    Directory,
+    /// A reparse point of any kind. It is described as itself, never followed.
+    ReparsePoint,
+}
+
+/// What a file system entry looks like right now, without following links.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EntryInfo {
+    /// What the entry is.
+    pub kind: EntryKind,
+    /// Size in bytes; 0 for anything but a plain file.
+    pub size_bytes: u64,
+    /// Last modification time, when the file system reports one.
+    pub modified: Option<Timestamp>,
+}
+
+/// One entry of a directory listing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirEntry {
+    /// The entry's name: one path component, never `.` or `..`. Kept as an
+    /// [`OsString`] so a name that is not valid Unicode still joins back to the
+    /// real path.
+    pub name: OsString,
+    /// The entry's metadata, or why it could not be read. One unreadable entry
+    /// does not fail the whole listing.
+    pub info: Result<EntryInfo, PortError>,
+}
+
 /// Port: file system. File deletion is not an undoable [`Operation`](crate::Operation);
 /// cleaning shows a preview and prefers the Recycle Bin.
 pub trait FileSystem: Send + Sync {
     /// Metadata for a path. A missing path is `Ok(None)`.
     fn stat(&self, path: &Path) -> Result<Option<FileStat>, PortError>;
+
+    /// Describes `path` itself without following a link: its kind (a reparse
+    /// point is [`EntryKind::ReparsePoint`]), size and modification time. A
+    /// missing path is `Ok(None)`.
+    fn inspect(&self, path: &Path) -> Result<Option<EntryInfo>, PortError>;
+
+    /// Lists the entries of the directory `dir`, sorted by name, without `.`
+    /// and `..` and without descending. Read-only.
+    ///
+    /// Implementations must refuse with [`PortError::InvalidInput`] a `dir`
+    /// that is a reparse point or not a directory, so a scan can never be led
+    /// out of the folder it was asked to read by a junction or symlink. A
+    /// missing directory is [`PortError::NotFound`].
+    fn read_dir(&self, dir: &Path) -> Result<Vec<DirEntry>, PortError>;
 
     /// Moves `path` (a file or directory) to the Recycle Bin, provided it lies
     /// inside `root`.

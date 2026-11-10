@@ -97,7 +97,7 @@ What `volt-core` contains today:
   other crates that enable the feature.
 - **Not Operations:** file deletion and memory purges are deliberately not Operations, because
   they cannot be undone. They only have ports (`FileSystem`, `Memory`); cleaning shows a preview
-  and prefers the Recycle Bin.
+  and goes to the Recycle Bin (see the clean engine below).
 
 - **Tweak definition:** data, not code (`volt_core::tweak`). A `Tweak` has an id, title,
   description, category, risk level, evidence level with a short evidence note, a restart
@@ -122,10 +122,51 @@ What `volt-core` contains today:
     has no recorded prior state and cannot be reverted by Volt; neither can steps that were already
     in their target state when the tweak was applied, because Volt did not change them.
 
-Still to be built:
-
-- **Cleaning rule:** data as well: a root, include and exclude patterns, safety constraints (never
-  follow junctions or symlinks outside the root) and a category.
+- **Cleaning rule and the clean engine:** data as well, and one engine (`volt_core::clean`) for all
+  file removal, because deleting files is the riskiest thing Volt does. Cleaning is not an
+  Operation: it cannot be reverted through the journal (the Recycle Bin is the way back), and its
+  ports are not in the `Ports` bundle: `CleanEngine::new` takes the rules, a `KnownFolders` port,
+  the `FileSystem` port and a `Clock`, and `with_activity_log` attaches the activity log.
+  - **Rules are data.** `CleaningRules::from_toml` loads `[[rule]]` tables with the same
+    strictness as the tweak catalogue: the whole file is rejected and every problem is reported
+    with the rule id and the field path (`RuleIssue`). A rule has an id, title, description,
+    category, risk, a root, `include` patterns (at least one), optional `exclude` patterns and
+    constraints: `min_age_days`, `max_depth` (at most 32) and `remove_empty_dirs`. Patterns are
+    relative to the root, `/` separated, ignore case and support `*`, `?` and `**` as a whole
+    component; `..`, a leading `/`, a drive letter, `\` and character classes are refused. The
+    real rule set is a later task; tests use small inline definitions.
+  - **Roots are never paths.** A root is one of a closed set of named `Location`s (`user_temp`,
+    `local_app_data`, `roaming_app_data`, `program_data`, `windows`) plus a relative path. The
+    `KnownFolders` port resolves a location, so the core never reads the environment. Refused at
+    load: an absolute path or drive, `..`, and an empty path for any location but `user_temp`.
+    Refused at resolution, on every scan and again before every clean: a root that is not
+    absolute, a drive root or a top-level folder (depth below two), and a root that equals or lies
+    above a protected folder (the profile, the Windows directory, Program Files, the user's
+    documents, and so on, compared ignoring case).
+  - **Scan, plan, confirm, clean.** `scan` is read-only and returns a `CleanPlan`: per rule the
+    items (files, and empty folders when the rule removes them, children before parents) with
+    size and modification time, totals, exact counts and a capped list of what was skipped and
+    why (link, too new, unknown age, beyond the depth limit, unreadable). A scan never follows a
+    junction, symlink or other reparse point (a root that is one is refused), never lists a
+    folder outside the root and never plans a path outside it. The caller shows the plan and calls
+    `CleanPlan::confirm` (or `confirm_rules`); only the resulting `ConfirmedPlan` can be passed
+    to `clean`. Plans cannot be built or deserialised outside the crate.
+  - **Clean re-checks everything.** It takes the plan, never a rule, and touches only the paths
+    in it. Before each item it re-resolves the root and requires it to be the planned folder, then
+    checks that the path is inside the root, that the rule still allows it (include, exclude,
+    depth), that every folder on the way is still a plain folder, that the item still exists, is
+    not a link and has the same kind, size and modification time as in the scan, and that a
+    folder is still empty. Anything else is skipped and reported with a reason. The move goes
+    through `FileSystem::move_to_trash`, which has its own containment checks. There is no
+    permanent delete and no retry: a locked or in-use file is reported as such and left alone.
+  - **An honest result.** `CleanReport` states what was moved (files, empty folders, bytes) and
+    what was skipped with reasons. It deliberately has no "freed" figure: the files sit in the
+    Recycle Bin and keep their space until it is emptied, which Volt never does. `describe()`
+    says so, and UI text must say "moved to the Recycle Bin".
+  - **Activity.** With a log attached, one record per rule (outcome applied, or failed when
+    nothing could be moved) names the rule id and counts only, following the redaction rule: no
+    path, no file name, no port message. A failing log is counted in the report and never blocks
+    a clean.
 
 ## Persistence
 
@@ -184,14 +225,26 @@ fakes, or with a throwaway registry key and a temp directory.
 
 ## Windows adapters
 
-`volt-win` implements the registry, services and file system ports with the Windows API:
-`WinRegistry`, `WinServices` and `WinFileSystem`.
+`volt-win` implements the registry, services, file system and known-folders ports with the Windows
+API: `WinRegistry`, `WinServices`, `WinFileSystem` and `WinKnownFolders`.
 
 - File deletion goes to the Recycle Bin through `IFileOperation`. There is no permanent-delete
-  fallback: if the Recycle Bin cannot take a file, the deletion fails.
+  fallback: if the Recycle Bin cannot take a file, the deletion fails. The shell reports a locked
+  file only as an aborted operation, so the adapter probes the file and, when another program
+  holds it open, returns `AccessDenied` (also what a sharing or lock violation maps to), which the
+  clean engine reports as locked or in use.
+- `inspect` describes one path and `read_dir` lists one directory, both without following links:
+  an entry is a file, a directory or a reparse point (never both), with its size and modification
+  time. `read_dir` refuses a reparse point or a file, so a scan cannot be led out of its folder.
+  Sizes and times in a listing come from the directory data and are not re-read per file.
+- `WinKnownFolders` implements `KnownFolders`: the shell's known folders, and the process temp
+  folder in its long, resolved form. The protected list holds the profile, the Windows directory,
+  Program Files, ProgramData, the application data folders and the user's document folders.
 - `move_to_trash` takes a root. It refuses paths outside that root and anything whose path
   traverses a reparse point (junction or symlink).
-- Tests are confined to `HKCU\Software\VoltTest` and temp directories.
+- Tests are confined to `HKCU\Software\VoltTest` and temp directories. Scan and clean tests run
+  the real engine over a temp directory with a real junction (a junction swapped in after the scan
+  included); the tests that put items in the real Recycle Bin are `#[ignore]`d and run on request.
 - Changing a real service's start type is deliberately not covered by an automated test, because
   it would change the machine running the tests.
 - There is no adapter for the processes, memory or commands ports yet. The composition root hands
@@ -386,13 +439,13 @@ not counted in a private working set.
 
 ## Testing strategy
 
-| Level       | What                                          | How                                                                                                                                                                                                  |
-| ----------- | --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Unit        | Core use cases, tweak engine, rule evaluation | In-memory fakes of the ports; runs on any OS                                                                                                                                                         |
-| Adapter     | `volt-win`, `volt-store`                      | Real APIs against a throwaway `HKCU\Software\VoltTest` key, a temp directory and a temp database only                                                                                                |
-| Integration | The shell's wiring and commands               | The real `WinRegistry` on a throwaway `HKCU\Software\VoltTest` key and a real store in a temp directory (apply, restart, revert, activity), then the same wiring over fakes for the failure outcomes |
-| UI          | Components and feature state                  | Vitest, with the IPC wrapper mocked                                                                                                                                                                  |
-| End to end  | A few flows through the real app              | WebDriver, added once flows exist                                                                                                                                                                    |
+| Level       | What                                       | How                                                                                                                                                                                                  |
+| ----------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Unit        | Core use cases, tweak engine, clean engine | In-memory fakes of the ports; runs on any OS                                                                                                                                                         |
+| Adapter     | `volt-win`, `volt-store`                   | Real APIs against a throwaway `HKCU\Software\VoltTest` key, a temp directory and a temp database only                                                                                                |
+| Integration | The shell's wiring and commands            | The real `WinRegistry` on a throwaway `HKCU\Software\VoltTest` key and a real store in a temp directory (apply, restart, revert, activity), then the same wiring over fakes for the failure outcomes |
+| UI          | Components and feature state               | Vitest, with the IPC wrapper mocked                                                                                                                                                                  |
+| End to end  | A few flows through the real app           | WebDriver, added once flows exist                                                                                                                                                                    |
 
 Tests never apply a real tweak, clean real user data or purge memory on the machine running them.
 In particular no test applies or reverts the shipped "Show file extensions" tweak: the end to end

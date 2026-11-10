@@ -26,6 +26,10 @@
 //! the [`TweakEngine`] reads its state, previews, applies and reverts it
 //! through the executor.
 //!
+//! Cleaning is its own engine (the [`clean`] module): rules are data, a scan
+//! is read-only and returns a plan, and only a confirmed plan can be cleaned,
+//! always into the Recycle Bin.
+//!
 //! # Fakes
 //!
 //! In-memory fakes of every port live in the `fakes` module, compiled for this
@@ -34,6 +38,7 @@
 #![forbid(unsafe_code)]
 
 pub mod activity;
+pub mod clean;
 pub mod command;
 pub mod error;
 pub mod executor;
@@ -54,6 +59,11 @@ pub mod fakes;
 pub use activity::{
     ActivityId, ActivityLog, ActivityOutcome, ActivityRecord, NewActivity, render_text,
 };
+pub use clean::{
+    CleanCategory, CleanEngine, CleanItem, CleanPlan, CleanReport, CleanSkip, CleanSkipReason,
+    CleaningRule, CleaningRules, ConfirmedPlan, ItemKind, KnownFolders, Location, RuleClean,
+    RuleScan, RulesError, ScanFailure, SkipReason,
+};
 pub use command::{Command, CommandOutput, Commands};
 pub use error::{ExecError, PlanError, PortError, RevertError};
 pub use executor::{
@@ -65,7 +75,8 @@ pub use label::{Evidence, Risk};
 pub use operation::{Operation, PriorState};
 pub use plan::{OperationRequest, Plan, PlanItem, Preview};
 pub use ports::{
-    FileStat, FileSystem, Memory, MemoryArea, MemoryStatus, Ports, ProcessInfo, Processes, Services,
+    DirEntry, EntryInfo, EntryKind, FileStat, FileSystem, Memory, MemoryArea, MemoryStatus, Ports,
+    ProcessInfo, Processes, Services,
 };
 pub use registry::{Registry, RegistryHive, RegistryValue, RegistryValueRef, RegistryView};
 pub use service::ServiceStartType;

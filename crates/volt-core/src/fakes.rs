@@ -16,7 +16,8 @@ use crate::error::PortError;
 use crate::executor::Executor;
 use crate::journal::{BatchId, EntryId, EntryState, Journal, JournalEntry, NewEntry};
 use crate::ports::{
-    FileStat, FileSystem, Memory, MemoryArea, MemoryStatus, Ports, ProcessInfo, Processes, Services,
+    DirEntry, EntryInfo, EntryKind, FileStat, FileSystem, Memory, MemoryArea, MemoryStatus, Ports,
+    ProcessInfo, Processes, Services,
 };
 use crate::registry::{Registry, RegistryHive, RegistryValue, RegistryValueRef, RegistryView};
 use crate::service::ServiceStartType;
@@ -222,11 +223,45 @@ impl Services for FakeServices {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct FakeEntry {
+    kind: EntryKind,
+    size_bytes: u64,
+    modified: Option<Timestamp>,
+}
+
+impl FakeEntry {
+    fn info(self) -> EntryInfo {
+        EntryInfo {
+            kind: self.kind,
+            size_bytes: self.size_bytes,
+            modified: self.modified,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct FileSystemState {
+    entries: HashMap<PathBuf, FakeEntry>,
+    trashed: Vec<PathBuf>,
+    trash_attempts: Vec<PathBuf>,
+    read_dirs: Vec<PathBuf>,
+    trash_failures: HashMap<PathBuf, PortError>,
+    read_dir_failures: HashMap<PathBuf, PortError>,
+}
+
 /// In-memory [`FileSystem`].
+///
+/// Entries are added with [`FakeFileSystem::add_file`], [`add_dir`] and
+/// [`add_link`]; missing parent directories are created as plain directories.
+/// A link is a reparse point: it may have entries below it (what a real
+/// junction would show), which lets a test prove they are never reached.
+///
+/// [`add_dir`]: FakeFileSystem::add_dir
+/// [`add_link`]: FakeFileSystem::add_link
 #[derive(Debug, Default)]
 pub struct FakeFileSystem {
-    entries: Mutex<HashMap<PathBuf, FileStat>>,
-    trashed: Mutex<Vec<PathBuf>>,
+    state: Mutex<FileSystemState>,
     log: EventLog,
 }
 
@@ -246,13 +281,68 @@ impl FakeFileSystem {
         }
     }
 
-    /// Adds a file of `size_bytes`.
+    fn insert(&self, path: PathBuf, entry: FakeEntry) {
+        let mut state = lock(&self.state);
+        for ancestor in path.ancestors().skip(1) {
+            if ancestor.as_os_str().is_empty() {
+                continue;
+            }
+            state
+                .entries
+                .entry(ancestor.to_path_buf())
+                .or_insert(FakeEntry {
+                    kind: EntryKind::Directory,
+                    size_bytes: 0,
+                    modified: None,
+                });
+        }
+        state.entries.insert(path, entry);
+    }
+
+    /// Adds (or replaces) a file of `size_bytes` with no modification time.
     pub fn add_file(&self, path: impl Into<PathBuf>, size_bytes: u64) {
-        lock(&self.entries).insert(
+        self.insert(
             path.into(),
-            FileStat {
+            FakeEntry {
+                kind: EntryKind::File,
                 size_bytes,
-                is_dir: false,
+                modified: None,
+            },
+        );
+    }
+
+    /// Adds (or replaces) a file of `size_bytes` last modified at `modified`.
+    pub fn add_file_at(&self, path: impl Into<PathBuf>, size_bytes: u64, modified: Timestamp) {
+        self.insert(
+            path.into(),
+            FakeEntry {
+                kind: EntryKind::File,
+                size_bytes,
+                modified: Some(modified),
+            },
+        );
+    }
+
+    /// Adds a directory last modified at `modified` (when given).
+    pub fn add_dir(&self, path: impl Into<PathBuf>, modified: Option<Timestamp>) {
+        self.insert(
+            path.into(),
+            FakeEntry {
+                kind: EntryKind::Directory,
+                size_bytes: 0,
+                modified,
+            },
+        );
+    }
+
+    /// Adds a reparse point (a junction or symbolic link).
+    pub fn add_link(&self, path: impl Into<PathBuf>) {
+        self.insert(
+            path.into(),
+            FakeEntry {
+                kind: EntryKind::ReparsePoint,
+                size_bytes: 0,
+                modified: None,
             },
         );
     }
@@ -260,27 +350,133 @@ impl FakeFileSystem {
     /// Paths moved to the trash so far, in order.
     #[must_use]
     pub fn trashed(&self) -> Vec<PathBuf> {
-        lock(&self.trashed).clone()
+        lock(&self.state).trashed.clone()
+    }
+
+    /// Every `move_to_trash` request that passed the containment checks, in
+    /// order, whether it then succeeded or failed.
+    #[must_use]
+    pub fn trash_attempts(&self) -> Vec<PathBuf> {
+        lock(&self.state).trash_attempts.clone()
+    }
+
+    /// Directories listed with `read_dir` so far, in order.
+    #[must_use]
+    pub fn read_dir_calls(&self) -> Vec<PathBuf> {
+        lock(&self.state).read_dirs.clone()
+    }
+
+    /// Makes `move_to_trash` of `path` fail with `error`, as a locked file
+    /// would.
+    pub fn fail_trash_of(&self, path: impl Into<PathBuf>, error: PortError) {
+        lock(&self.state).trash_failures.insert(path.into(), error);
+    }
+
+    /// Makes `read_dir` of `dir` fail with `error`.
+    pub fn fail_read_dir_of(&self, dir: impl Into<PathBuf>, error: PortError) {
+        lock(&self.state)
+            .read_dir_failures
+            .insert(dir.into(), error);
+    }
+
+    /// Whether anything exists at `path` (without following links).
+    #[must_use]
+    pub fn exists(&self, path: &Path) -> bool {
+        lock(&self.state).entries.contains_key(path)
     }
 }
 
 impl FileSystem for FakeFileSystem {
     fn stat(&self, path: &Path) -> Result<Option<FileStat>, PortError> {
-        Ok(lock(&self.entries).get(path).copied())
+        Ok(lock(&self.state).entries.get(path).map(|entry| FileStat {
+            size_bytes: entry.size_bytes,
+            is_dir: entry.kind == EntryKind::Directory,
+        }))
+    }
+
+    fn inspect(&self, path: &Path) -> Result<Option<EntryInfo>, PortError> {
+        Ok(lock(&self.state)
+            .entries
+            .get(path)
+            .map(|entry| entry.info()))
+    }
+
+    fn read_dir(&self, dir: &Path) -> Result<Vec<DirEntry>, PortError> {
+        let mut state = lock(&self.state);
+        state.read_dirs.push(dir.to_path_buf());
+        if let Some(error) = state.read_dir_failures.get(dir) {
+            return Err(error.clone());
+        }
+        match state.entries.get(dir).map(|entry| entry.kind) {
+            None => return Err(PortError::NotFound(dir.display().to_string())),
+            Some(EntryKind::Directory) => {}
+            Some(_) => {
+                return Err(PortError::InvalidInput(format!(
+                    "{} is not a plain directory",
+                    dir.display()
+                )));
+            }
+        }
+        let mut listing: Vec<DirEntry> = state
+            .entries
+            .iter()
+            .filter(|(path, _)| path.parent() == Some(dir))
+            .filter_map(|(path, entry)| {
+                Some(DirEntry {
+                    name: path.file_name()?.to_os_string(),
+                    info: Ok(entry.info()),
+                })
+            })
+            .collect();
+        listing.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(listing)
     }
 
     fn move_to_trash(&self, root: &Path, path: &Path) -> Result<(), PortError> {
-        if !path.starts_with(root) {
-            return Err(PortError::InvalidInput(format!(
-                "{} is outside {}",
+        let refuse = |why: &str| {
+            Err(PortError::InvalidInput(format!(
+                "{} {why} {}",
                 path.display(),
                 root.display()
-            )));
+            )))
+        };
+        let Ok(relative) = path.strip_prefix(root) else {
+            return refuse("is outside");
+        };
+        if relative.as_os_str().is_empty() {
+            return refuse("is the root itself:");
         }
-        if lock(&self.entries).remove(path).is_none() {
+        if relative
+            .components()
+            .any(|c| !matches!(c, std::path::Component::Normal(_)))
+        {
+            return refuse("is not a plain path below");
+        }
+        let mut state = lock(&self.state);
+        // Like the real adapter: nothing is reached through a link.
+        let mut current = root.to_path_buf();
+        for component in relative.components() {
+            current.push(component);
+            if state
+                .entries
+                .get(&current)
+                .is_some_and(|entry| entry.kind == EntryKind::ReparsePoint)
+            {
+                return refuse("is behind a junction or symbolic link, outside");
+            }
+        }
+        state.trash_attempts.push(path.to_path_buf());
+        if let Some(error) = state.trash_failures.get(path) {
+            return Err(error.clone());
+        }
+        if !state.entries.contains_key(path) {
             return Err(PortError::NotFound(path.display().to_string()));
         }
-        lock(&self.trashed).push(path.to_path_buf());
+        state
+            .entries
+            .retain(|candidate, _| !candidate.starts_with(path));
+        state.trashed.push(path.to_path_buf());
+        drop(state);
         self.log.push(Event::FileTrashed(path.to_path_buf()));
         Ok(())
     }
@@ -931,6 +1127,84 @@ mod tests {
             fs.move_to_trash(root, path),
             Err(PortError::NotFound(_))
         ));
+    }
+
+    #[test]
+    fn file_system_lists_directories_sorted_and_describes_entries_without_following_links() {
+        let fs = FakeFileSystem::new();
+        let modified = Timestamp::from_unix_millis(5);
+        fs.add_file_at("C:/D/b.txt", 7, modified);
+        fs.add_file("C:/D/a.txt", 1);
+        fs.add_dir("C:/D/sub", None);
+        fs.add_file("C:/D/link/inside.txt", 3);
+        fs.add_link("C:/D/link");
+
+        let listing = fs.read_dir(Path::new("C:/D")).expect("list");
+        let names: Vec<_> = listing
+            .iter()
+            .map(|e| e.name.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["a.txt", "b.txt", "link", "sub"]);
+        let kind = |name: &str| {
+            listing
+                .iter()
+                .find(|e| e.name == name)
+                .and_then(|e| e.info.as_ref().ok())
+                .map(|i| i.kind)
+        };
+        assert_eq!(kind("link"), Some(EntryKind::ReparsePoint));
+        assert_eq!(kind("sub"), Some(EntryKind::Directory));
+        assert_eq!(
+            fs.inspect(Path::new("C:/D/b.txt")),
+            Ok(Some(EntryInfo {
+                kind: EntryKind::File,
+                size_bytes: 7,
+                modified: Some(modified)
+            }))
+        );
+        assert_eq!(fs.inspect(Path::new("C:/D/missing")), Ok(None));
+        // A link is not a directory to list, and neither is a file.
+        assert!(matches!(
+            fs.read_dir(Path::new("C:/D/link")),
+            Err(PortError::InvalidInput(_))
+        ));
+        assert!(matches!(
+            fs.read_dir(Path::new("C:/D/a.txt")),
+            Err(PortError::InvalidInput(_))
+        ));
+        assert!(matches!(
+            fs.read_dir(Path::new("C:/Nope")),
+            Err(PortError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn file_system_trash_refuses_the_root_parent_components_and_paths_behind_links() {
+        let fs = FakeFileSystem::new();
+        fs.add_file("C:/R/real.txt", 1);
+        fs.add_file("C:/R/link/victim.txt", 1);
+        fs.add_link("C:/R/link");
+        fs.add_file("C:/Other/outside.txt", 1);
+        let root = Path::new("C:/R");
+        for path in [
+            "C:/R",
+            "C:/R/link",
+            "C:/R/link/victim.txt",
+            "C:/R/../Other/outside.txt",
+            "C:/Other/outside.txt",
+        ] {
+            assert!(
+                matches!(
+                    fs.move_to_trash(root, Path::new(path)),
+                    Err(PortError::InvalidInput(_))
+                ),
+                "{path} must be refused"
+            );
+        }
+        assert!(fs.trashed().is_empty());
+        fs.move_to_trash(root, Path::new("C:/R/real.txt"))
+            .expect("trash");
+        assert_eq!(fs.trashed().len(), 1);
     }
 
     #[test]

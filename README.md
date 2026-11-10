@@ -28,7 +28,7 @@ take back. Volt is built on the opposite assumptions:
 | Principle      | What it means in practice                                                                                                                                           |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Reversible** | Every change records the previous state before it is applied, and can be rolled back, one change or a whole batch, even after a restart.                            |
-| **Previewed**  | Nothing happens blind. Tweaks show current and target values; cleaning lists the files and the space it would free.                                                 |
+| **Previewed**  | Nothing happens blind. Tweaks show current and target values; cleaning lists the files and their size, and moves them to the Recycle Bin.                           |
 | **Honest**     | Each tweak carries a risk level (Safe, Caution, Advanced) and states whether its benefit is measured or anecdotal. Tweaks that cannot be explained are not shipped. |
 | **Quiet**      | No telemetry, no ads, works offline, and stays small when idle.                                                                                                     |
 

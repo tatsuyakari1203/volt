@@ -1,0 +1,160 @@
+//! The junk scan and clean engine.
+//!
+//! Deleting files is the riskiest thing Volt does, so one engine with strict,
+//! reviewable rules does all of it. The sequence is always the same:
+//!
+//! 1. **Rules are data** ([`CleaningRules::from_toml`]): a named [`Location`]
+//!    plus a relative path as the root, include and exclude patterns, a
+//!    category, a risk level and constraints (minimum age, maximum depth,
+//!    whether empty folders go too).
+//! 2. **Scan** ([`CleanEngine::scan`]) is read-only. It resolves each root
+//!    through the [`KnownFolders`] port, walks it without ever following a
+//!    junction or symbolic link, never leaves the root, and returns a
+//!    [`CleanPlan`]: per rule the files with their sizes and times, totals, and
+//!    what was skipped and why.
+//! 3. **Confirm** ([`CleanPlan::confirm`]): the caller shows the plan and the
+//!    user agrees. Only a [`ConfirmedPlan`] can be cleaned.
+//! 4. **Clean** ([`CleanEngine::clean`]) takes the confirmed plan, never a
+//!    rule. It touches only paths listed in the plan, re-checks each one
+//!    immediately before acting and moves it to the Recycle Bin. There is no
+//!    permanent delete. Locked or in-use files are skipped and reported, never
+//!    retried. The [`CleanReport`] says what was moved and what was skipped;
+//!    it does not claim space was freed, because the files are still in the
+//!    Recycle Bin.
+//!
+//! Cleaning is not an [`Operation`](crate::Operation): it cannot be reverted
+//! through the journal (the Recycle Bin is the way back), and its ports are not
+//! part of the [`Ports`](crate::Ports) bundle. The engine takes its own.
+
+mod apply;
+mod folders;
+mod glob;
+mod loader;
+mod plan;
+mod root;
+mod rule;
+mod scan;
+
+#[cfg(any(test, feature = "fakes"))]
+pub mod fakes;
+
+use std::fmt;
+use std::sync::Arc;
+
+use thiserror::Error;
+
+pub use apply::{CleanReport, CleanSkip, CleanSkipReason, RuleClean};
+pub use folders::{KnownFolders, Location};
+pub use glob::Pattern;
+pub use loader::{CleaningRules, RuleIssue, RuleIssueKind, RulesError};
+pub use plan::{
+    CleanItem, CleanPlan, ConfirmedPlan, ItemKind, MAX_SKIPPED_DETAILS, RuleScan, ScanCounts,
+    ScanFailure, SkipReason, SkippedEntry,
+};
+pub use root::RootError;
+pub use rule::{CleanCategory, CleaningRule, Constraints, MAX_DEPTH_LIMIT, RuleRoot};
+
+use crate::activity::ActivityLog;
+use crate::ports::FileSystem;
+use crate::time::Clock;
+
+/// A scan was asked for a rule that does not exist.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("unknown cleaning rule \"{0}\"")]
+pub struct UnknownRule(pub String);
+
+/// Scans and cleans with a set of rules.
+///
+/// It owns the rules and its own ports; none of the cleaning ports is part of
+/// the [`Ports`](crate::Ports) bundle used by operations.
+pub struct CleanEngine {
+    rules: CleaningRules,
+    folders: Arc<dyn KnownFolders>,
+    file_system: Arc<dyn FileSystem>,
+    clock: Arc<dyn Clock>,
+    activity: Option<Arc<dyn ActivityLog>>,
+}
+
+impl fmt::Debug for CleanEngine {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CleanEngine")
+            .field("rules", &self.rules.len())
+            .field("activity_log", &self.activity.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl CleanEngine {
+    /// An engine over `rules`. The clock decides how old a file is and stamps
+    /// activity records.
+    #[must_use]
+    pub fn new(
+        rules: CleaningRules,
+        folders: Arc<dyn KnownFolders>,
+        file_system: Arc<dyn FileSystem>,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
+        Self {
+            rules,
+            folders,
+            file_system,
+            clock,
+            activity: None,
+        }
+    }
+
+    /// Also writes an activity record for every clean (see
+    /// [`CleanEngine::clean`]). Without a log nothing is recorded.
+    #[must_use]
+    pub fn with_activity_log(mut self, log: Arc<dyn ActivityLog>) -> Self {
+        self.activity = Some(log);
+        self
+    }
+
+    /// The rules this engine knows.
+    #[must_use]
+    pub fn rules(&self) -> &CleaningRules {
+        &self.rules
+    }
+
+    /// Scans the rules with these ids, in this order. Read-only: nothing is
+    /// changed, so this is the dry run. A rule that cannot be scanned (its root
+    /// is refused or unreadable) is reported in its [`RuleScan::failure`] and
+    /// does not stop the others.
+    pub fn scan<S: AsRef<str>>(&self, rule_ids: &[S]) -> Result<CleanPlan, UnknownRule> {
+        let rules = rule_ids
+            .iter()
+            .map(|id| {
+                self.rules
+                    .get(id.as_ref())
+                    .ok_or_else(|| UnknownRule(id.as_ref().to_owned()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let now = self.clock.now();
+        Ok(CleanPlan {
+            scanned_at: now,
+            rules: rules
+                .into_iter()
+                .map(|rule| self.scan_rule(rule, now))
+                .collect(),
+        })
+    }
+
+    /// Scans every rule, in file order.
+    #[must_use]
+    pub fn scan_all(&self) -> CleanPlan {
+        let now = self.clock.now();
+        CleanPlan {
+            scanned_at: now,
+            rules: self
+                .rules
+                .rules()
+                .iter()
+                .map(|rule| self.scan_rule(rule, now))
+                .collect(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;
