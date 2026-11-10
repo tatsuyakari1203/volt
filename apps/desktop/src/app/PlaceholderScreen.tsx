@@ -3,8 +3,6 @@ import type { Section } from './sections';
 
 /** Plain-language description of what each not-yet-built section will hold. */
 const plans: Record<string, string> = {
-  clean:
-    'Scan temporary files, caches and leftovers, review exactly what would go, and send it to the Recycle Bin.',
   memory:
     'See what is using memory and release what Windows can spare, with a before and after you can check.',
   apps: 'Review installed apps and choose what starts with Windows, with the startup cost of each.',

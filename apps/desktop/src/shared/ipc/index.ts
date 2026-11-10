@@ -8,12 +8,18 @@ import {
   type AppInfo,
   type ApplyResult,
   type AppReady,
+  type CleaningRuleInfo,
+  type CleanRunResult,
+  type CleanScanProgress,
+  type CleanScanResult,
   commands,
+  type EmptyBinResult,
   type ExportResult,
   events,
   type HealthView,
   type IpcError,
   type MetricsView,
+  type RecycleBinView,
   type Result,
   type RevertResult,
   type StartupChangeResult,
@@ -34,8 +40,14 @@ export type {
   ApplyStatus,
   AppReady,
   ChangeState,
+  CleanCategoryView,
+  CleaningRuleInfo,
+  CleanRunResult,
+  CleanScanProgress,
+  CleanScanResult,
   DeductionView,
   DiskView,
+  EmptyBinResult,
   EvidenceLevel,
   ExportResult,
   FixActionView,
@@ -46,10 +58,14 @@ export type {
   IpcError,
   MemoryView,
   MetricsView,
+  RecycleBinView,
   RestartKind,
   RevertResult,
   RevertStatus,
   RiskLevel,
+  RuleCleanView,
+  RuleScanView,
+  SkipGroup,
   StartupChangeResult,
   StartupChangeStatus,
   StartupEntryView,
@@ -270,4 +286,58 @@ export async function exportActivity(): Promise<ExportResult> {
 /** The whole activity log as text, for the copy-to-clipboard fallback. */
 export async function exportActivityText(): Promise<ActivityExport> {
   return call(() => commands.exportActivityText());
+}
+
+/** The cleaning rules, without touching the file system. */
+export async function listCleaningRules(): Promise<CleaningRuleInfo[]> {
+  return call(() => commands.listCleaningRules());
+}
+
+/**
+ * Scans every cleaning rule (read-only) and resolves with counts and sizes per rule and the id of
+ * the scan, which `cleanSelectedRules` needs. Runs in the background: listen with
+ * `onCleanScanProgress` for how far it is and call `cancelCleaningScan` to stop it between rules
+ * (the result then has `cancelled: true`). Results carry rule-relative sample paths, never a full
+ * path.
+ */
+export async function scanCleaning(): Promise<CleanScanResult> {
+  return call(() => commands.scanCleaning());
+}
+
+/** Asks the running scan to stop before its next rule. Does nothing when no scan runs. */
+export async function cancelCleaningScan(): Promise<void> {
+  await call(() => commands.cancelCleaningScan());
+}
+
+/**
+ * Calls `handler` before each rule of a scan is looked at (`done` of `total` rules are finished).
+ * Returns the unlisten function.
+ */
+export function onCleanScanProgress(
+  handler: (progress: CleanScanProgress) => void,
+): Promise<() => void> {
+  return events.cleanScanProgress.listen((event) => handler(event.payload));
+}
+
+/**
+ * Moves the files of the chosen rules of scan `planId` to the Recycle Bin. A scan can be cleaned
+ * once: a newer scan or an earlier clean makes the id `notFound`. Rules that need administrator
+ * rights are `accessDenied`. The result says what was moved and what was left, with reasons; it
+ * has no "freed" figure because nothing is freed until the Recycle Bin is emptied.
+ */
+export async function cleanSelectedRules(
+  planId: string,
+  ruleIds: string[],
+): Promise<CleanRunResult> {
+  return call(() => commands.cleanSelectedRules(planId, ruleIds));
+}
+
+/** How many items the Recycle Bin holds and how big they are. Read-only. */
+export async function getRecycleBinStatus(): Promise<RecycleBinView> {
+  return call(() => commands.recycleBinStatus());
+}
+
+/** Permanently deletes everything in the Recycle Bin. Cannot be undone: confirm with the user first. */
+export async function emptyRecycleBin(): Promise<EmptyBinResult> {
+  return call(() => commands.emptyRecycleBin());
 }

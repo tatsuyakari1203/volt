@@ -81,10 +81,10 @@ it('navigates by keyboard and moves focus to the content', async () => {
 it('shows a placeholder that says what will live in an unbuilt section', async () => {
   const user = userEvent.setup();
   renderShell();
-  await user.click(screen.getByRole('button', { name: 'Clean' }));
-  expect(screen.getByRole('heading', { level: 1, name: 'Clean' })).toBeTruthy();
+  await user.click(screen.getByRole('button', { name: 'Memory' }));
+  expect(screen.getByRole('heading', { level: 1, name: 'Memory' })).toBeTruthy();
   expect(screen.getByText('Coming soon')).toBeTruthy();
-  expect(screen.getByText(/Recycle Bin/)).toBeTruthy();
+  expect(screen.getByText(/what Windows can spare/)).toBeTruthy();
 });
 
 it('contains the Rust-core failure inside the About block in Settings', async () => {

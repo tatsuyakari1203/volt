@@ -18,16 +18,18 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use tauri::{AppHandle, Manager as _};
 use volt_core::{
     ActivityLog, Catalogue, CatalogueError, CleanEngine, CleaningRules, Clock, Executor,
-    FilePublisher, Journal, KnownFolders, PortError, Ports, ReconcileReport, Resolution,
-    RulesError, Settings, StartupManager, StartupSources, SystemClock, TweakEngine,
+    FilePublisher, Journal, KnownFolders, PortError, Ports, ReconcileReport, RecycleBinManager,
+    Resolution, RulesError, Settings, StartupManager, StartupSources, SystemClock, TweakEngine,
 };
 use volt_store::{CorruptionRecovery, OpenOutcome, Store, StoreError};
 use volt_win::{
-    WinCommands, WinFilePublisher, WinFileSystem, WinKnownFolders, WinRegistry, WinServices,
+    WinCommands, WinFilePublisher, WinFileSystem, WinKnownFolders, WinRecycleBin, WinRegistry,
+    WinServices,
 };
 
 use crate::IpcError;
 use crate::catalogue::{EMBEDDED_CATALOGUE, EMBEDDED_CLEANING_RULES};
+use crate::cleaner::CleanSession;
 use crate::unsupported::{UnsupportedMemory, UnsupportedProcesses};
 
 /// File name of the database inside the app data directory.
@@ -105,6 +107,8 @@ pub struct AppCore {
     startup_apps: Option<StartupManager>,
     gate: Mutex<()>,
     clean: Option<CleanEngine>,
+    clean_session: CleanSession,
+    recycle_bin: Option<RecycleBinManager>,
 }
 
 impl fmt::Debug for AppCore {
@@ -137,6 +141,8 @@ impl AppCore {
             startup_apps: None,
             gate: Mutex::new(()),
             clean: None,
+            clean_session: CleanSession::default(),
+            recycle_bin: None,
         }
     }
 
@@ -153,6 +159,26 @@ impl AppCore {
     #[must_use]
     pub fn clean_engine(&self) -> Option<&CleanEngine> {
         self.clean.as_ref()
+    }
+
+    /// Attaches the Recycle Bin manager. The real app does in [`init`]; [`build_core`] never
+    /// does, so a test cannot reach the real Recycle Bin by accident.
+    #[must_use]
+    pub fn with_recycle_bin(mut self, manager: RecycleBinManager) -> Self {
+        self.recycle_bin = Some(manager);
+        self
+    }
+
+    /// The Recycle Bin manager, or `None` for a core assembled without one.
+    #[must_use]
+    pub fn recycle_bin(&self) -> Option<&RecycleBinManager> {
+        self.recycle_bin.as_ref()
+    }
+
+    /// What the cleaner keeps between a scan and a clean: the latest plan and the scan flags.
+    #[must_use]
+    pub fn clean_session(&self) -> &CleanSession {
+        &self.clean_session
     }
 
     /// The same core with the startup apps manager attached. [`build_core_with`] does this;
@@ -468,10 +494,14 @@ fn build_real_core(app: &AppHandle) -> Result<AppCore, InitError> {
         .app_data_dir()
         .map_err(|error| InitError::DataDir(error.to_string()))?;
     std::fs::create_dir_all(&dir).map_err(|error| InitError::DataDir(error.to_string()))?;
-    build_core_with(
+    let core = build_core_with(
         windows_ports(),
         &dir.join(STORE_FILE_NAME),
         EMBEDDED_CATALOGUE,
         StartupWiring::windows(),
-    )
+    )?;
+    // The real Recycle Bin is attached here only: the one place that runs against a real machine.
+    let bin = RecycleBinManager::new(Arc::new(WinRecycleBin::new()), Arc::new(SystemClock))
+        .with_activity_log(core.activity.clone());
+    Ok(core.with_recycle_bin(bin))
 }

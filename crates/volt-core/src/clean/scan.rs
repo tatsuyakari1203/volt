@@ -100,6 +100,7 @@ impl CleanEngine {
             root: None,
             root_exists: false,
             failure: None,
+            truncated: false,
             items: Vec::new(),
             skipped: Vec::new(),
             counts: ScanCounts::default(),
@@ -185,6 +186,15 @@ impl Walker<'_> {
         }
     }
 
+    /// Whether the plan of this rule is full. Reaching the cap marks the scan as
+    /// truncated, which also stops the walk.
+    fn at_cap(&mut self) -> bool {
+        if self.scan.items.len() >= self.engine.item_cap {
+            self.scan.truncated = true;
+        }
+        self.scan.truncated
+    }
+
     fn age_ok(&self, modified: Option<Timestamp>) -> Result<(), SkipReason> {
         age_allows(self.min_age_days, modified, self.now)
     }
@@ -209,6 +219,11 @@ impl Walker<'_> {
         };
         let mut all_planned = true;
         for entry in entries {
+            if self.scan.truncated {
+                // The item cap was reached: nothing more is looked at, and a
+                // folder that was not fully looked at is never planned.
+                return false;
+            }
             let path = dir.join(&entry.name);
             let Some(name) = component_text(&entry.name) else {
                 self.skip(&path, SkipReason::InvalidName);
@@ -255,6 +270,9 @@ impl Walker<'_> {
             self.skip(path, reason);
             return false;
         }
+        if self.at_cap() {
+            return false;
+        }
         self.scan.items.push(CleanItem {
             path: path.to_path_buf(),
             kind: ItemKind::File,
@@ -287,6 +305,9 @@ impl Walker<'_> {
         }
         if let Err(reason) = self.age_ok(info.modified) {
             self.skip(path, reason);
+            return false;
+        }
+        if self.at_cap() {
             return false;
         }
         self.scan.items.push(CleanItem {

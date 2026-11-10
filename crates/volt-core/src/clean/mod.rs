@@ -27,6 +27,7 @@
 //! part of the [`Ports`](crate::Ports) bundle. The engine takes its own.
 
 mod apply;
+mod bin;
 mod folders;
 mod glob;
 mod loader;
@@ -44,12 +45,13 @@ use std::sync::Arc;
 use thiserror::Error;
 
 pub use apply::{CleanReport, CleanSkip, CleanSkipReason, RuleClean};
+pub use bin::{EmptyReport, RecycleBin, RecycleBinManager, RecycleBinStatus};
 pub use folders::{KnownFolders, Location};
 pub use glob::Pattern;
 pub use loader::{CleaningRules, RuleIssue, RuleIssueKind, RulesError};
 pub use plan::{
-    CleanItem, CleanPlan, ConfirmedPlan, ItemKind, MAX_SKIPPED_DETAILS, RuleScan, ScanCounts,
-    ScanFailure, SkipReason, SkippedEntry,
+    CleanItem, CleanPlan, ConfirmedPlan, ItemKind, MAX_ITEMS_PER_RULE, MAX_SKIPPED_DETAILS,
+    RuleScan, ScanCounts, ScanFailure, SkipReason, SkippedEntry,
 };
 pub use root::RootError;
 pub use rule::{
@@ -67,6 +69,30 @@ use crate::time::Clock;
 #[error("unknown cleaning rule \"{0}\"")]
 pub struct UnknownRule(pub String);
 
+/// Why an observed scan produced no plan.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[non_exhaustive]
+pub enum ScanError {
+    /// A rule id is not known.
+    #[error(transparent)]
+    UnknownRule(#[from] UnknownRule),
+    /// The observer asked to stop between two rules. Nothing was changed (a
+    /// scan never changes anything) and no plan exists.
+    #[error("the scan was cancelled")]
+    Cancelled,
+}
+
+/// Watches a scan and may stop it, for scans long enough to show progress.
+pub trait ScanObserver {
+    /// Called before each rule is scanned: `done` rules are finished out of
+    /// `total`.
+    fn progress(&self, done: usize, total: usize);
+
+    /// Asked before each rule; `true` stops the scan with
+    /// [`ScanError::Cancelled`].
+    fn is_cancelled(&self) -> bool;
+}
+
 /// Scans and cleans with a set of rules.
 ///
 /// It owns the rules and its own ports; none of the cleaning ports is part of
@@ -78,6 +104,7 @@ pub struct CleanEngine {
     clock: Arc<dyn Clock>,
     activity: Option<Arc<dyn ActivityLog>>,
     settings: Option<Arc<dyn Settings>>,
+    item_cap: usize,
 }
 
 impl fmt::Debug for CleanEngine {
@@ -107,7 +134,16 @@ impl CleanEngine {
             clock,
             activity: None,
             settings: None,
+            item_cap: MAX_ITEMS_PER_RULE,
         }
+    }
+
+    /// Lowers the number of items one rule may plan from
+    /// [`MAX_ITEMS_PER_RULE`] (never raises it; a cap of 0 plans nothing).
+    #[must_use]
+    pub fn with_item_cap(mut self, cap: usize) -> Self {
+        self.item_cap = cap.min(MAX_ITEMS_PER_RULE);
+        self
     }
 
     /// Lets the user's settings override the minimum age of the rules that
@@ -156,6 +192,37 @@ impl CleanEngine {
                 .into_iter()
                 .map(|rule| self.scan_rule(rule, now))
                 .collect(),
+        })
+    }
+
+    /// [`scan`](Self::scan) that reports progress before each rule and can be
+    /// cancelled between rules through `observer`.
+    pub fn scan_observed<S: AsRef<str>>(
+        &self,
+        rule_ids: &[S],
+        observer: &dyn ScanObserver,
+    ) -> Result<CleanPlan, ScanError> {
+        let rules = rule_ids
+            .iter()
+            .map(|id| {
+                self.rules
+                    .get(id.as_ref())
+                    .ok_or_else(|| UnknownRule(id.as_ref().to_owned()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let now = self.clock.now();
+        let total = rules.len();
+        let mut scanned = Vec::with_capacity(total);
+        for (done, rule) in rules.into_iter().enumerate() {
+            if observer.is_cancelled() {
+                return Err(ScanError::Cancelled);
+            }
+            observer.progress(done, total);
+            scanned.push(self.scan_rule(rule, now));
+        }
+        Ok(CleanPlan {
+            scanned_at: now,
+            rules: scanned,
         })
     }
 
