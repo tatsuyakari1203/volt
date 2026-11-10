@@ -1,18 +1,49 @@
-//! [`Processes`] port on the tool help snapshot API.
+//! [`Processes`] port on `NtQuerySystemInformation(SystemProcessInformation)` and
+//! `TerminateProcess`.
 //!
-//! Listing reads the names of the running processes and changes nothing. The
-//! working set is not part of a snapshot, so it is reported as 0. Ending a
-//! process is not implemented: it is [`PortError::Unsupported`].
+//! One system call returns every process with its parent, private working set and kernel plus
+//! user CPU time, including the protected ones a handle cannot be opened to. That is the same
+//! source Task Manager reads, it is cheap (one call, no handle per process), and reading changes
+//! nothing. Ending a process opens only that process with `PROCESS_TERMINATE`.
+
+use std::ffi::c_void;
 
 use volt_core::{PortError, ProcessInfo, Processes};
-use windows::Win32::Foundation::{CloseHandle, HANDLE};
-use windows::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+use windows::Wdk::System::SystemInformation::{NtQuerySystemInformation, SYSTEM_INFORMATION_CLASS};
+use windows::Win32::Foundation::{
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, HANDLE, STATUS_BUFFER_TOO_SMALL,
+    STATUS_INFO_LENGTH_MISMATCH,
 };
+use windows::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
 
 use crate::error::from_win32;
 
-/// The processes port backed by a tool help snapshot.
+/// `SystemProcessInformation`.
+const SYSTEM_PROCESS_INFORMATION_CLASS: i32 = 5;
+
+// The record layout below is the 64-bit one (pointers are 8 bytes).
+const _: () = assert!(size_of::<usize>() == 8);
+
+// Offsets into one `SYSTEM_PROCESS_INFORMATION` record (phnt's `ntexapi.h`; the first fields are
+// also in the documented `winternl.h` structure, which hides `WorkingSetPrivateSize` in
+// `Reserved`).
+const OFFSET_NEXT_ENTRY: usize = 0;
+const OFFSET_PRIVATE_WORKING_SET: usize = 8;
+const OFFSET_USER_TIME: usize = 40;
+const OFFSET_KERNEL_TIME: usize = 48;
+const OFFSET_IMAGE_NAME_LENGTH: usize = 56;
+const OFFSET_IMAGE_NAME_BUFFER: usize = 64;
+const OFFSET_PID: usize = 80;
+const OFFSET_PARENT_PID: usize = 88;
+/// Bytes of a record up to and including the parent id.
+const RECORD_MIN: usize = 96;
+
+/// The id Windows gives the idle pseudo-process; it is not a program and is left out.
+const IDLE_PID: u32 = 0;
+/// The id of the System process; the adapter refuses to end it whatever the caller says.
+const SYSTEM_PID: u32 = 4;
+
+/// The processes port backed by the system process list.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct WinProcesses;
 
@@ -24,61 +55,155 @@ impl WinProcesses {
     }
 }
 
-/// A snapshot handle, closed on drop.
-struct Snapshot(HANDLE);
+/// A process handle, closed on drop.
+struct Handle(HANDLE);
 
-impl Drop for Snapshot {
+impl Drop for Handle {
     fn drop(&mut self) {
-        // SAFETY: the handle came from a successful CreateToolhelp32Snapshot
-        // call, is owned exclusively by this value and is closed once, here.
+        // SAFETY: the handle came from a successful OpenProcess call, is owned exclusively by
+        // this value and is closed once, here.
         unsafe {
             let _ = CloseHandle(self.0);
         }
     }
 }
 
-/// The executable name of an entry: the text before the first NUL.
-fn entry_name(entry: &PROCESSENTRY32W) -> String {
-    let end = entry
-        .szExeFile
-        .iter()
-        .position(|unit| *unit == 0)
-        .unwrap_or(entry.szExeFile.len());
-    String::from_utf16_lossy(&entry.szExeFile[..end])
+fn read_u16(buf: &[u8], at: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(buf.get(at..at + 2)?.try_into().ok()?))
+}
+
+fn read_u32(buf: &[u8], at: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(buf.get(at..at + 4)?.try_into().ok()?))
+}
+
+fn read_u64(buf: &[u8], at: usize) -> Option<u64> {
+    Some(u64::from_le_bytes(buf.get(at..at + 8)?.try_into().ok()?))
+}
+
+/// The executable name of the record at `start`: the UTF-16 text its `ImageName` points to,
+/// which lives in the same buffer (`base` is the address of the buffer's first byte).
+fn image_name(buf: &[u8], start: usize, base: usize) -> Option<String> {
+    let length = usize::from(read_u16(buf, start + OFFSET_IMAGE_NAME_LENGTH)?);
+    if length == 0 {
+        return Some(String::new());
+    }
+    let address = usize::try_from(read_u64(buf, start + OFFSET_IMAGE_NAME_BUFFER)?).ok()?;
+    let from = address.checked_sub(base)?;
+    let bytes = buf.get(from..from.checked_add(length)?)?;
+    let units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect();
+    Some(String::from_utf16_lossy(&units))
+}
+
+/// Reads the records of a `SystemProcessInformation` buffer. Pure: it only reads `buf`, which
+/// starts at address `base`. A record that does not fit the buffer ends the walk.
+fn parse_records(buf: &[u8], base: usize) -> Vec<ProcessInfo> {
+    let mut processes = Vec::new();
+    let mut start = 0usize;
+    while start + RECORD_MIN <= buf.len() {
+        let (Some(next), Some(pid), Some(parent)) = (
+            read_u32(buf, start + OFFSET_NEXT_ENTRY),
+            read_u64(buf, start + OFFSET_PID),
+            read_u64(buf, start + OFFSET_PARENT_PID),
+        ) else {
+            break;
+        };
+        // Ids are 32 bits wide; the field is pointer sized.
+        let pid = u32::try_from(pid).unwrap_or(IDLE_PID);
+        if pid != IDLE_PID {
+            let ticks = |at: usize| read_u64(buf, start + at).unwrap_or(0);
+            processes.push(ProcessInfo {
+                pid,
+                parent_pid: u32::try_from(parent).unwrap_or(0),
+                name: image_name(buf, start, base).unwrap_or_default(),
+                working_set_bytes: ticks(OFFSET_PRIVATE_WORKING_SET),
+                cpu_time_100ns: ticks(OFFSET_USER_TIME).saturating_add(ticks(OFFSET_KERNEL_TIME)),
+            });
+        }
+        if next == 0 {
+            break;
+        }
+        start += next as usize;
+    }
+    processes
+}
+
+/// Reads the raw process list into an 8-byte aligned buffer, growing it until it fits.
+fn read_buffer() -> Result<Vec<u64>, PortError> {
+    let mut words = 1usize << 16;
+    loop {
+        let mut buffer = vec![0u64; words];
+        let bytes = u32::try_from(words * size_of::<u64>())
+            .map_err(|_| PortError::Other("the process list is too large".into()))?;
+        let mut needed = 0u32;
+        // SAFETY: `buffer` is `bytes` writable bytes, aligned for the record fields, and
+        // `needed` is a valid out pointer; both live for the call. The class only reads.
+        let status = unsafe {
+            NtQuerySystemInformation(
+                SYSTEM_INFORMATION_CLASS(SYSTEM_PROCESS_INFORMATION_CLASS),
+                buffer.as_mut_ptr().cast::<c_void>(),
+                bytes,
+                &raw mut needed,
+            )
+        };
+        if status == STATUS_INFO_LENGTH_MISMATCH || status == STATUS_BUFFER_TOO_SMALL {
+            // Processes may start between the two calls, so ask for a little more.
+            let wanted = usize::try_from(needed).unwrap_or(0) / size_of::<u64>() + 4096;
+            words = wanted.max(words * 2);
+            continue;
+        }
+        if status.0 < 0 {
+            return Err(PortError::Other(format!(
+                "listing processes: NTSTATUS 0x{:08X}",
+                status.0.cast_unsigned()
+            )));
+        }
+        return Ok(buffer);
+    }
 }
 
 impl Processes for WinProcesses {
     fn list(&self) -> Result<Vec<ProcessInfo>, PortError> {
-        // SAFETY: plain call with constant arguments; the returned handle is
-        // wrapped at once so it is closed on every path.
-        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }
-            .map(Snapshot)
-            .map_err(|e| from_win32(win32_code(&e), "listing processes"))?;
-        let mut entry = PROCESSENTRY32W {
-            // The size field is what tells the API which structure it gets.
-            dwSize: u32::try_from(std::mem::size_of::<PROCESSENTRY32W>()).unwrap_or(0),
-            ..PROCESSENTRY32W::default()
+        let buffer = read_buffer()?;
+        // SAFETY: a `u64` buffer is valid as bytes (no padding, any bit pattern is a byte), the
+        // length is its exact size and the slice does not outlive `buffer`.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                buffer.as_ptr().cast::<u8>(),
+                buffer.len() * size_of::<u64>(),
+            )
         };
-        let mut processes = Vec::new();
-        // SAFETY: `snapshot.0` is a valid snapshot handle and `entry` is a
-        // properly sized PROCESSENTRY32W that outlives the call.
-        let mut more = unsafe { Process32FirstW(snapshot.0, &raw mut entry) }.is_ok();
-        while more {
-            processes.push(ProcessInfo {
-                pid: entry.th32ProcessID,
-                name: entry_name(&entry),
-                working_set_bytes: 0,
-            });
-            // SAFETY: as above.
-            more = unsafe { Process32NextW(snapshot.0, &raw mut entry) }.is_ok();
-        }
-        Ok(processes)
+        Ok(parse_records(bytes, buffer.as_ptr() as usize))
     }
 
-    fn terminate(&self, _pid: u32) -> Result<(), PortError> {
-        Err(PortError::Unsupported(
-            "ending a process is not implemented".to_owned(),
-        ))
+    fn terminate(&self, pid: u32) -> Result<(), PortError> {
+        // The core refuses these too; this is the last line of defence for the ones that can
+        // never be right.
+        if pid <= SYSTEM_PID || pid == std::process::id() {
+            return Err(PortError::InvalidInput(format!(
+                "process {pid} is never ended by Volt"
+            )));
+        }
+        // SAFETY: plain call; the handle is wrapped at once so it is closed on every path.
+        let handle = unsafe { OpenProcess(PROCESS_TERMINATE, false, pid) }
+            .map(Handle)
+            .map_err(|e| terminate_error(win32_code(&e), pid))?;
+        // SAFETY: `handle.0` is a valid process handle with the terminate right.
+        unsafe { TerminateProcess(handle.0, 1) }.map_err(|e| terminate_error(win32_code(&e), pid))
+    }
+}
+
+/// The typed error of a failed open or terminate: an unknown id is not found, a refusal is
+/// access denied (the process is protected or belongs to another user).
+fn terminate_error(code: u32, pid: u32) -> PortError {
+    if code == ERROR_INVALID_PARAMETER.0 {
+        PortError::NotFound(format!("process {pid}"))
+    } else if code == ERROR_ACCESS_DENIED.0 {
+        PortError::AccessDenied(format!("ending process {pid}"))
+    } else {
+        from_win32(code, "ending a process")
     }
 }
 
@@ -91,11 +216,110 @@ fn win32_code(error: &windows::core::Error) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::{Command, Stdio};
 
     #[test]
-    fn the_snapshot_lists_this_test_process() {
+    fn a_hand_built_buffer_is_read_field_by_field() {
+        // Two records: the idle process (left out) and one named "a.exe" whose name sits behind
+        // the records in the same buffer.
+        let mut buf = vec![0u8; 400];
+        let base = 0x1000usize;
+        let put = |buf: &mut [u8], at: usize, value: u64| {
+            buf[at..at + 8].copy_from_slice(&value.to_le_bytes());
+        };
+        // Record 0: idle, next record at 200.
+        buf[0..4].copy_from_slice(&200u32.to_le_bytes());
+        // Record 1 at 200: no next record.
+        let r = 200;
+        put(&mut buf, r + OFFSET_PRIVATE_WORKING_SET, 4096);
+        put(&mut buf, r + OFFSET_USER_TIME, 30);
+        put(&mut buf, r + OFFSET_KERNEL_TIME, 12);
+        buf[r + OFFSET_IMAGE_NAME_LENGTH..r + OFFSET_IMAGE_NAME_LENGTH + 2]
+            .copy_from_slice(&10u16.to_le_bytes());
+        put(&mut buf, r + OFFSET_IMAGE_NAME_BUFFER, (base + 380) as u64);
+        put(&mut buf, r + OFFSET_PID, 77);
+        put(&mut buf, r + OFFSET_PARENT_PID, 5);
+        for (i, unit) in "a.exe".encode_utf16().enumerate() {
+            buf[380 + i * 2..382 + i * 2].copy_from_slice(&unit.to_le_bytes());
+        }
+        let list = parse_records(&buf, base);
+        assert_eq!(
+            list,
+            [ProcessInfo {
+                pid: 77,
+                parent_pid: 5,
+                name: "a.exe".into(),
+                working_set_bytes: 4096,
+                cpu_time_100ns: 42,
+            }]
+        );
+        // A truncated buffer ends the walk instead of reading past it.
+        assert!(parse_records(&buf[..100], base).is_empty());
+    }
+
+    #[test]
+    fn the_list_has_this_test_process_with_memory_and_cpu_time() {
         let me = std::process::id();
         let list = WinProcesses::new().list().expect("list processes");
-        assert!(list.iter().any(|p| p.pid == me && !p.name.is_empty()));
+        assert!(list.iter().all(|p| p.pid != IDLE_PID));
+        let mine = list.iter().find(|p| p.pid == me).expect("this process");
+        assert!(mine.name.to_lowercase().contains("volt_win"));
+        // Between 1 MiB and 64 GiB: proves the field offset, not an exact figure.
+        assert!((1 << 20..64 << 30).contains(&mine.working_set_bytes));
+        assert!(mine.cpu_time_100ns > 0);
+        assert!(
+            list.iter()
+                .any(|p| p.pid == SYSTEM_PID && p.name == "System")
+        );
+    }
+
+    /// Starts a child that only waits, so ending it harms nothing else.
+    fn sleeper() -> std::process::Child {
+        Command::new("ping")
+            .args(["-n", "60", "127.0.0.1"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("start the test's own child")
+    }
+
+    #[test]
+    fn a_child_the_test_started_can_be_ended_and_nothing_else() {
+        let mut child = sleeper();
+        let pid = child.id();
+        let processes = WinProcesses::new();
+        let listed = processes.list().expect("list");
+        let entry = listed.iter().find(|p| p.pid == pid).expect("the child");
+        assert_eq!(entry.parent_pid, std::process::id());
+        assert!(entry.name.eq_ignore_ascii_case("ping.exe"));
+
+        processes.terminate(pid).expect("end the test's own child");
+        let status = child.wait().expect("wait");
+        assert_eq!(status.code(), Some(1));
+        assert!(!processes.list().expect("list").iter().any(|p| p.pid == pid));
+    }
+
+    #[test]
+    fn the_adapter_refuses_the_kernel_and_itself() {
+        let processes = WinProcesses::new();
+        for pid in [0, 4, std::process::id()] {
+            assert!(matches!(
+                processes.terminate(pid),
+                Err(PortError::InvalidInput(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn win32_codes_become_typed_errors() {
+        assert!(matches!(
+            terminate_error(ERROR_INVALID_PARAMETER.0, 9),
+            PortError::NotFound(_)
+        ));
+        assert!(matches!(
+            terminate_error(ERROR_ACCESS_DENIED.0, 9),
+            PortError::AccessDenied(_)
+        ));
+        assert!(matches!(terminate_error(1, 9), PortError::Other(_)));
     }
 }

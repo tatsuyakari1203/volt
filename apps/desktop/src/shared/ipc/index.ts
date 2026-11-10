@@ -16,6 +16,7 @@ import {
   type CleanScanResult,
   commands,
   type EmptyBinResult,
+  type EndAppResult,
   type ExportResult,
   events,
   type HealthView,
@@ -25,6 +26,7 @@ import {
   type MemoryCleanResult,
   type MemoryState,
   type MetricsView,
+  type ProcessListView,
   type RecycleBinView,
   type Result,
   type RevertResult,
@@ -59,6 +61,9 @@ export type {
   DeductionView,
   DiskView,
   EmptyBinResult,
+  EndAppResult,
+  EndabilityView,
+  EndStatusView,
   EvidenceLevel,
   ExportResult,
   FixActionView,
@@ -77,6 +82,9 @@ export type {
   MetricsView,
   MovedToBinView,
   OperationState,
+  ProcessEndView,
+  ProcessGroupView,
+  ProcessListView,
   RecycleBinView,
   RestartKind,
   RevertResult,
@@ -425,4 +433,22 @@ export async function getMemoryState(): Promise<MemoryState> {
  */
 export async function cleanMemory(areas: MemoryAreaView[]): Promise<MemoryCleanResult> {
   return call(() => commands.cleanMemory(areas));
+}
+
+/**
+ * The running processes grouped by app (one entry per executable) with memory, CPU share and
+ * whether each may be ended. Reads only. CPU share compares with the previous call, so it is
+ * `null` on the first one: poll at a steady pace.
+ */
+export async function listProcesses(): Promise<ProcessListView> {
+  return call(() => commands.listProcesses());
+}
+
+/**
+ * Ends every process of an app by its `id`. Cannot be undone and loses unsaved work: confirm with
+ * the user first. Windows-critical apps and Volt are refused by the core (`invalidInput`). A
+ * process that needs administrator rights is a status in the result, not a rejection.
+ */
+export async function endApp(id: string): Promise<EndAppResult> {
+  return call(() => commands.endApp(id));
 }

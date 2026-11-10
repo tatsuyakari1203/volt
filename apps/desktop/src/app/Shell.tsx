@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { CleanScreen } from '../features/clean/CleanScreen';
 import { HomeScreen } from '../features/home/HomeScreen';
 import { MemoryScreen } from '../features/memory/MemoryScreen';
+import { ProcessesScreen } from '../features/processes/ProcessesScreen';
 import { StartupScreen } from '../features/startup/StartupScreen';
 import { TweaksScreen } from '../features/tweaks/TweaksScreen';
 import { UndoScreen } from '../features/undo/UndoScreen';
@@ -33,6 +34,8 @@ function Screen({
       return <TweaksScreen />;
     case 'startup':
       return <StartupScreen />;
+    case 'processes':
+      return <ProcessesScreen />;
     case 'settings':
       return <SettingsScreen />;
     case 'undo':

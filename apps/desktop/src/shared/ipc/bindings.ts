@@ -347,6 +347,29 @@ async cleanMemory(areas: MemoryAreaView[]) : Promise<Result<MemoryCleanResult, I
 }
 },
 /**
+ * Tauri command: the process list grouped by app with memory and CPU. Reads the system only.
+ */
+async listProcesses() : Promise<Result<ProcessListView, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_processes") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: ends every process of an app. This cannot be undone (unsaved work is lost), so
+ * it is recorded in the activity log but not in the undo journal. The UI asks first.
+ */
+async endApp(id: string) : Promise<Result<EndAppResult, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("end_app", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Tauri command: runs Boost as saved and returns the before and after report.
  */
 async boost() : Promise<Result<BoostResult, IpcError>> {
@@ -910,6 +933,78 @@ sizeBytes: number;
  */
 historyIncomplete: boolean }
 /**
+ * What ending an app did.
+ */
+export type EndAppResult = { 
+/**
+ * The executable name.
+ */
+name: string; 
+/**
+ * Processes that were ended.
+ */
+ended: number; 
+/**
+ * Processes that need administrator rights to end (nothing was changed for them).
+ */
+needsAdministrator: number; 
+/**
+ * Processes that had already exited.
+ */
+alreadyGone: number; 
+/**
+ * Processes that could not be ended for another reason.
+ */
+failed: number; 
+/**
+ * One entry per process that was tried.
+ */
+processes: ProcessEndView[]; 
+/**
+ * Whether it was written to the activity log (as a change that cannot be undone).
+ */
+recorded: boolean }
+/**
+ * How ending one process went.
+ */
+export type EndStatusView = 
+/**
+ * It was ended.
+ */
+"ended" | 
+/**
+ * Windows refused: ending it needs administrator rights.
+ */
+"needsAdministrator" | 
+/**
+ * It had already exited.
+ */
+"alreadyGone" | 
+/**
+ * It could not be ended for another reason.
+ */
+"failed"
+/**
+ * Whether and how an app may be ended. Mirrors [`volt_core::Endability`].
+ */
+export type EndabilityView = 
+/**
+ * It may be ended after a confirmation.
+ */
+"allowed" | 
+/**
+ * It may be ended, but it is the Windows shell: the confirmation gives an extra warning.
+ */
+"explorer" | 
+/**
+ * Windows needs it, so it is never offered for ending.
+ */
+"protectedWindows" | 
+/**
+ * It is Volt itself or the `WebView` Volt draws in, so it is never offered for ending.
+ */
+"protectedVolt"
+/**
  * Whether the benefit of a tweak was measured. Mirrors [`volt_core::Evidence`].
  */
 export type EvidenceLevel = 
@@ -1282,6 +1377,67 @@ export type OperationState =
  * This Windows build cannot do it.
  */
 "unsupported"
+/**
+ * One process of an ended app.
+ */
+export type ProcessEndView = { 
+/**
+ * Process id.
+ */
+pid: number; 
+/**
+ * How ending it went.
+ */
+status: EndStatusView }
+/**
+ * One app: every process that runs one executable.
+ */
+export type ProcessGroupView = { 
+/**
+ * Stable identity of the row (the executable name in lower case); pass it to `endApp`.
+ */
+id: string; 
+/**
+ * The executable name.
+ */
+name: string; 
+/**
+ * How many processes run it.
+ */
+processCount: number; 
+/**
+ * How many of them ending the app would end; 0 when it is protected.
+ */
+endCount: number; 
+/**
+ * Private working set of all its processes, in bytes.
+ */
+memoryBytes: number; 
+/**
+ * Share of all CPU capacity used since the previous reading (0 to 100), or `null` for the
+ * first reading.
+ */
+cpuPercent: number | null; 
+/**
+ * Whether and how it may be ended.
+ */
+endability: EndabilityView }
+/**
+ * The process list, grouped by app, biggest memory user first.
+ */
+export type ProcessListView = { 
+/**
+ * One entry per app.
+ */
+groups: ProcessGroupView[]; 
+/**
+ * How many processes there are in all.
+ */
+processCount: number; 
+/**
+ * Logical processors the CPU share is measured against.
+ */
+logicalCpus: number }
 /**
  * What the Recycle Bin holds.
  */

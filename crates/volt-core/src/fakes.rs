@@ -557,6 +557,7 @@ impl FileSystem for FakeFileSystem {
 #[derive(Debug, Default)]
 pub struct FakeProcesses {
     processes: Mutex<Vec<ProcessInfo>>,
+    terminate_failures: Mutex<HashMap<u32, PortError>>,
     log: EventLog,
 }
 
@@ -576,13 +577,41 @@ impl FakeProcesses {
         }
     }
 
-    /// Adds a running process.
+    /// Adds a running process with no parent and no CPU time.
     pub fn add(&self, pid: u32, name: &str, working_set_bytes: u64) {
+        self.add_process(pid, 0, name, working_set_bytes, 0);
+    }
+
+    /// Adds a running process with its parent and the CPU time it has used so far.
+    pub fn add_process(
+        &self,
+        pid: u32,
+        parent_pid: u32,
+        name: &str,
+        working_set_bytes: u64,
+        cpu_time_100ns: u64,
+    ) {
         lock(&self.processes).push(ProcessInfo {
             pid,
+            parent_pid,
             name: name.to_owned(),
             working_set_bytes,
+            cpu_time_100ns,
         });
+    }
+
+    /// Sets the CPU time a running process has used so far.
+    pub fn set_cpu_time(&self, pid: u32, cpu_time_100ns: u64) {
+        for process in lock(&self.processes).iter_mut() {
+            if process.pid == pid {
+                process.cpu_time_100ns = cpu_time_100ns;
+            }
+        }
+    }
+
+    /// Makes ending `pid` fail with `error`; the process stays running.
+    pub fn fail_terminate(&self, pid: u32, error: PortError) {
+        lock(&self.terminate_failures).insert(pid, error);
     }
 }
 
@@ -592,6 +621,9 @@ impl Processes for FakeProcesses {
     }
 
     fn terminate(&self, pid: u32) -> Result<(), PortError> {
+        if let Some(error) = lock(&self.terminate_failures).get(&pid) {
+            return Err(error.clone());
+        }
         let mut processes = lock(&self.processes);
         let before = processes.len();
         processes.retain(|p| p.pid != pid);

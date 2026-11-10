@@ -12,6 +12,7 @@ mod ipc;
 mod logging;
 pub mod memory;
 pub mod metrics;
+pub mod processes;
 mod sampler;
 mod tray;
 pub mod unsupported;

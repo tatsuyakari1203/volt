@@ -108,18 +108,26 @@ pub trait FileSystem: Send + Sync {
 pub struct ProcessInfo {
     /// Process id.
     pub pid: u32,
-    /// Executable name.
+    /// Id of the process that started it. It can name a process that has ended (and the id may
+    /// even have been reused), so it is a hint for grouping, never proof of ancestry.
+    pub parent_pid: u32,
+    /// Executable name, such as `chrome.exe`.
     pub name: String,
-    /// Working set in bytes.
+    /// Private working set in bytes: the memory only this process holds in RAM, which is the
+    /// figure Task Manager shows. 0 when the adapter cannot read it.
     pub working_set_bytes: u64,
+    /// CPU time the process has used since it started (kernel plus user), in 100 ns ticks. It only
+    /// grows, so CPU load is the difference of two readings over the time between them.
+    pub cpu_time_100ns: u64,
 }
 
 /// Port: processes.
 pub trait Processes: Send + Sync {
-    /// Lists running processes.
+    /// Lists running processes, without the idle pseudo-process (pid 0).
     fn list(&self) -> Result<Vec<ProcessInfo>, PortError>;
 
-    /// Ends a process. Unknown pid is [`PortError::NotFound`].
+    /// Ends a process at once, without letting it save anything. An unknown pid is
+    /// [`PortError::NotFound`] and a process the user may not end is [`PortError::AccessDenied`].
     fn terminate(&self, pid: u32) -> Result<(), PortError>;
 }
 
