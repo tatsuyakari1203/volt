@@ -9,13 +9,14 @@
 //! `volt-core` only; must not pull in `tauri` or `rusqlite`.
 //!
 //! Adapters in this crate: [`WinRegistry`], [`WinServices`], [`WinFileSystem`],
-//! [`WinKnownFolders`], [`WinMetrics`].
+//! [`WinKnownFolders`], [`WinMetrics`], [`WinCommands`].
 //! The crate is empty on non-Windows targets.
 
 // The workspace denies unsafe code; FFI lives here by design.
 #![allow(unsafe_code)]
 #![cfg(windows)]
 
+mod command;
 mod error;
 mod files;
 mod folders;
@@ -25,6 +26,7 @@ mod registry;
 mod services;
 mod wide;
 
+pub use command::{CommandError, DEFAULT_MAX_OUTPUT, DEFAULT_TIMEOUT, WinCommands};
 pub use files::WinFileSystem;
 pub use folders::WinKnownFolders;
 pub use metrics::WinMetrics;

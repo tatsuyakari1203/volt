@@ -219,10 +219,9 @@ fakes, or with a throwaway registry key and a temp directory.
   read) and kept in `StartupReport`. A reconcile failure never stops the app: the entries stay
   pending for the next start.
 - **Ports.** `windows_ports()` builds the bundle from `WinRegistry`, `WinFileSystem` and
-  `WinServices`. The processes, memory and commands ports have no Windows adapter yet, so
-  `unsupported.rs` supplies `UnsupportedProcesses`, `UnsupportedMemory` and `UnsupportedCommands`,
-  which fail every call with `PortError::Unsupported`. A tweak with a command step would show its
-  state as unreadable and refuse to apply until a real commands adapter exists.
+  `WinServices`. `WinCommands` runs the commands port. The processes and memory ports have no Windows adapter yet, so
+  `unsupported.rs` supplies `UnsupportedProcesses` and `UnsupportedMemory`, which fail every call
+  with `PortError::Unsupported`.
 - **Managed state.** The result is `AppState` in Tauri's managed state, not owned by the window, so
   the engine and the database connection outlive the on-demand window. If the core cannot be built
   (an unusable database, a build bug in the catalogue) the app still starts, the tray and window
@@ -240,8 +239,9 @@ fakes, or with a throwaway registry key and a temp directory.
 
 ## Windows adapters
 
-`volt-win` implements the registry, services, file system, known-folders and metrics ports with the
-Windows API: `WinRegistry`, `WinServices`, `WinFileSystem`, `WinKnownFolders` and `WinMetrics`.
+`volt-win` implements the registry, services, file system, known-folders, metrics and commands ports
+with the Windows API: `WinRegistry`, `WinServices`, `WinFileSystem`, `WinKnownFolders`, `WinMetrics` and
+`WinCommands`.
 
 - File deletion goes to the Recycle Bin through `IFileOperation`. There is no permanent-delete
   fallback: if the Recycle Bin cannot take a file, the deletion fails. The shell reports a locked
@@ -279,9 +279,27 @@ Windows API: `WinRegistry`, `WinServices`, `WinFileSystem`, `WinKnownFolders` an
   plausibility, not exact values.
 - Changing a real service's start type is deliberately not covered by an automated test, because
   it would change the machine running the tests.
-- There is no adapter for the processes, memory or commands ports yet. The composition root hands
-  the executor small stand-ins that fail every call with `PortError::Unsupported` (see
-  Composition root), so command tweaks only run against the fake until a real adapter is written.
+- `WinCommands` starts a program directly with its argument list through `CreateProcess`: never
+  through a shell, never from a string built by hand, so each argument arrives intact.
+  - Resolution: a bare name (`powercfg`) is looked up in the Windows system directory only (never
+    `PATH` or the current directory) and gets `.exe` when it has no extension. An absolute path is
+    used as given. Relative paths, UNC paths and batch scripts (`.bat`, `.cmd`) are rejected as
+    `InvalidInput`; a program that is not there is `NotFound`; other start failures keep the OS
+    error through the same Win32 mapping the other adapters use.
+  - The process gets no console window and a null standard input. Standard output and error share
+    one pipe, so the text keeps its order. At most 64 KiB is kept, the rest is dropped and a
+    note is appended. Text is decoded without failing (UTF-8, UTF-16 with a byte order mark, or
+    the OEM code page).
+  - A command has 60 seconds by default. The child runs in a job object that kills its members
+    when it closes. On timeout the whole process tree is terminated and the call fails with
+    `CommandError::TimedOut`, which reaches the port as `PortError::Other` (the core has no timeout
+    variant). When the program exits by itself, processes it left behind are killed too.
+  - Only the program's file name and the exit code are logged, per the redaction rule.
+  - Tests run the test executable itself as the helper process (exit codes, output, arguments,
+    sleeping), plus read-only system programs, so nothing changes the machine.
+- There is no adapter for the processes or memory ports yet. The composition root hands the
+  executor small stand-ins that fail every call with `PortError::Unsupported` (see Composition
+  root).
 
 ## Process and elevation model
 

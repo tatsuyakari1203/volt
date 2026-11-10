@@ -1,19 +1,14 @@
 //! Ports that have no Windows adapter yet.
 //!
-//! The processes, memory and commands ports are part of [`volt_core::Ports`] because the core
-//! models them, but `volt-win` does not implement them yet. The composition root still has to
+//! The processes and memory ports are part of [`volt_core::Ports`] because the core models them,
+//! but `volt-win` does not implement them yet. The composition root still has to
 //! hand the executor a complete bundle, so it passes these small adapters. Every call fails with
 //! [`PortError::Unsupported`] and says why, which the UI shows as "not supported". Nothing here
 //! touches the system.
 //!
-//! The one tweak in the catalogue today is a registry value, so none of these are reached. A
-//! catalogue tweak with a command step would read its state as unreadable (and could not be
-//! applied) until a real commands adapter replaces [`UnsupportedCommands`].
+//! The one tweak in the catalogue today is a registry value, so none of these are reached.
 
-use volt_core::{
-    Command, CommandOutput, Commands, Memory, MemoryArea, MemoryStatus, PortError, ProcessInfo,
-    Processes,
-};
+use volt_core::{Memory, MemoryArea, MemoryStatus, PortError, ProcessInfo, Processes};
 
 fn unsupported(what: &str) -> PortError {
     PortError::Unsupported(format!("{what} has no Windows adapter yet"))
@@ -47,16 +42,6 @@ impl Memory for UnsupportedMemory {
     }
 }
 
-/// The commands port without an adapter: running an external program is unsupported.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct UnsupportedCommands;
-
-impl Commands for UnsupportedCommands {
-    fn run(&self, _command: &Command) -> Result<CommandOutput, PortError> {
-        Err(unsupported("running an external command"))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,11 +67,6 @@ mod tests {
         assert!(
             UnsupportedMemory
                 .purge(MemoryArea::WorkingSets)
-                .is_err_and(|e| is_unsupported(&e))
-        );
-        assert!(
-            UnsupportedCommands
-                .run(&Command::new("tool", ["--flag"]))
                 .is_err_and(|e| is_unsupported(&e))
         );
     }
