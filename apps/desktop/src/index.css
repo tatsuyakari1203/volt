@@ -1,1 +1,223 @@
 @import "tailwindcss";
+
+/*
+ * Volt design tokens.
+ *
+ * Themed tokens (colour, elevation) live on :root (light) and :root[data-theme='dark'] and are
+ * mapped into Tailwind's theme with `@theme inline`, so utilities like `bg-surface` follow the
+ * active theme. Theme-independent tokens (type, radius, spacing, motion) live in `@theme static`.
+ * The `data-theme` attribute is set by src/shared/theme before first render.
+ *
+ * Every text/background pair is checked against WCAG AA by src/shared/ui/tokens.test.ts.
+ * Keep the two token blocks free of nested braces: that test parses them.
+ */
+
+:root {
+  color-scheme: light;
+
+  --canvas: #f3f3f3;
+  --surface: #ffffff;
+  --surface-hover: #f7f7f7;
+  --surface-sunken: #ececec;
+  --line: #e2e2e2;
+  --line-strong: #858585;
+  --hover: rgb(0 0 0 / 0.05);
+  --pressed: rgb(0 0 0 / 0.08);
+
+  --fg: #1a1a1a;
+  --muted: #595959;
+
+  --accent: #005fb8;
+  --accent-hover: #0a6cc7;
+  --accent-pressed: #004c94;
+  --accent-fg: #ffffff;
+  --accent-soft: #e3eefa;
+  --accent-text: #005fb8;
+  --focus: #005fb8;
+
+  --safe-bg: #e0f3e7;
+  --safe-fg: #0b5c2e;
+  --caution-bg: #fcefd0;
+  --caution-fg: #764500;
+  --advanced-bg: #fde5e7;
+  --advanced-fg: #9c1f27;
+
+  --toast-bg: #2b2b2b;
+  --toast-fg: #ffffff;
+  --toast-action: #60cdff;
+  --overlay: rgb(0 0 0 / 0.4);
+
+  --elev-card: 0 1px 2px rgb(0 0 0 / 0.04);
+  --elev-pop: 0 8px 28px rgb(0 0 0 / 0.16), 0 0 0 1px rgb(0 0 0 / 0.06);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --canvas: #202020;
+  --surface: #2b2b2b;
+  --surface-hover: #323232;
+  --surface-sunken: #1c1c1c;
+  --line: #3b3b3b;
+  --line-strong: #8f8f8f;
+  --hover: rgb(255 255 255 / 0.06);
+  --pressed: rgb(255 255 255 / 0.09);
+
+  --fg: #f4f4f4;
+  --muted: #ababab;
+
+  --accent: #60cdff;
+  --accent-hover: #7bd6ff;
+  --accent-pressed: #4ab9ec;
+  --accent-fg: #00253b;
+  --accent-soft: #1b3544;
+  --accent-text: #60cdff;
+  --focus: #60cdff;
+
+  --safe-bg: #1c3a29;
+  --safe-fg: #7fdca0;
+  --caution-bg: #43330f;
+  --caution-fg: #f5c56a;
+  --advanced-bg: #4a2024;
+  --advanced-fg: #ffa3aa;
+
+  --toast-bg: #3c3c3c;
+  --toast-fg: #ffffff;
+  --toast-action: #60cdff;
+  --overlay: rgb(0 0 0 / 0.6);
+
+  --elev-card: 0 0 0 transparent;
+  --elev-pop: 0 8px 28px rgb(0 0 0 / 0.5), 0 0 0 1px rgb(255 255 255 / 0.08);
+}
+
+@theme inline {
+  --color-*: initial;
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-surface-hover: var(--surface-hover);
+  --color-surface-sunken: var(--surface-sunken);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-hover: var(--hover);
+  --color-pressed: var(--pressed);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-pressed: var(--accent-pressed);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-text: var(--accent-text);
+  --color-focus: var(--focus);
+  --color-safe: var(--safe-bg);
+  --color-safe-fg: var(--safe-fg);
+  --color-caution: var(--caution-bg);
+  --color-caution-fg: var(--caution-fg);
+  --color-advanced: var(--advanced-bg);
+  --color-advanced-fg: var(--advanced-fg);
+  --color-toast: var(--toast-bg);
+  --color-toast-fg: var(--toast-fg);
+  --color-toast-action: var(--toast-action);
+  --color-overlay: var(--overlay);
+  --shadow-card: var(--elev-card);
+  --shadow-pop: var(--elev-pop);
+}
+
+@theme static {
+  --font-sans: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+
+  --text-caption: 0.75rem;
+  --text-caption--line-height: 1rem;
+  --text-body: 0.875rem;
+  --text-body--line-height: 1.25rem;
+  --text-subtitle: 1rem;
+  --text-subtitle--line-height: 1.375rem;
+  --text-title: 1.375rem;
+  --text-title--line-height: 1.75rem;
+  --text-display: 2.5rem;
+  --text-display--line-height: 2.75rem;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  --spacing-gutter: 1rem;
+  --spacing-rail: 3.5rem;
+  --spacing-rail-wide: 14rem;
+
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+
+  --breakpoint-wide: 760px;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--canvas);
+    color: var(--fg);
+    font-family: var(--font-sans);
+    font-size: var(--text-body);
+    line-height: var(--text-body--line-height);
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+  }
+
+  button {
+    cursor: default;
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--line-strong) transparent;
+  }
+}
+
+@keyframes volt-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+@keyframes volt-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes volt-dialog-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0ms;
+    --duration-base: 0ms;
+  }
+
+  /* Unlayered, so it beats Tailwind's layered utilities without needing !important. */
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms;
+    animation-iteration-count: 1;
+    transition-duration: 0.01ms;
+    scroll-behavior: auto;
+  }
+}

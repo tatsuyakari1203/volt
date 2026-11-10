@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 
-/** De-emphasised text. Placeholder until the design system lands (TASK-010). */
+/** De-emphasised text. Uses the muted token, which meets AA contrast on every surface. */
 export function Muted({ children }: { children: ReactNode }) {
-  return <p className="text-sm text-neutral-400">{children}</p>;
+  return <p className="text-body text-muted">{children}</p>;
 }

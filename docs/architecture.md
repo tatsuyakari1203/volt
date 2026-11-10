@@ -151,6 +151,10 @@ attack surface but costs an IPC protocol and a second binary.
   and `shared/ipc` (bindings to the Rust commands). Features do not import each other; a boundary
   rule (dependency-cruiser, `apps/desktop/.dependency-cruiser.cjs`, run by `pnpm check`) enforces
   it and also forbids `shared` importing features, mirroring the crate check.
+- The app shell lives in `src/app` (navigation rail, section switching, Settings, placeholders) and
+  is composed by `src/App.tsx`. It sits on top of both `features` and `shared`; nothing else may
+  import from it, and the same boundary rule enforces that. Navigation is plain local state, with
+  no router.
 - The UI holds no business rules: it renders plans and results produced by the core.
 - **Typed IPC.** The Rust shell registers every command, event and transfer type in one place
   (`apps/desktop/src-tauri/src/ipc.rs`, `bindings_builder`). `tauri-specta` generates the invoke
@@ -177,6 +181,29 @@ attack surface but costs an IPC protocol and a second binary.
     Registry QWORD values will need that when commands expose them.
   - **Transfer types.** Types derive `specta::Type` in the shell for now. `volt-core` stays free
     of the derive until commands expose its domain model.
+
+### Design system
+
+- **Tokens** are CSS variables in `src/index.css`. Colour and elevation tokens exist for light and
+  dark (`:root` and `:root[data-theme='dark']`) and are mapped into Tailwind's theme, so classes
+  such as `bg-surface`, `text-muted` and `border-line` follow the active theme. Type, radius,
+  spacing and motion tokens are theme independent. Tailwind's default palette is switched off: only
+  token colours exist, with one accent colour.
+- **Theme** (`src/shared/theme`) follows the system by default. The user can override it in
+  Settings; the choice is kept in localStorage. A `?theme=light|dark` URL parameter pins a theme
+  for one session without saving it (used for screenshots). A `?section=<id>` parameter opens a
+  section directly, for the same reason.
+- **Contrast** is a test: `tokens.test.ts` parses the token blocks and checks every text and
+  control pair against WCAG AA (4.5:1 for text, 3:1 for controls and the focus ring) in both
+  themes. Adding a token to one theme without the other also fails it.
+- **Motion** is short (120 and 200 ms) and collapses to nothing under `prefers-reduced-motion`.
+- **Components** live in `src/shared/ui` and are imported from its index: Button, Switch, Card,
+  ListGroup and ListRow, ProgressRing, Badge (risk levels), Toast with an action such as Undo,
+  Dialog (focus trap, Escape, focus returns), SearchField, SegmentedControl, PageHeader and
+  ErrorBoundary. They hold no business logic and use native elements where one exists.
+- **Window**: 460 x 700 by default, minimum 420 x 600, resizable. Below 760 px the navigation is an
+  icon rail with tooltips; at 760 px and wider it shows labels.
+- Design review screenshots are kept in `docs/design`.
 
 ## Testing strategy
 
