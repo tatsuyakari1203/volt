@@ -751,8 +751,12 @@ mod tests {
         // This unelevated test process made the pipe, so its owner is the user, not
         // Administrators or SYSTEM: the UI side would refuse to talk to it. (A real elevated
         // helper creates the pipe with an Administrators owner.)
+        // An elevated runner (CI) owns it as Administrators, which is trusted, so only check
+        // the unelevated case.
         let owner = client.owner_sid().expect("owner");
-        assert!(!is_trusted_owner(&owner), "{owner}");
+        if owner != "S-1-5-32-544" {
+            assert!(!is_trusted_owner(&owner), "{owner}");
+        }
     }
 
     #[test]
