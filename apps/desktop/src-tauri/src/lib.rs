@@ -7,6 +7,8 @@ pub mod catalogue;
 mod commands;
 mod ipc;
 mod logging;
+pub mod metrics;
+mod sampler;
 mod tray;
 pub mod unsupported;
 mod window;
@@ -15,10 +17,12 @@ pub mod wiring;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri::Manager as _;
+use tauri::WindowEvent;
 use tauri::webview::PageLoadEvent;
 use tauri_specta::Event as _;
 
 pub use ipc::{AppReady, IpcError, bindings_builder, export_bindings};
+pub use metrics::MetricsUpdated;
 pub use tray::TrayBoostRequested;
 
 /// Product name shown in the UI.
@@ -75,12 +79,21 @@ pub fn run() {
             // and the database stay. Built before any window exists, so the first page load can
             // already ask for tweaks.
             app.manage(wiring::init(app.handle()));
+            // The sampler thread is not started here: it runs only while the main window exists.
+            app.manage(sampler::real(app.handle()));
             bindings.mount_events(app);
             tray::setup(app)?;
             if window::LaunchMode::from_args(std::env::args().skip(1)) == window::LaunchMode::Foreground {
                 window::open_in_background(app.handle(), |_, _| {});
             }
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Sampling stops with the window; the tick probe in the sampler is the safety net
+            // for the order in which Tauri unregisters the window and sends this event.
+            if matches!(event, WindowEvent::Destroyed) && window.label() == window::MAIN_WINDOW {
+                sampler::sync_with_window(window.app_handle());
+            }
         })
         .on_page_load(|webview, payload| {
             if payload.event() == PageLoadEvent::Finished {

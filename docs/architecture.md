@@ -89,6 +89,18 @@ What `volt-core` contains today:
   - **Source of a revert:** a rollback keeps the source of its plan; a revert requested through
     `revert_entry` or `revert_batch` is recorded as manual, because those calls do not take a
     source.
+- **Live metrics:** the `MetricsSource` port (`volt_core::metrics`) reads one _raw sample_: the
+  cumulative CPU time counters, the physical memory totals, the space of every fixed volume and one
+  reading per GPU adapter. A raw sample means little alone (a CPU counter only grows), so
+  `MetricsTracker` keeps the previous sample and turns each new one into a `MetricsSnapshot`: CPU
+  load from the difference of two samples (`None` for the first sample and when the counters did
+  not advance or went backwards), memory in use and available, used and free space per disk, and
+  the primary GPU (the adapter with the most dedicated video memory). **GPU, GPU utilisation and
+  video memory are optional by type**: a machine without a readable GPU has an empty adapter list
+  and `gpu: None`, which is a normal case, never an error. The port is deliberately **not** part
+  of the `Ports` bundle: it is read-only, independent of the executor, and the sampler is built
+  with its own source. `FakeMetrics` (in `volt_core::metrics::fake`, behind the `fakes` feature)
+  answers a scripted sequence of samples and errors.
 - **Risk and evidence labels:** `Safe`, `Caution`, `Advanced`; `Measured` or `Anecdotal`. The UI
   shows both.
 - **`fakes` cargo feature:** in-memory fakes of every port (`FakeSystem` wires them together
@@ -225,8 +237,8 @@ fakes, or with a throwaway registry key and a temp directory.
 
 ## Windows adapters
 
-`volt-win` implements the registry, services, file system and known-folders ports with the Windows
-API: `WinRegistry`, `WinServices`, `WinFileSystem` and `WinKnownFolders`.
+`volt-win` implements the registry, services, file system, known-folders and metrics ports with the
+Windows API: `WinRegistry`, `WinServices`, `WinFileSystem`, `WinKnownFolders` and `WinMetrics`.
 
 - File deletion goes to the Recycle Bin through `IFileOperation`. There is no permanent-delete
   fallback: if the Recycle Bin cannot take a file, the deletion fails. The shell reports a locked
@@ -245,6 +257,23 @@ API: `WinRegistry`, `WinServices`, `WinFileSystem` and `WinKnownFolders`.
 - Tests are confined to `HKCU\Software\VoltTest` and temp directories. Scan and clean tests run
   the real engine over a temp directory with a real junction (a junction swapped in after the scan
   included); the tests that put items in the real Recycle Bin are `#[ignore]`d and run on request.
+- **`WinMetrics`** needs no administrator rights and no vendor library, so it works for any GPU.
+  CPU is `GetSystemTimes` (idle, kernel and user time; kernel includes idle), memory is
+  `GlobalMemoryStatusEx`, disks are `GetLogicalDrives` filtered to `DRIVE_FIXED` with
+  `GetDiskFreeSpaceExW` (removable drives, optical drives and network shares are never touched; a
+  volume that cannot be read, such as a locked BitLocker volume, is left out). The GPU part
+  (`gpu.rs`) uses the performance counters `GPU Engine(*)\Utilization Percentage` and
+  `GPU Adapter Memory(*)\Dedicated Usage` through PDH (the English counter paths, so the display
+  language does not matter) and DXGI for the adapter name and the installed dedicated memory
+  (software adapters are skipped). The processes sharing a GPU engine are added up per engine and
+  the busiest engine represents the adapter, which is how Task Manager reports it. The counter
+  instance parsing and the aggregation are pure functions tested on strings. A GPU that cannot be
+  read (no counters, a virtual machine, a driver without WDDM 2) reads as an empty list and one
+  warning in the diagnostic log, never as an error. **NVML is not used**: the counters already
+  cover NVIDIA, AMD and Intel, and a run-time-loaded NVML would be an optional refinement for a
+  later task. Opening a `WinMetrics` opens a PDH query, so it is created when sampling starts and
+  dropped when it stops. Reading is allowed in tests (it changes nothing); they assert
+  plausibility, not exact values.
 - Changing a real service's start type is deliberately not covered by an automated test, because
   it would change the machine running the tests.
 - There is no adapter for the processes, memory or commands ports yet. The composition root hands
@@ -290,8 +319,11 @@ and `autostart.rs`.
   second launch focuses (or recreates) the window of the first instance and exits.
 - **Launch mode.** A launch with `--background` (what the Start with Windows entry passes) does
   not open a window and stays in the tray; any other launch opens the window.
-- **Capabilities.** Both plugins are driven from Rust only, so no plugin permission is granted
-  and the default capability is unchanged. The plugins' own JavaScript commands are therefore
+- **Capabilities.** Both plugins are driven from Rust only, so no plugin permission is granted.
+  The default capability grants the window exactly two core permissions, `core:event:allow-listen`
+  and `core:event:allow-unlisten`: without them Tauri refuses `listen` from the page ("event.listen
+  not allowed"), so no typed event (`app-ready`, `tray-boost-requested`, `metrics-updated`) could
+  reach the UI. The window still cannot emit events. The plugins' own JavaScript commands are therefore
   unreachable from the UI.
 
 ### Start with Windows
@@ -333,6 +365,74 @@ With the window closed no `msedgewebview2.exe` child of Volt remains, so the Web
 destroyed, not hidden. The measurement shares the machine with other builds and applications, so
 treat the figures as an order of magnitude, not a benchmark. Memory shared between processes is
 not counted in a private working set.
+
+### Live metrics
+
+CPU, RAM, GPU utilisation, video memory and disk usage reach the UI as a typed event while the
+window is open. The code is `apps/desktop/src-tauri/src/sampler.rs` (the sampler) and `metrics.rs`
+(transfer types, event and command).
+
+- **Runs only while a window exists.** `Sampler` lives in Tauri's managed state and starts a
+  thread named `volt-metrics` when the main window has been created (`open_main_window` calls
+  `sampler::sync_with_window` after the build succeeds) and stops it when the window is destroyed
+  (`Builder::on_window_event` on `Destroyed`). The decision (`decide`: start, stop, keep) is a pure
+  function of "is it running" and "does the window exist", and the existence probe runs inside the
+  sampler's lock, so the last caller always sees the final state. Because this code does not rely
+  on the order in which Tauri unregisters a window and sends its `Destroyed` event, the thread
+  also checks on every tick that the window still exists and ends by itself within one interval
+  if it does not.
+- **Nothing is held while idle.** The thread builds its `WinMetrics` when it starts and drops it
+  when it ends, so a closed window holds no performance-counter query, and `latest_metrics`
+  answers `null` again. The diagnostic log has one line when sampling starts and one when it stops
+  (`live metrics sampling stopped after N samples`), which is how a real run is checked.
+- **Timing.** One second between samples. `run_loop` waits on a channel with a timeout (so a
+  stop request ends the wait at once) until the next deadline of a fixed grid (`next_deadline`).
+  The grid keeps the period free of drift by the time a read takes, and when a read is slow the
+  missed ticks are skipped, not run back to back. One thread, no queue: samples cannot pile up. A
+  baseline read is taken at the start and not published, so the first event already has a CPU
+  figure. A failing read is counted, logged once per streak, and sampling goes on.
+- **Delivery.** `MetricsUpdated` (`events.metricsUpdated`) carries a `MetricsView` about once a
+  second, emitted by `tauri-specta`. The command `latest_metrics` returns the last snapshot of the
+  current run (or `null` before the first one), so a screen can show numbers at once instead of
+  waiting a second; call it after registering the event listener, which is asynchronous. Every
+  GPU value and `cpuPercent` can be `null`.
+
+#### Sampling overhead
+
+Measured on 2026-11-10 on the development machine (Windows 11, an NVIDIA GPU, four fixed disks,
+other builds running at the same time, so treat the figures as an order of magnitude). Method:
+`pnpm tauri build --no-bundle` (release profile); start `volt-desktop.exe`; for the CPU, read
+`TotalProcessorTime` of the process (and of each of its threads) before and after a 60 to 90
+second interval, once with the window open (sampler running, the window left idle on Home) and
+once after closing the window with `CloseMainWindow`; for memory, read the private working set
+(`Win32_PerfFormattedData_PerfProc_Process.WorkingSetPrivate`) of `volt-desktop.exe` only, not of
+the WebView2 processes. The diagnostic log was read to confirm the sampler started and stopped.
+
+| State of `volt-desktop.exe`                        | CPU time (process)                 | Private working set |
+| -------------------------------------------------- | ---------------------------------- | ------------------- |
+| Tray only, window never opened                     | 0.0 ms over 61 s                   | 1.8 MB              |
+| Window open, sampler running (1 sample per second) | 109 ms over 61 s; 375 ms over 91 s | 9.8 to 10.1 MB      |
+| Window closed again, sampler stopped               | 0.0 ms over 31, 61 and 91 s        | 8.2 to 8.5 MB       |
+
+- **CPU while sampling:** 1.8 to 4.1 ms of CPU per second, about 0.2 to 0.4 % of one core. In the
+  91 second run the whole 375 ms was spent on one thread (the `volt-metrics` thread); every other
+  thread used none. Nearly all of it is the GPU counters: in a debug test run one GPU read cost
+  about 8 ms, against about 0.1 ms for the disks and 0.2 ms for CPU and memory together. CPU and
+  memory alone would cost far less than this; the GPU part is the price of vendor-neutral GPU
+  numbers without administrator rights.
+- **CPU after the window closes:** zero. The log shows `live metrics sampling started` when the
+  window is created and `live metrics sampling stopped after N samples` at the moment it is
+  closed (for example 111 samples over a 111 second window); nothing is read afterwards.
+- **Memory, an honest cost:** the first use of the performance counters (PDH) loads
+  process-wide counter tables that closing the query does not release. An A/B run of a debug
+  build with the real page loaded, a trivial fake metrics source against `WinMetrics`, left 3.7 MB
+  against 8.0 MB after one open and close; a standalone test process shows the same step (about
+  3 MB for the first counter of any kind, about 2 MB more for the GPU counters) and the thread
+  count is the same in both runs. So after the first time the window is opened, an idle Volt keeps
+  about 4 to 5 MB more than before (roughly 8 MB instead of the 3.8 MB in the idle table above);
+  a Volt that stays in the tray without ever opening its window is unchanged. The query itself,
+  the thread and the snapshot are freed at stop. Getting this back means reading the GPU through
+  `D3DKMTQueryStatistics` instead of PDH, which is a possible later task.
 
 ## Frontend
 
@@ -395,17 +495,20 @@ not counted in a private working set.
     Revert reports `reverted`, `incomplete` (with counts) or `nothingToRevert` (the journal has
     nothing to undo: Volt did not apply it, or it is already undone; not an error). Activity pages
     are newest first; the limit is clamped to 1 to 200 and `nextCursor` is the cursor of the next,
-    older page (or null).
+    older page (or null). `latest_metrics` is a synchronous command that only reads a stored
+    snapshot (see Live metrics).
   - **Events.** Events are structs deriving `tauri_specta::Event` and registered in
     `bindings_builder`; the sample is `AppReady(AppInfo)`, listened to as `events.appReady`.
     `TrayBoostRequested` (`events.trayBoostRequested`, payload `null`) is sent when the user
-    picks Boost in the tray menu.
+    picks Boost in the tray menu. `MetricsUpdated` (`events.metricsUpdated`, payload
+    `MetricsView`) is sent about once a second while the window is open.
   - **64-bit integers.** `specta-typescript` refuses to export `u64`/`i64` by default because
     JavaScript numbers lose precision above 2^53. A type that exposes one fails the export (and
     so the gate) until it is given an explicit representation, for example a decimal string.
     Registry QWORD values will need that when commands expose them. The tweak and activity
     types avoid 64-bit numbers altogether: record ids are decimal strings (and so is the cursor) and
-    times are ISO 8601 UTC strings.
+    times are ISO 8601 UTC strings. The metrics types are the one exception: byte counts cross as
+    `f64` (exact up to 2^53, and the UI has to divide and format them), never as `u64`.
   - **Transfer types.** Types derive `specta::Type` in the shell, which owns them (`api.rs`: risk,
     evidence, restart, category, state, tweak info, apply and revert results, activity items). The
     domain types are not exposed wholesale, so a change in the core cannot change the UI contract by

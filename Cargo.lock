@@ -4366,6 +4366,7 @@ dependencies = [
 name = "volt-win"
 version = "0.0.0"
 dependencies = [
+ "log",
  "volt-core",
  "windows 0.62.2",
 ]

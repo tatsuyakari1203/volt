@@ -10,6 +10,7 @@ import {
   commands,
   events,
   type IpcError,
+  type MetricsView,
   type Result,
   type RevertResult,
   type TweakInfo,
@@ -24,8 +25,12 @@ export type {
   ApplyResult,
   ApplyStatus,
   AppReady,
+  DiskView,
   EvidenceLevel,
+  GpuView,
   IpcError,
+  MemoryView,
+  MetricsView,
   RestartKind,
   RevertResult,
   RevertStatus,
@@ -159,4 +164,21 @@ export async function revertTweak(id: string): Promise<RevertResult> {
  */
 export async function listActivity(limit: number, cursor?: string | null): Promise<ActivityPage> {
   return call(() => commands.listActivity(limit, cursor ?? null));
+}
+
+/**
+ * Calls `handler` with a fresh reading of the machine (CPU, memory, disks, GPU) about once a
+ * second while the window is open. Returns the unlisten function. GPU fields are `null` on a
+ * machine without a readable GPU, and `cpuPercent` can be `null`: show a dash, not an error.
+ */
+export function onMetricsUpdated(handler: (metrics: MetricsView) => void): Promise<() => void> {
+  return events.metricsUpdated.listen((event) => handler(event.payload));
+}
+
+/**
+ * The latest reading, or `null` before the first one of this window. Call it once after
+ * `onMetricsUpdated` so a screen shows numbers at once instead of waiting for the next second.
+ */
+export async function getLatestMetrics(): Promise<MetricsView | null> {
+  return call(() => commands.latestMetrics());
 }

@@ -151,6 +151,8 @@ pub(crate) fn open_main_window<R: Runtime>(app: &AppHandle<R>) -> Result<Opened,
                 .find(|config| config.label == MAIN_WINDOW)
                 .ok_or(WindowError::MissingConfig)?;
             WebviewWindowBuilder::from_config(app, config)?.build()?;
+            // Live metrics are sampled only while the window exists.
+            crate::sampler::sync_with_window(app);
             Ok(Opened::Created)
         }
         OpenAction::Focus { show, unminimize } => {

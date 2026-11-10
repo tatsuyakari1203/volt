@@ -36,6 +36,17 @@ fn generated_bindings_describe_the_autostart_commands_and_the_tray_boost_event()
     assert!(text.contains("trayBoostRequested"), "{text}");
 }
 
+#[test]
+fn generated_bindings_describe_live_metrics_with_optional_gpu_values() {
+    let text = generated_bindings();
+    assert!(text.contains("latestMetrics"), "{text}");
+    assert!(text.contains("metricsUpdated"), "{text}");
+    // A machine without a GPU is a normal case, so the GPU and its numbers are nullable.
+    assert!(text.contains("gpu: GpuView | null"), "{text}");
+    assert!(text.contains("utilisationPercent: number | null"), "{text}");
+    assert!(text.contains("vramTotalBytes: number | null"), "{text}");
+}
+
 /// The drift gate: the committed bindings must equal what the Rust definitions generate.
 /// `scripts/bindings.ps1` (and so `pnpm check`) runs this test; `pnpm bindings` rewrites the
 /// committed file by setting `VOLT_UPDATE_BINDINGS=1`.

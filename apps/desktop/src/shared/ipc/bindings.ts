@@ -91,6 +91,19 @@ async listActivity(limit: number, cursor: string | null) : Promise<Result<Activi
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Tauri command: the latest reading, or `null` when none has been taken yet (the window was
+ * just opened and the first interval has not passed). Lets a screen show numbers at once
+ * instead of waiting for the next event.
+ */
+async latestMetrics() : Promise<Result<MetricsView | null, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("latest_metrics") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -99,9 +112,11 @@ async listActivity(limit: number, cursor: string | null) : Promise<Result<Activi
 
 export const events = __makeEvents__<{
 appReady: AppReady,
+metricsUpdated: MetricsUpdated,
 trayBoostRequested: TrayBoostRequested
 }>({
 appReady: "app-ready",
+metricsUpdated: "metrics-updated",
 trayBoostRequested: "tray-boost-requested"
 })
 
@@ -250,6 +265,30 @@ export type ApplyStatus =
  */
 "needsAttention"
 /**
+ * One fixed volume.
+ */
+export type DiskView = { 
+/**
+ * Where the volume is mounted, such as `C:\`.
+ */
+mount: string; 
+/**
+ * Capacity in bytes.
+ */
+totalBytes: number; 
+/**
+ * Used space in bytes.
+ */
+usedBytes: number; 
+/**
+ * Free space in bytes.
+ */
+freeBytes: number; 
+/**
+ * Used space as a share of the capacity, 0 to 100.
+ */
+usedPercent: number }
+/**
  * Whether the benefit of a tweak was measured. Mirrors [`volt_core::Evidence`].
  */
 export type EvidenceLevel = 
@@ -261,6 +300,31 @@ export type EvidenceLevel =
  * The effect is reported by users but not measured.
  */
 "anecdotal"
+/**
+ * The primary GPU. Every number may be missing (`null`): a driver without counters still
+ * gives a name.
+ */
+export type GpuView = { 
+/**
+ * Adapter name.
+ */
+name: string; 
+/**
+ * Busy share of the busiest engine, 0 to 100.
+ */
+utilisationPercent: number | null; 
+/**
+ * Dedicated video memory in use in bytes.
+ */
+vramUsedBytes: number | null; 
+/**
+ * Dedicated video memory installed in bytes.
+ */
+vramTotalBytes: number | null; 
+/**
+ * Video memory in use as a share of the installed amount, 0 to 100.
+ */
+vramUsedPercent: number | null }
 /**
  * The one error type every command returns.
  * 
@@ -289,6 +353,57 @@ export type IpcError =
  * Any other failure.
  */
 { kind: "other"; message: string }
+/**
+ * Physical memory.
+ */
+export type MemoryView = { 
+/**
+ * Installed physical memory in bytes.
+ */
+totalBytes: number; 
+/**
+ * Memory in use in bytes.
+ */
+usedBytes: number; 
+/**
+ * Memory available for use in bytes.
+ */
+availableBytes: number; 
+/**
+ * Memory in use as a share of the installed amount, 0 to 100.
+ */
+usedPercent: number }
+/**
+ * Event emitted about once a second while the window is open, with the latest reading.
+ * 
+ * Generated as `events.metricsUpdated`. The sampler runs only while the main window exists, so
+ * nothing is emitted (and nothing is read) while the app sits in the tray.
+ */
+export type MetricsUpdated = MetricsView
+/**
+ * One reading of the machine, as the UI sees it.
+ */
+export type MetricsView = { 
+/**
+ * When it was taken, ISO 8601 in UTC.
+ */
+takenAt: string; 
+/**
+ * CPU load since the previous reading, 0 to 100. `null` when it could not be worked out.
+ */
+cpuPercent: number | null; 
+/**
+ * Physical memory.
+ */
+memory: MemoryView; 
+/**
+ * Fixed volumes.
+ */
+disks: DiskView[]; 
+/**
+ * The primary GPU, or `null` on a machine without a (readable) GPU, which is normal.
+ */
+gpu: GpuView | null }
 /**
  * What the user has to do before a tweak takes full effect.
  */

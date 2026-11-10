@@ -44,6 +44,7 @@ pub mod error;
 pub mod executor;
 pub mod journal;
 pub mod label;
+pub mod metrics;
 pub mod operation;
 pub mod plan;
 pub mod ports;
@@ -72,6 +73,10 @@ pub use executor::{
 };
 pub use journal::{BatchId, EntryId, EntryState, Journal, JournalEntry, NewEntry, Source};
 pub use label::{Evidence, Risk};
+pub use metrics::{
+    CpuTimes, DiskReading, DiskSnapshot, GpuReading, GpuSnapshot, MemorySnapshot, MetricsSnapshot,
+    MetricsSource, MetricsTracker, RawSample,
+};
 pub use operation::{Operation, PriorState};
 pub use plan::{OperationRequest, Plan, PlanItem, Preview};
 pub use ports::{

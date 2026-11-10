@@ -170,8 +170,13 @@ pub fn bindings_builder() -> Builder<tauri::Wry> {
             crate::commands::apply_tweak,
             crate::commands::revert_tweak,
             crate::commands::list_activity,
+            crate::metrics::latest_metrics,
         ])
-        .events(collect_events![AppReady, crate::TrayBoostRequested])
+        .events(collect_events![
+            AppReady,
+            crate::TrayBoostRequested,
+            crate::MetricsUpdated
+        ])
         .typ::<IpcError>()
 }
 
