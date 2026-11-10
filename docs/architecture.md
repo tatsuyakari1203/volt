@@ -170,8 +170,24 @@ What `volt-core` contains today:
 - **Startup apps:** the `startup` module lists what starts with Windows and switches entries on
   and off through the executor, with the same records Task Manager uses. It needs one addition to
   the registry port (`list_values`, a default method that answers `Unsupported`, so an adapter
-  without it still compiles) and one small port of its own, `FilePublisher`. See Startup apps
-  below.
+  without it still compiles) and one small port of its own, `FilePublisher`. `StartupManager` has
+  `list_entries` (entries and source problems only) and `list` (adds logon scheduled tasks). The
+  Home health check uses `list_entries`, so it does not enumerate Task Scheduler; the Startup page
+  uses `list`. See Startup apps below.
+- **Installed apps** (`volt_core::apps`): lists installed apps (the registry port, three Uninstall
+  places) and the current user's packaged apps (the `PackagedApps` port), and removes one through
+  an `Uninstaller` or the package manager. It is not an Operation: nothing goes through the undo
+  journal, and the activity record says Volt cannot undo it. `HiddenReason` (system component,
+  update, framework, not removable, no uninstall command) is decided in the core. Volt itself is
+  never listed, by the name or because the uninstaller's folder or `InstallLocation` is Volt's own
+  folder or inside it. The `QuietUninstallString` is never used. `UninstallCommand::parse` reuses
+  the startup command-line splitter and refuses an empty or malformed line, a network path, a
+  relative path and any program that is not an `.exe` (a script or `.msi`). The adapter expands
+  `%VAR%` in the program, looks a bare name up in System32 only, and starts it through
+  `ShellExecuteExW` (Windows shows any UAC prompt) with the arguments as registered, waits for the
+  exit and returns the exit code. The result is checked by reading the list again.
+  `WinPackagedApps` (volt-win) uses `PackageManager.FindPackagesByUserSecurityId("")` (current user,
+  works unelevated) and `RemovePackageAsync` (current user only).
 - **Risk and evidence labels:** `Safe`, `Caution`, `Advanced`; `Measured` or `Anecdotal`. The UI
   shows both.
 - **`fakes` cargo feature:** in-memory fakes of every port (`FakeSystem` wires them together
@@ -256,7 +272,8 @@ What `volt-core` contains today:
     administrator rights) and `min_age_setting` (the settings key that may override the minimum
     age, see below). The real rule set is `catalogue/cleaning.toml` (see Shipped cleaning rules).
   - **Roots are never paths.** A root is one of a closed set of named `Location`s (`user_temp`,
-    `local_app_data`, `roaming_app_data`, `program_data`, `windows`, `user_profile`) plus a relative
+    `local_app_data`, `local_low`, `roaming_app_data`, `program_data`, `windows`, `user_profile`, and
+    the user-added chosen folder) plus a relative
     path. `user_profile` is the shell Profile folder; the profile is protected, so a root there must
     lie below it (for example `.cargo`). The
     `KnownFolders` port resolves a location, so the core never reads the environment. Refused at
@@ -275,8 +292,24 @@ What `volt-core` contains today:
     `CleanPlan::confirm` (or `confirm_rules`); only the resulting `ConfirmedPlan` can be passed
     to `clean`. Plans cannot be built or deserialised outside the crate.
     A rule's scan stops at `MAX_ITEMS_PER_RULE` (25,000 items) and says so (`RuleScan::truncated`).
-    `CleanEngine::scan_observed` takes a `ScanObserver` that is told the progress and can cancel,
-    both between rules.
+    `CleanEngine::scan_observed` takes a `ScanObserver` that is told the progress and can cancel.
+    Cancel is checked per entry inside a rule and between rules. A cancelled scan is a partial
+    plan (`CleanPlan::cancelled`) with the cut rule marked truncated; there is no
+    `ScanError::Cancelled`. The shell keeps a partial plan as the current plan, so it can be
+    cleaned after confirmation; if no rule was reached, the earlier plan stands.
+  - **Items by entry, picked items, relocated caches.** A rule can set `unit = "entries"`: each
+    entry directly inside the root is one item, and a folder goes to the Recycle Bin whole in one
+    move. Its size, file count and newest file time are read again before the move (a changed
+    folder is skipped), and links inside are not followed and travel with the folder. `pick = true`
+    (needs entries) makes the user pick items one by one: `confirm()` and `confirm_rules()` leave
+    such rules out and only `confirm_selection` takes picked items, so nothing is taken by
+    default. `follow` lists documented environment variables (each with a `source`) that move the
+    root; the `KnownFolders` port gained `env_folder()`. Implausible values (a drive root, a
+    protected folder or above it, inside a system folder) are ignored. `Location::ChosenFolder` is
+    a folder the user adds, stored in the settings store under `clean.chosen_folders` and judged
+    by the same checks as a followed folder; `output` and `outputs` are never offered or taken for
+    these rules, in scan and in clean. `Location::LocalLow` resolves `FOLDERID_LocalAppDataLow`
+    (also in the protected list). The category `AiModelCache` holds the model caches.
   - **Clean re-checks everything.** It takes the plan, never a rule, and touches only the paths
     in it. Before each item it re-resolves the root and requires it to be the planned folder, then
     checks that the path is inside the root, that the rule still allows it (include, exclude,
@@ -325,10 +358,13 @@ What `volt-core` contains today:
     folder, no minimum age; Explorer keeps some open, and those are reported as in use). Machine
     wide, `requires_admin`: `windows-temp` (7 days, configurable, never `CBS`), `machine-wer-archive`
     and `machine-wer-queue`, `windows-update-logs` (`*.etl`) and `delivery-optimization-cache`
-    (risk Caution: the service owns it). Four browser rules in the `browser_cache` category,
-    `chrome-cache`, `edge-cache`, `brave-cache` and `firefox-cache`, are Safe and run per profile:
+    (risk Caution: the service owns it). Browser rules in the `browser_cache` category
+    (Chrome, Edge, Brave, Vivaldi and Firefox) are Safe and run per profile:
     the profile wildcard is an include pattern one level below the root (`*/Cache/**`), and
-    excludes keep the walk out of user data folders. The UI leaves them unticked by default, as it
+    excludes keep the walk out of user data folders. The Chromium rules include the per-profile Dawn
+    caches and the GPU caches beside the profiles; Service Worker storage and the crx caches are
+    left out on purpose. Opera has no rule: its layout could not be verified read-only, and its
+    profile (Roaming) is separate from its cache (Local). The UI leaves them unticked by default, as it
     does every category listed in `UNTICKED_CATEGORIES` (`messages.ts`). Every description says what the files are, why removing
     them is safe and what the user notices. **Deliberately not rules:** the Windows Update
     download cache (clearing it needs the update service stopped and started again, which needs
@@ -336,8 +372,7 @@ What `volt-core` contains today:
     above). A location is left out when there is doubt.
   - **Shader caches** (`shader_cache`, Safe, 1 day minimum, unticked): `directx-shader-cache`,
     `nvidia-shader-cache` (`DXCache`, `GLCache`), `nvidia-compute-cache` (the roaming
-    `ComputeCache`) and `amd-shader-cache` (`DxCache`, `DxcCache`, `GLCache`). Left out: NVIDIA's
-    per-driver `DXCache` under `LocalLow` (there is no `LocalLow` location) and AMD's `VkCache`.
+    `ComputeCache`) and `amd-shader-cache` (`DxCache`, `DxcCache`, `GLCache`). AMD's `VkCache` is left out.
   - **Chat app caches** (`chat_app_cache`, Safe, 1 day minimum, unticked): `discord-cache`,
     `telegram-cache`, `teams-cache`, `teams-classic-cache` and `zalo-cache`. They name the cache
     folders in `include` and keep user data out with `exclude` as a second guard; `locked_by` names
@@ -345,13 +380,13 @@ What `volt-core` contains today:
   - **Developer caches** (`developer_cache`, unticked): nine rules (npm, pnpm store and metadata,
     pip, cargo, NuGet HTTP cache and packages, Gradle, Yarn). `pnpm-store`, `cargo-cache`,
     `nuget-packages` and `gradle-caches` are Caution because rebuilding them is slow or needs the
-    network; the others are Safe. Only default locations are covered: `CARGO_HOME`, the npm config
-    cache, `PIP_CACHE_DIR`, a pnpm `store-dir` or `.pnpm-store` on another drive, `NUGET_PACKAGES`,
-    `GRADLE_USER_HOME` and `YARN_CACHE_FOLDER` are not followed, and the descriptions say so. Tool
+    network; the others are Safe. The rules follow `CARGO_HOME`, `PIP_CACHE_DIR`, `npm_config_cache`, `PNPM_HOME`,
+    `NUGET_HTTP_CACHE_PATH`, `NUGET_PACKAGES`, `GRADLE_USER_HOME` and `YARN_CACHE_FOLDER`, each
+    verified against the tool's documentation; a location set only in a tool's configuration file
+    is not followed, and the descriptions say so. Tool
     clean commands (`npm cache clean`, `docker system prune`) are not used because they cannot be
-    previewed or sent to the Recycle Bin; Docker is left out for that reason. Model and AI output
-    caches (Hugging Face, torch hub, Ollama, ComfyUI) are not covered: they need per-item
-    selection and user-chosen folders.
+    previewed or sent to the Recycle Bin; Docker is left out for that reason. Model caches
+    use picked items and user-added folders (see above).
   - **Every rule has a fixture.** `apps/desktop/src-tauri/tests/cleaning_rules.rs` builds, for
     each rule of the embedded file, a tree with the core fakes holding entries the rule must take
     and entries it must not (too new, at the age limit, excluded, matching no include, too deep,
@@ -540,7 +575,7 @@ file-publisher ports with the Windows API: `WinRegistry`, `WinServices`, `WinFil
 Volt itself never runs elevated. Administrator work goes to a second, small program, `volt-helper`
 (crate `crates/volt-helper`, a composition root over `volt-core` and `volt-win` with its own rule in
 `check-arch.mjs`) that the UI will start through one UAC prompt and that serves ONE connection from
-that UI over a private named pipe. Built so far, and tested without elevation:
+that UI over a private named pipe. Tested without elevation:
 
 - **Protocol** (`volt-core::elevation`, the `Elevator` port): JSON, one message per pipe message,
   1 KiB request cap, a closed request set (`hello`, `memory_purge`, `bye`), unknown fields refused,
@@ -566,9 +601,31 @@ that UI over a private named pipe. Built so far, and tested without elevation:
   the debug-only test modes, so they cannot coexist. The build script refuses a release build
   without `crt-static`.
 
-Not built yet: the UAC launch with the process handle, the UI wiring, the installer change, the
-confirmation desktop and the helper's own store. Nothing starts the helper yet. Everything below
-works unelevated and does not depend on the helper, except where it says so.
+Not built yet: the installer change, the confirmation desktop and the helper's own store. The
+rest of this page works unelevated and does not depend on the helper, except where it says so.
+
+### The UI half of the helper
+
+`volt-win::helper::launch` and `helper::elevator` start the helper and talk to it.
+
+- **One connection.** `WinElevator` holds at most one authenticated helper connection per UI
+  session. It starts the helper only on a user request, through `ShellExecuteEx` with `runas` on
+  the sibling `volt-helper.exe`, whose path comes from this process's own image path. The
+  arguments are a random pipe name plus this process's id and creation time.
+- **Availability** (`launch::status_for`) is read-only and a pure function over probes: the UI
+  executable and the helper pass `verify_install` (Program Files\Volt, ACLs, reparse points), the
+  helper exists, and the token is an administrator (consent prompt or none), not a standard user.
+  Each failure is a distinct `UnavailableReason`. Per-user, portable and development copies stay
+  locked with a reason until the installer change.
+- **Trust.** Before the first request `server_is(process handle)` and a trusted pipe owner
+  (Administrators or SYSTEM) are required (`Untrusted` otherwise). The hello reply must match the
+  protocol and both catalogue hashes (`Mismatch` otherwise).
+- **Lifetime.** A connection is reused while the process has not exited and the pipe is open. A
+  request that breaks half-way is `Disconnected` and never retried; the next request relaunches
+  (a new prompt). `bye` goes out on app exit.
+- **Shell.** The commands `elevation_status` and `clean_memory_elevated`. The real elevator is
+  attached only in `build_real_core`. An elevated purge writes one activity record in the UI
+  store. Boost and the tray never call the Elevator (a behaviour test and a source guard).
 
 What already depends on it: the machine-wide cleaning rules (`windows-temp`, `machine-wer-*`,
 `windows-update-logs`, `delivery-optimization-cache`) are flagged `requires_admin`. Unelevated they
@@ -836,6 +893,8 @@ the WebView2 processes. The diagnostic log was read to confirm the sampler start
 - `features/clean` is the Clean page: scan, a per-rule review, confirm, and the Recycle Bin card.
   Safe rules are ticked by default; browser, shader, chat app and developer caches are not. Rules that need administrator rights
   are shown but cannot be cleaned, and a note names running browsers whose open files are skipped.
+  The confirm dialog shows a note when a ticked browser rule has a `locked_note` (that browser is
+  running).
   Screenshot: `docs/design/clean-light-460x700.png`. The page has two views, Junk and Large
   files, both kept mounted so a result survives switching. The Large files view lists the biggest
   files under a chosen folder and moves ticked ones to the Recycle Bin; screenshot:
@@ -915,9 +974,15 @@ the WebView2 processes. The diagnostic log was read to confirm the sampler start
     core's redacted reasons, not from port messages).
   - **Cleaning commands** (`src-tauri/src/cleaner.rs`). The plan lives in `CleanSession` inside
     `AppCore` under an id and never crosses to the UI, which sees counts, sizes and rule-relative
-    samples. A scan can be cancelled (`cancelCleaningScan`). Rules with `requires_admin` are
+    samples. A scan can be cancelled (`cancelCleaningScan`). `scanCleaningRules` scans only the named
+    rules; the page uses it for "Scan the rest" after a clean of truncated rules. The commands also
+    choose and forget a folder, and `cleanSelectedRules` takes picked items. Rules with `requires_admin` are
     scanned but refused at clean (the elevation model is undecided). The Recycle Bin status and
     empty commands sit beside them.
+  - **Apps commands** (`src-tauri/src/apps.rs`). `list_apps` and `uninstall_app`; the UI sends only
+    an id. The `AppManager` is attached only in `build_real_core` (like the Recycle Bin), never by
+    `build_core`. The queue is driven by the UI (one `uninstall_app` call per app); the core allows
+    one removal at a time (`Busy`).
   - **Large files commands** (`src-tauri/src/large_files.rs`). The shell keeps the scan in
     `LargeFilesSession` and sends the UI the full paths (the user asked to see them), but takes
     back only the scan id and row numbers. A trash removes the moved rows from the stored scan and
@@ -952,6 +1017,12 @@ the WebView2 processes. The diagnostic log was read to confirm the sampler start
   - **Errors from the engine.** `TweakError` maps into `IpcError` keeping the kind of the port
     failure underneath (access denied stays access denied); an unknown tweak is `notFound`, and a
     store that cannot be opened is `other`.
+
+### Apps page
+
+`features/apps` is the Apps page (navigation id `apps`, the seventh main section). It lists
+installed and packaged apps and uninstalls ticked ones in a queue, one at a time. Screenshot:
+`docs/design/apps-light-460x700.png`.
 
 ### Design system
 
@@ -993,6 +1064,9 @@ doing and what to do about it.
   the UI does not know yet is listed without a button, never with one that does nothing. The
   screen says that the score is 100 minus the listed points. Checks that could not run are named
   in a notice and are not part of the score.
+- **GPU list.** One reading per physical card: DXGI adapters are merged by PCI location (the
+  D3DKMT adapter address), the listing with statistics wins, and an unknown location means no
+  merge.
 - **The four live cards** (CPU, memory, GPU, disk) follow `onMetricsUpdated`; the listener is
   registered first and `getLatestMetrics` is called after it, and the older reading never
   overwrites a newer one from an event. Values the shell reports as `null` are honest empty cards:
@@ -1092,13 +1166,22 @@ The UI is available in English and Vietnamese.
   category ids). The translator is `shared/i18n/translate.ts` (`t`, `tn`, `tx`, `tNodes`) and has
   no dependency.
 - **Core text stays English.** `volt-core` and the catalogue TOML hold English only; never put
-  Vietnamese there. The UI looks Vietnamese up by id and falls back to the core's English. Health
+  Vietnamese there. The UI looks Vietnamese up by id and falls back to the core's English.
+- **Phrases.** A sentence built with data is a `Phrase` (a code and parameters) and the English
+  text stays in the core as the fallback. The English templates are the `ENGLISH` table in
+  `volt-core` `phrase.rs`; Vietnamese is `locales/vi.phrases.json`. `check-i18n` reads the Rust
+  table and fails on a missing code or different placeholders. The activity table (schema version
+  4) has a nullable `phrase` column (JSON); older records have none and show their stored English
+  summary. Health
   reasons are translated by deduction id, with the figures read back out of the English sentence.
 - **The setting.** The language is System, `en` or `vi`, stored under the settings key
-  `ui.language` as `{choice, system}`. The window reports what System means on this PC at every
-  start, so the tray can use it with no window open (`language.rs` in the shell). The window
-  applies a change at once. The tray menu follows at the next start; the tooltip and the Boost
-  notification follow at once.
+  `ui.language` as `{choice, system}`. What System means is the display language
+  from `volt-win` `display_languages()` (`GetUserPreferredUILanguages`, `MUI_LANGUAGE_NAME`); the
+  shell reads it on every `language_setting` and `set_language` and the tray reads it too
+  (`language.rs`), so the window never reads `navigator.languages`. `localStorage` keeps
+  `volt.language.system` only for the first paint. The window applies a change at once. The tray
+  items are kept in managed state (`TrayItems`) and `set_language` rewrites their text at once, as
+  it does the tooltip and the Boost notification.
 - **Quality gate.** The `i18n` step of `pnpm check`, also run by name in CI
   (`scripts/check-i18n.mjs`, with a test), fails on a key present in only one locale, on
   placeholder mismatches, and on a tweak, rule or category without Vietnamese text.
