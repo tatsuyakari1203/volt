@@ -40,6 +40,19 @@ from the main checkout.
    `Refs: TASK-NNN` footer. Commit only when the owner asks. Merge to `main` through a PR with a
    squash merge; the PR title is a Conventional Commit.
 
+## Keeping the loop fast
+
+- A task delivers something a user can do, across the layers it needs (core, adapter, IPC, UI).
+  Do not split one feature into a task per layer.
+- While iterating, run targeted commands (`cargo test -p <crate> <filter>`,
+  `pnpm --filter @volt/desktop exec vitest run <file>`). Run the full `pnpm check` once, before
+  pushing; the pre-push hook runs it as well.
+- Agents that work in parallel reuse the worktree slots under `.claude/worktrees/slot-N` (ignored
+  by git), so the build cache stays warm. Any other worktree is removed once its pull request is
+  merged.
+- Parallel changes land on `main` one at a time, each as soon as it is reviewed. Never hand-merge
+  lock files or the generated IPC bindings: take the version on `main` and regenerate.
+
 ## Architecture rules
 
 ```

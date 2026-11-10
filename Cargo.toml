@@ -46,6 +46,14 @@ undocumented_unsafe_blocks = "deny"
 module_name_repetitions = "allow"
 missing_errors_doc = "allow"
 
+# Dev and test builds keep line numbers in backtraces for the workspace crates and carry no debug
+# info for dependencies: that keeps target/ small and linking fast.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
