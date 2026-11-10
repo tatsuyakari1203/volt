@@ -29,14 +29,14 @@ fn core_in(dir: &TempDir) -> AppCore {
 fn with_nothing_saved_the_language_follows_the_system_and_defaults_to_english() {
     let dir = TempDir::new().expect("temp dir");
     let core = core_in(&dir);
-    let setting = language_of(&core).expect("reads");
+    let setting = language_of(&core, Lang::English).expect("reads");
     assert_eq!(setting, LanguageSetting::default());
     assert_eq!(setting.choice, LanguageChoice::System);
     assert_eq!(setting.effective(), Lang::English);
 }
 
 #[test]
-fn a_saved_choice_and_the_system_language_survive_a_restart() {
+fn a_saved_choice_survives_a_restart_and_the_system_language_comes_from_the_caller() {
     let dir = TempDir::new().expect("temp dir");
     {
         let core = core_in(&dir);
@@ -44,16 +44,28 @@ fn a_saved_choice_and_the_system_language_survive_a_restart() {
             set_language_of(&core, LanguageChoice::System, Lang::Vietnamese).expect("saves");
         assert_eq!(stored.effective(), Lang::Vietnamese);
     }
-    // A new core on the same database: the tray reads this at the next start.
+    // A new core on the same database: the choice is stored, `System` is what Windows says now.
     let core = core_in(&dir);
-    let setting = language_of(&core).expect("reads");
+    let setting = language_of(&core, Lang::English).expect("reads");
     assert_eq!(setting.choice, LanguageChoice::System);
-    assert_eq!(setting.system, Lang::Vietnamese);
-    assert_eq!(setting.effective(), Lang::Vietnamese);
+    assert_eq!(
+        setting.system,
+        Lang::English,
+        "Windows changed since the save"
+    );
+    assert_eq!(setting.effective(), Lang::English);
+    assert_eq!(
+        language_of(&core, Lang::Vietnamese)
+            .expect("reads")
+            .effective(),
+        Lang::Vietnamese
+    );
 
     set_language_of(&core, LanguageChoice::English, Lang::Vietnamese).expect("saves");
     assert_eq!(
-        language_of(&core).expect("reads").effective(),
+        language_of(&core, Lang::Vietnamese)
+            .expect("reads")
+            .effective(),
         Lang::English
     );
 }
@@ -66,7 +78,7 @@ fn an_unreadable_stored_value_gives_the_default_instead_of_an_error() {
         .set(LANGUAGE_SETTINGS_KEY, &serde_json::json!("klingon"))
         .expect("stores");
     assert_eq!(
-        language_of(&core).expect("reads"),
+        language_of(&core, Lang::English).expect("reads"),
         LanguageSetting::default()
     );
 }

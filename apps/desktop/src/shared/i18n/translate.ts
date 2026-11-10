@@ -2,9 +2,10 @@
 // dependency. English is the source language and the fallback. Every other language lives in a
 // JSON file next to `en.json` and must carry the same keys (`scripts/check-i18n.mjs` enforces it).
 //
-// Text that comes from the Rust core (tweaks, cleaning rules, health reasons) stays English in the
-// core. Other languages key their text by the stable id in `vi.catalogue.json`, and `tx` looks it
-// up with the English from the core as the fallback.
+// Text that comes from the Rust core (tweaks, cleaning rules) stays English in the core. Other
+// languages key their text by the stable id in `vi.catalogue.json`, and `tx` looks it up with the
+// English from the core as the fallback. Sentences the core builds with data (health reasons,
+// activity summaries) arrive as a code and parameters; `say.ts` writes them.
 import en from './locales/en.json';
 import viCatalogue from './locales/vi.catalogue.json';
 import vi from './locales/vi.json';
@@ -35,6 +36,9 @@ const tables: Record<Locale, Table> = {
 
 /** localStorage key that remembers the choice so the first paint is already in the right language. */
 export const LANGUAGE_STORAGE_KEY = 'volt.language';
+
+/** localStorage key that remembers what `System` stood for, for the first paint of the next start. */
+export const SYSTEM_STORAGE_KEY = 'volt.language.system';
 
 let current: Locale = 'en';
 
@@ -101,11 +105,17 @@ export function tx(key: string, english: string): string {
   return current === 'en' ? english : (tables[current][key] ?? english);
 }
 
-/** Resolves the Settings choice against the languages the system lists, best first. */
-export function resolveLocale(choice: LanguageChoice, systemLanguages: readonly string[]): Locale {
-  if (choice !== 'system') return choice;
-  const first = systemLanguages[0]?.toLowerCase() ?? '';
-  return first === 'vi' || first.startsWith('vi-') ? 'vi' : 'en';
+/**
+ * Resolves the Settings choice: `System` is `system`, the display language of Windows as the
+ * shell reads it (never the browser language list).
+ */
+export function resolveLocale(choice: LanguageChoice, system: Locale): Locale {
+  return choice === 'system' ? system : choice;
+}
+
+/** Narrows an unknown value to a language. */
+export function parseLocale(value: unknown): Locale | null {
+  return value === 'en' || value === 'vi' ? value : null;
 }
 
 /** Narrows an unknown value to a language choice. */

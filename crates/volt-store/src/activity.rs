@@ -3,13 +3,13 @@
 use rusqlite::{Connection, Row, params};
 use volt_core::{
     ActivityId, ActivityLog, ActivityOutcome, ActivityRecord, BatchId, EntryId, NewActivity,
-    PortError, Retention, Source, Timestamp,
+    Phrase, PortError, Retention, Source, Timestamp,
 };
 
 use crate::journal::{decode_unit, encode_unit, to_i64, to_u64};
 use crate::store::{Store, db_error};
 
-const COLUMNS: &str = "id, timestamp_ms, source, outcome, summary, batch, entry, label";
+const COLUMNS: &str = "id, timestamp_ms, source, outcome, summary, batch, entry, label, phrase";
 
 /// Write count between two size checks of the log.
 const PRUNE_EVERY: i64 = 100;
@@ -44,6 +44,7 @@ struct RawRecord {
     batch: Option<i64>,
     entry: Option<i64>,
     label: Option<String>,
+    phrase: Option<String>,
 }
 
 impl RawRecord {
@@ -57,6 +58,7 @@ impl RawRecord {
             batch: row.get(5)?,
             entry: row.get(6)?,
             label: row.get(7)?,
+            phrase: row.get(8)?,
         })
     }
 
@@ -70,6 +72,10 @@ impl RawRecord {
             batch: self.batch.map(|b| to_u64(b).map(BatchId)).transpose()?,
             entry: self.entry.map(|e| to_u64(e).map(EntryId)).transpose()?,
             label: self.label,
+            // A phrase that cannot be read is no reason to lose the record: its summary stands.
+            phrase: self
+                .phrase
+                .and_then(|text| serde_json::from_str::<Phrase>(&text).ok()),
         })
     }
 }
@@ -80,11 +86,18 @@ impl ActivityLog for Store {
         let outcome = encode_unit(&activity.outcome)?;
         let batch = activity.batch.map(|b| to_i64(b.0)).transpose()?;
         let entry = activity.entry.map(|e| to_i64(e.0)).transpose()?;
+        let phrase = activity
+            .phrase
+            .as_ref()
+            .map(|phrase| {
+                serde_json::to_string(phrase).map_err(|error| PortError::Other(error.to_string()))
+            })
+            .transpose()?;
         let conn = self.conn();
         conn.execute(
             "INSERT INTO activity \
-             (timestamp_ms, source, outcome, summary, batch, entry, label) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+             (timestamp_ms, source, outcome, summary, batch, entry, label, phrase) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 activity.timestamp.as_unix_millis(),
                 source,
@@ -92,7 +105,8 @@ impl ActivityLog for Store {
                 activity.summary,
                 batch,
                 entry,
-                activity.label
+                activity.label,
+                phrase
             ],
         )
         .map_err(|e| db_error(&e))?;

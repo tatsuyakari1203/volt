@@ -90,8 +90,11 @@ function view(rule: CleaningRuleInfo, extra: Partial<RuleScanView> = {}): RuleSc
     bytes: 0,
     truncated: false,
     skipped: null,
+    skippedPhrase: null,
     lockedNote: null,
+    lockedPhrase: null,
     problem: null,
+    problemPhrase: null,
     samples: [],
     ...extra,
   };
@@ -119,7 +122,13 @@ const cleaned: CleanRunResult = {
   movedFolders: 3,
   movedBytes: 3 * 1024 * 1024 + 2048,
   skippedTotal: 2,
-  skipped: [{ reason: 'locked, in use or access denied', count: 2 }],
+  skipped: [
+    {
+      reason: 'locked, in use or access denied',
+      reasonPhrase: { code: 'skip.locked', args: {} },
+      count: 2,
+    },
+  ],
   rules: [
     {
       id: 'user-temp',

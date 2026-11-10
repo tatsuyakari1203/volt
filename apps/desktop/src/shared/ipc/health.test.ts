@@ -19,6 +19,7 @@ const view: HealthView = {
       points: 10,
       title: 'A restart is waiting',
       reason: 'Windows has updates or installs that finish only after a restart.',
+      reasonPhrase: { code: 'health.restart', args: {} },
       fix: 'restartWindows',
     },
   ],

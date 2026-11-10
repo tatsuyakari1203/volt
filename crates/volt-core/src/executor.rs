@@ -17,11 +17,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 
 use crate::activity::{
-    self, ActivityLog, ActivityOutcome, NewActivity, applied_summary, exec_reason, failure_summary,
-    restored_summary, revert_reason,
+    self, ActivityLog, ActivityOutcome, NewActivity, RestoreVerb, applied_summary, exec_phrase,
+    failure_summary, restored_summary, revert_phrase,
 };
 use crate::error::{ExecError, PortError, RevertError};
 use crate::journal::{BatchId, EntryId, EntryState, Journal, NewEntry, Source};
+use crate::phrase::Phrase;
 use crate::plan::{Plan, PlanItem};
 use crate::ports::Ports;
 use crate::time::Clock;
@@ -264,7 +265,7 @@ impl Executor {
                 self.note(
                     ActivityOutcome::Failed,
                     source,
-                    format!("Failed to apply a plan: {}", exec_reason(&error)),
+                    Phrase::new("summary.planFailed").phrase("reason", exec_phrase(&error)),
                     (None, None, label),
                 );
                 return Err(error);
@@ -377,6 +378,7 @@ impl Executor {
         let mut outcomes = Vec::with_capacity(pending.len());
         for entry in pending {
             let subject = activity::subject(&entry.operation);
+            let subject_phrase = activity::subject_phrase(&entry.operation);
             let links = (Some(entry.batch), Some(entry.id), None);
             let resolution = match entry.operation.detect(&self.ports) {
                 Err(error) => {
@@ -397,7 +399,7 @@ impl Executor {
                     self.note(
                         ActivityOutcome::Failed,
                         entry.source,
-                        format!("Interrupted apply of {subject}: the change never happened"),
+                        Phrase::new("summary.interruptedNever").phrase("subject", subject_phrase),
                         links,
                     );
                     Resolution::NeverApplied
@@ -408,10 +410,8 @@ impl Executor {
                     self.note(
                         ActivityOutcome::Applied,
                         entry.source,
-                        format!(
-                            "Confirmed after an interruption: {}",
-                            applied_summary(&entry.operation)
-                        ),
+                        Phrase::new("summary.confirmed")
+                            .phrase("applied", applied_summary(&entry.operation)),
                         links,
                     );
                     Resolution::ConfirmedApplied
@@ -425,7 +425,7 @@ impl Executor {
                     self.note(
                         ActivityOutcome::Failed,
                         entry.source,
-                        format!("Interrupted apply of {subject}: the resulting state is unknown"),
+                        Phrase::new("summary.interruptedUnknown").phrase("subject", subject_phrase),
                         links,
                     );
                     Resolution::StateUnknown
@@ -447,10 +447,11 @@ impl Executor {
         &self,
         outcome: ActivityOutcome,
         source: Source,
-        summary: String,
+        phrase: Phrase,
         links: (Option<BatchId>, Option<EntryId>, Option<&str>),
     ) {
         let (batch, entry, label) = links;
+        let summary = phrase.english();
         if outcome == ActivityOutcome::Failed {
             log::warn!("{outcome}: {summary}");
         } else {
@@ -467,6 +468,7 @@ impl Executor {
             batch,
             entry,
             label: label.map(str::to_owned),
+            phrase: Some(phrase),
         };
         if let Err(error) = activity.record(record) {
             self.activity_failures.fetch_add(1, Ordering::Relaxed);
@@ -502,7 +504,11 @@ impl Executor {
             self.note(
                 ActivityOutcome::Failed,
                 source,
-                failure_summary("apply", &item.operation, &exec_reason(&error)),
+                failure_summary(
+                    Phrase::new("verb.apply"),
+                    &item.operation,
+                    exec_phrase(&error),
+                ),
                 (Some(batch), entry, label),
             );
             ItemStatus::Failed { entry, error }
@@ -581,15 +587,14 @@ impl Executor {
             None => self.batch_label(entry.batch),
         };
         let label = label.or(found_label.as_deref());
-        let (source, outcome, done, failed_verb) = match kind {
+        let (source, outcome, verb) = match kind {
             RevertKind::Requested(source) => {
-                (source, ActivityOutcome::Reverted, "Reverted", "revert")
+                (source, ActivityOutcome::Reverted, RestoreVerb::Reverted)
             }
             RevertKind::Rollback => (
                 entry.source,
                 ActivityOutcome::RolledBack,
-                "Rolled back",
-                "roll back",
+                RestoreVerb::RolledBack,
             ),
         };
         let links = (Some(entry.batch), Some(id), label);
@@ -600,7 +605,7 @@ impl Executor {
             self.note(
                 ActivityOutcome::Failed,
                 source,
-                failure_summary(failed_verb, &entry.operation, &revert_reason(&error)),
+                failure_summary(verb.attempt(), &entry.operation, revert_phrase(&error)),
                 links,
             );
             return Err(error);
@@ -609,7 +614,7 @@ impl Executor {
         self.note(
             outcome,
             source,
-            restored_summary(done, &entry.operation, &entry.prior, marked.is_err()),
+            restored_summary(verb, &entry.operation, &entry.prior, marked.is_err()),
             links,
         );
         marked.map_err(RevertError::MarkReverted)

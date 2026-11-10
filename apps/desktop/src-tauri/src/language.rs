@@ -5,9 +5,10 @@
 //! can exist with no window open, so it reads the setting itself. English is the source and the
 //! fallback; Vietnamese for those few strings lives in [`crate::tray`] and [`crate::boost`].
 //!
-//! `System` means "the language of Windows". Only the window can tell (the `WebView` knows the
-//! display language), so it reports what `System` resolves to every time it starts and the shell
-//! keeps that value for the times it runs without a window.
+//! `System` means "the display language of Windows". The shell reads it from Windows
+//! ([`volt_win::display_languages`]) every time it needs it and hands it to the window with the
+//! setting, so the window never guesses it from the browser language list and the tray, which
+//! can run with no window, always agrees with the window.
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -53,11 +54,41 @@ pub enum LanguageChoice {
 pub struct LanguageSetting {
     /// What the user chose.
     pub choice: LanguageChoice,
-    /// What `System` resolved to the last time a window ran.
+    /// What `System` stands for: the display language of Windows, filled in when the setting is
+    /// read (what was stored is not trusted: the user can change Windows between two runs).
     pub system: Lang,
 }
 
+impl Lang {
+    /// The language of a BCP 47 name such as `vi-VN`: Vietnamese for `vi` and its regions,
+    /// English for everything else (English is the fallback).
+    #[must_use]
+    pub fn from_tag(tag: &str) -> Self {
+        let tag = tag.to_ascii_lowercase();
+        if tag == "vi" || tag.starts_with("vi-") {
+            Self::Vietnamese
+        } else {
+            Self::English
+        }
+    }
+}
+
+/// The display language of Windows: its first preferred display language, English when Windows
+/// does not say. Read-only.
+#[must_use]
+pub fn system_language() -> Lang {
+    volt_win::display_languages()
+        .first()
+        .map_or(Lang::English, |tag| Lang::from_tag(tag))
+}
+
 impl LanguageSetting {
+    /// The same setting with `system` as the language `System` stands for.
+    #[must_use]
+    pub const fn with_system(self, system: Lang) -> Self {
+        Self { system, ..self }
+    }
+
     /// The language to write in: the choice, or the system language for `System`.
     #[must_use]
     pub const fn effective(self) -> Lang {
@@ -82,17 +113,22 @@ impl LanguageSetting {
 /// The language the shell writes its own few strings in right now.
 #[must_use]
 pub(crate) fn current(state: &AppState) -> Lang {
-    state.core().map_or(Lang::English, |core| {
-        LanguageSetting::load(core.settings.as_ref()).effective()
-    })
+    state.core().map_or_else(
+        |_| system_language(),
+        |core| {
+            LanguageSetting::load(core.settings.as_ref())
+                .with_system(system_language())
+                .effective()
+        },
+    )
 }
 
-/// The saved language setting.
-pub fn language_of(core: &AppCore) -> Result<LanguageSetting, IpcError> {
-    Ok(LanguageSetting::load(core.settings.as_ref()))
+/// The saved language setting, with `system` as the language `System` stands for.
+pub fn language_of(core: &AppCore, system: Lang) -> Result<LanguageSetting, IpcError> {
+    Ok(LanguageSetting::load(core.settings.as_ref()).with_system(system))
 }
 
-/// Saves what the user chose and what `System` resolves to, and returns what is stored.
+/// Saves what the user chose, with `system` as what `System` stands for, and returns it.
 pub fn set_language_of(
     core: &AppCore,
     choice: LanguageChoice,
@@ -103,29 +139,57 @@ pub fn set_language_of(
     Ok(setting)
 }
 
-/// Tauri command: the saved language setting.
+/// Tauri command: the saved language setting and the display language of Windows.
 #[tauri::command]
 #[specta::specta]
 pub(crate) async fn language_setting(
     state: tauri::State<'_, AppState>,
 ) -> Result<LanguageSetting, IpcError> {
-    blocking(&state, language_of).await
+    blocking(&state, |core| language_of(core, system_language())).await
 }
 
-/// Tauri command: saves the language choice and what `System` resolves to on this PC.
+/// Tauri command: saves the language choice and updates the tray menu at once, so the menu does
+/// not wait for the next start.
 #[tauri::command]
 #[specta::specta]
 pub(crate) async fn set_language(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     choice: LanguageChoice,
-    system: Lang,
 ) -> Result<LanguageSetting, IpcError> {
-    blocking(&state, move |core| set_language_of(core, choice, system)).await
+    let setting = blocking(&state, move |core| {
+        set_language_of(core, choice, system_language())
+    })
+    .await?;
+    crate::tray::apply_language(&app, setting.effective());
+    Ok(setting)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_display_language_name_maps_to_vietnamese_or_the_english_fallback() {
+        for tag in ["vi", "vi-VN", "VI-vn"] {
+            assert_eq!(Lang::from_tag(tag), Lang::Vietnamese, "{tag}");
+        }
+        for tag in ["en-US", "fr-FR", "vil", "", "viet"] {
+            assert_eq!(Lang::from_tag(tag), Lang::English, "{tag}");
+        }
+    }
+
+    #[test]
+    fn a_stored_system_language_is_replaced_by_the_one_windows_reports() {
+        let stored = LanguageSetting {
+            choice: LanguageChoice::System,
+            system: Lang::English,
+        };
+        assert_eq!(
+            stored.with_system(Lang::Vietnamese).effective(),
+            Lang::Vietnamese
+        );
+    }
 
     #[test]
     fn the_effective_language_follows_the_choice_and_falls_back_to_the_system_one() {

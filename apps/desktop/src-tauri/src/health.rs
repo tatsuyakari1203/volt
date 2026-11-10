@@ -26,6 +26,7 @@ use volt_core::{
 use volt_win::{WinMetrics, WinRegistry};
 
 use crate::IpcError;
+use crate::phrase::PhraseView;
 use crate::wiring::AppState;
 
 /// The mount of the system disk when `SystemDrive` is not set: Windows is on `C:` unless the
@@ -122,8 +123,13 @@ pub struct DeductionView {
     pub points: u8,
     /// A short name for the problem.
     pub title: String,
-    /// What was found and why it matters, in plain words.
+    /// What was found and why it matters, in plain words, in English: the fallback of
+    /// `reason_phrase`.
     pub reason: String,
+    /// The reason as a code (`health.disk`, `health.memory`, `health.restart`,
+    /// `health.startup`) and the figures it is built from, for the UI to write in its own
+    /// language.
+    pub reason_phrase: PhraseView,
     /// What to do about it. `null` only for a fix the UI does not know yet.
     pub fix: Option<FixActionView>,
 }
@@ -135,6 +141,7 @@ impl From<&Deduction> for DeductionView {
             points: deduction.points,
             title: deduction.title.to_owned(),
             reason: deduction.reason.clone(),
+            reason_phrase: PhraseView::from(&deduction.reason_phrase),
             fix: FixActionView::from_core(deduction.fix),
         }
     }

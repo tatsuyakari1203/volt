@@ -1,4 +1,4 @@
-import { getLocale, t, tn, tx } from '../../shared/i18n';
+import { getLocale, say, t, tn, tx } from '../../shared/i18n';
 import type { CleaningRuleInfo, CleanRunResult, RuleScanView } from '../../shared/ipc';
 import { formatSize } from '../../shared/text/size';
 
@@ -40,7 +40,7 @@ export function tickedByDefault(rule: CleaningRuleInfo): boolean {
 
 /** What a scan found for one rule, in one line. */
 export function findingsLine(view: RuleScanView): string {
-  if (view.problem) return view.problem;
+  if (view.problem) return say(view.problemPhrase, view.problem);
   const parts: string[] = [];
   if (view.files > 0) {
     parts.push(

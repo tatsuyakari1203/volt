@@ -3,7 +3,10 @@
 //
 // The UI strings live in apps/desktop/src/shared/i18n/locales: `en.json` (the source) and one file
 // per other language (`vi.json`). Text that the Rust core writes in English (tweaks and cleaning
-// rules, from catalogue/*.toml) is translated by its stable id in `vi.catalogue.json`. This fails on:
+// rules, from catalogue/*.toml) is translated by its stable id in `vi.catalogue.json`. Sentences the
+// core builds with data (health reasons, activity summaries, scan notes) are phrases: a code and
+// parameters, written in English by the table `ENGLISH` in crates/volt-core/src/phrase.rs and in
+// Vietnamese by `vi.phrases.json`. This fails on:
 //
 //   - a key that exists in one language and not in the other, in either direction (a plural key
 //     such as `files.one`/`files.other` counts once; a language without the `one` form is fine
@@ -11,6 +14,8 @@
 //   - a `{placeholder}` that one language has and the other does not,
 //   - a tweak id or a cleaning rule id (or a cleaning category) without Vietnamese text, and text
 //     filed under an id that no longer exists,
+//   - a phrase code of the core without Vietnamese text (or the other way round), or with other
+//     {placeholders} than the English text,
 //   - an empty text.
 //
 // Adding a string therefore means adding its key to every locale file, and nothing else.
@@ -107,6 +112,23 @@ export function checkCatalogue(catalogue, tweakToml, ruleToml) {
   return problems;
 }
 
+/**
+ * The English phrase table of the core: the `("code", "text")` lines of `ENGLISH` in
+ * crates/volt-core/src/phrase.rs, as an object. Read without a Rust parser, so keep one entry per
+ * pair and no `{` inside a text other than placeholders.
+ */
+export function englishPhrases(rust) {
+  const start = rust.indexOf('pub const ENGLISH');
+  if (start < 0) return {};
+  const end = rust.indexOf('\n];', start);
+  const body = rust.slice(start, end < 0 ? rust.length : end);
+  const table = {};
+  for (const match of body.matchAll(/\(\s*"([^"]+)",\s*"((?:[^"\\]|\\.)*)"\s*,?\s*\)/g)) {
+    table[match[1]] = JSON.parse(`"${match[2]}"`);
+  }
+  return table;
+}
+
 function readJson(path) {
   return JSON.parse(readFileSync(path, 'utf8'));
 }
@@ -117,8 +139,15 @@ function main() {
   const en = readJson(join(dir, 'en.json'));
   const vi = readJson(join(dir, 'vi.json'));
   const catalogue = readJson(join(dir, 'vi.catalogue.json'));
+  const phrases = englishPhrases(
+    readFileSync(join(root, 'crates/volt-core/src/phrase.rs'), 'utf8'),
+  );
+  const viPhrases = readJson(join(dir, 'vi.phrases.json'));
   const problems = [
     ...checkLocales('vi.json', en, vi),
+    ...(Object.keys(phrases).length === 0
+      ? ['phrase.rs: no English phrase table was found']
+      : checkLocales('vi.phrases.json', phrases, viPhrases)),
     ...checkCatalogue(
       catalogue,
       readFileSync(join(root, 'catalogue/tweaks.toml'), 'utf8'),
@@ -132,7 +161,8 @@ function main() {
   }
   console.log(
     `i18n check passed: ${Object.keys(en).length} English and ${Object.keys(vi).length} Vietnamese texts agree, ` +
-      `${Object.keys(catalogue).length} catalogue texts cover every tweak, rule and category.`,
+      `${Object.keys(catalogue).length} catalogue texts cover every tweak, rule and category, ` +
+      `${Object.keys(phrases).length} core phrases have Vietnamese text.`,
   );
 }
 

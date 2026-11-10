@@ -61,6 +61,12 @@ CREATE TABLE activity (
 );
 ";
 
+/// The activity summary as a code and parameters (JSON of a `Phrase`), so the UI can write it in
+/// the user's language. Older records have none and keep their English `summary`.
+const V4: &str = "
+ALTER TABLE activity ADD COLUMN phrase TEXT;
+";
+
 /// Every migration this build knows, in order, with consecutive versions.
 pub(crate) const MIGRATIONS: &[Migration] = &[
     Migration {
@@ -74,6 +80,10 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 3,
         sql: V3,
+    },
+    Migration {
+        version: 4,
+        sql: V4,
     },
 ];
 

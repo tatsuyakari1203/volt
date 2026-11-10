@@ -335,11 +335,7 @@ pub fn trash_with(
         .retain(|file| !moved.contains(&file.path.as_path()));
     let mut skipped: Vec<SkipGroup> = Vec::new();
     for (_, reason) in &report.skipped {
-        let reason = reason.to_string();
-        match skipped.iter_mut().find(|group| group.reason == reason) {
-            Some(group) => group.count += 1,
-            None => skipped.push(SkipGroup { reason, count: 1 }),
-        }
+        crate::cleaner::add_skip(&mut skipped, reason);
     }
     Ok(LargeFilesTrashResult {
         moved_files: count32(report.moved.len()),

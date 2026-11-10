@@ -8,6 +8,7 @@ use crate::ports::MemoryStatus;
 use crate::registry::{RegistryHive, RegistryValue, RegistryValueRef, RegistryView};
 
 const GB: u64 = GIB;
+const MIB: u64 = 1024 * 1024;
 
 /// A startup load that costs nothing, for tests about the other checks.
 const QUIET: Option<StartupLoad> = Some(StartupLoad { enabled_apps: 1 });
@@ -835,11 +836,46 @@ fn the_failure_log_names_the_class_and_never_the_message() {
 
 #[test]
 fn sizes_are_written_like_the_windows_shell_writes_them() {
-    assert_eq!(format_bytes(0), "0 MB");
-    assert_eq!(format_bytes(512 * MIB), "512 MB");
-    assert_eq!(format_bytes(GIB), "1.0 GB");
-    assert_eq!(format_bytes(24 * GIB), "24.0 GB");
-    assert_eq!(format_bytes(476 * GIB), "476 GB");
-    assert_eq!(format_share(5, 100), "5.0%");
-    assert_eq!(format_share(24, 100), "24%");
+    use crate::phrase::{Arg, bytes_text};
+    assert_eq!(bytes_text(0), "0 MB");
+    assert_eq!(bytes_text(512 * MIB), "512 MB");
+    assert_eq!(bytes_text(GIB), "1.0 GB");
+    assert_eq!(bytes_text(24 * GIB), "24.0 GB");
+    assert_eq!(bytes_text(476 * GIB), "476 GB");
+    let share = |part, whole| with_share(Phrase::new("health.disk"), part, whole);
+    assert_eq!(share(5, 100).args.get("share"), Some(&Arg::Tenths(50)));
+    assert_eq!(share(24, 100).args.get("share"), Some(&Arg::Count(24)));
+}
+
+#[test]
+fn a_reason_is_its_phrase_in_english_with_the_figures_as_parameters() {
+    use crate::phrase::Arg;
+    let report = assess(&HealthInputs {
+        system_disk: Some(disk(500 * GB, 40 * GB)),
+        restart_pending: Some(true),
+        startup_load: Some(StartupLoad { enabled_apps: 9 }),
+        ..HealthInputs::default()
+    });
+    let by_id = |id: &str| {
+        report
+            .deductions()
+            .iter()
+            .find(|d| d.id == id)
+            .expect("deduction")
+    };
+    let disk = by_id("disk.low");
+    assert_eq!(disk.reason_phrase.code, "health.disk");
+    assert_eq!(disk.reason, disk.reason_phrase.english());
+    assert_eq!(
+        disk.reason_phrase.args.get("free"),
+        Some(&Arg::Bytes(40 * GB))
+    );
+    assert_eq!(
+        by_id("restart.pending").reason_phrase.code,
+        "health.restart"
+    );
+    assert_eq!(
+        by_id("startup.some").reason_phrase.args.get("count"),
+        Some(&Arg::Count(9))
+    );
 }

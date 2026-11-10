@@ -71,6 +71,7 @@ pub mod large_files;
 pub mod memory;
 pub mod metrics;
 pub mod operation;
+pub mod phrase;
 pub mod plan;
 pub mod ports;
 pub mod process;
@@ -128,6 +129,7 @@ pub use metrics::{
     MetricsSource, MetricsTracker, RawSample,
 };
 pub use operation::{Operation, PriorState};
+pub use phrase::{Arg, Phrase, class_phrase};
 pub use plan::{OperationRequest, Plan, PlanItem, Preview};
 pub use ports::{
     Availability, DirEntry, EntryInfo, EntryKind, FileStat, FileSystem, Memory, MemoryArea,

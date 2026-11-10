@@ -27,6 +27,7 @@ use volt_desktop_lib::api::{
     clear_history, export_activity_text, export_file_name, history_status, list_activity,
     preview_undo_batch, preview_undo_entry, undo_batch, undo_entry, write_export,
 };
+use volt_desktop_lib::phrase::ArgView;
 use volt_desktop_lib::wiring::{AppCore, build_core, windows_ports};
 use volt_win::WinRegistry;
 
@@ -246,6 +247,8 @@ fn undo_one_entry_then_the_rest_of_the_batch_and_it_all_survives_a_restart() {
         preview.items[0].restore,
         "removed (it did not exist before)"
     );
+    assert_eq!(preview.items[0].restore_phrase.code, "restore.removed");
+    assert_eq!(preview.items[0].what_phrase.code, "subject.registryValue");
     let result = undo_batch(&core, &batch, &[]).expect("undo batch");
     assert_eq!(
         (result.status, result.restored, result.failed),
@@ -401,6 +404,7 @@ fn rows_without_a_journal_entry_or_with_a_missing_one_cannot_be_undone_and_say_w
         batch: None,
         entry,
         label: None,
+        phrase: None,
     };
     // A cleaning or memory action: an applied record with no journal entry at all.
     core.activity
@@ -524,6 +528,21 @@ fn previous_values_and_the_export_follow_the_redaction_rule() {
         pre.previous.as_deref(),
         Some(format!("REG_SZ ({} chars)", SECRET.chars().count()).as_str()),
         "a string is shown as kind and length only"
+    );
+    // The same value and the summary arrive as codes with the figures, for any language.
+    let previous = pre.previous_phrase.as_ref().expect("previous phrase");
+    assert_eq!(previous.code, "value.sz");
+    assert_eq!(
+        previous.args["count"],
+        ArgView::Count(f64::from(
+            u16::try_from(SECRET.chars().count()).expect("short"),
+        ))
+    );
+    let summary = pre.summary_phrase.as_ref().expect("summary phrase");
+    assert_eq!(summary.code, "summary.applied");
+    assert!(
+        !format!("{summary:?}").contains(SECRET),
+        "the secret must not reach a phrase"
     );
     let batch = pre.batch.clone().expect("batch");
     let preview = preview_undo_batch(&core, &batch).expect("preview");
@@ -768,6 +787,7 @@ fn memory_process_and_cleaning_records_get_readable_titles() {
                 batch: None,
                 entry: None,
                 label: Some(label.clone()),
+                phrase: None,
             })
             .expect("record");
     }

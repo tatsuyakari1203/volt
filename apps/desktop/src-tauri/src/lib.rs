@@ -15,6 +15,7 @@ pub mod large_files;
 mod logging;
 pub mod memory;
 pub mod metrics;
+pub mod phrase;
 pub mod processes;
 mod sampler;
 mod tray;

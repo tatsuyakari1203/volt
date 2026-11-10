@@ -93,6 +93,7 @@ fn record(id: u64, millis: i64, outcome: ActivityOutcome, summary: &str) -> Acti
         batch: None,
         entry: None,
         label: None,
+        phrase: None,
     }
 }
 
@@ -105,6 +106,7 @@ fn new_activity(summary: &str) -> NewActivity {
         batch: None,
         entry: None,
         label: None,
+        phrase: None,
     }
 }
 

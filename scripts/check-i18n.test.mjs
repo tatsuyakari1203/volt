@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { catalogueIds, checkCatalogue, checkLocales } from './check-i18n.mjs';
+import { catalogueIds, checkCatalogue, checkLocales, englishPhrases } from './check-i18n.mjs';
 
 const en = {
   'home.title': 'Home',
@@ -103,6 +103,55 @@ describe('catalogue texts', () => {
     assert.match(
       checkCatalogue({ ...FULL, 'tweak.gone.title': 'x' }, TWEAKS, RULES).join('\n'),
       /belongs to no tweak/,
+    );
+  });
+});
+
+describe('phrases of the core', () => {
+  const rust = `
+pub const ENGLISH: &[(&str, &str)] = &[
+    // A comment.
+    ("class.error", "error"),
+    ("count.file.one", "{count} file"),
+    ("count.file.other", "{count} files"),
+    ("summary.note", " (it said \\"no\\")"),
+    (
+        "split.over.lines",
+        "{a} and {b}",
+    ),
+];
+`;
+
+  it('are read from the Rust table, with escapes and entries over several lines', () => {
+    assert.deepEqual(englishPhrases(rust), {
+      'class.error': 'error',
+      'count.file.one': '{count} file',
+      'count.file.other': '{count} files',
+      'summary.note': ' (it said "no")',
+      'split.over.lines': '{a} and {b}',
+    });
+    assert.deepEqual(englishPhrases('fn main() {}'), {});
+  });
+
+  it('must have Vietnamese text with the same placeholders', () => {
+    const english = englishPhrases(rust);
+    const ok = {
+      'class.error': 'lỗi',
+      'count.file.other': '{count} tệp',
+      'summary.note': ' (nói "không")',
+      'split.over.lines': '{a} và {b}',
+    };
+    assert.deepEqual(checkLocales('vi.phrases.json', english, ok), []);
+    const { 'class.error': _gone, ...rest } = ok;
+    assert.match(
+      checkLocales('vi.phrases.json', english, rest).join('\n'),
+      /missing key "class\.error"/,
+    );
+    assert.match(
+      checkLocales('vi.phrases.json', english, { ...ok, 'split.over.lines': '{a} và {c}' }).join(
+        '\n',
+      ),
+      /placeholders \{a,c\}/,
     );
   });
 });

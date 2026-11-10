@@ -12,7 +12,10 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use volt_core::activity::{exec_reason, restore_words_for, revert_reason, subject};
+use volt_core::activity::{
+    exec_reason, restore_phrase_for, restore_words_for, revert_phrase, revert_reason, subject,
+    subject_phrase,
+};
 use volt_core::startup::STARTUP_LABEL;
 use volt_core::{
     ActivityId, ActivityOutcome, ActivityRecord, ApplyOutcome, BatchId, Category, ChangeOutcome,
@@ -24,6 +27,7 @@ use volt_core::{
 };
 
 use crate::IpcError;
+use crate::phrase::PhraseView;
 use crate::wiring::AppCore;
 
 /// Most records one [`list_activity`] call returns, whatever the caller asks for.
@@ -278,8 +282,12 @@ pub struct ActivityItem {
     pub source: ActivitySource,
     /// How it ended.
     pub status: ActivityStatus,
-    /// One redacted sentence: names the target and the outcome, never data.
+    /// One redacted sentence: names the target and the outcome, never data. English: the text of
+    /// `summary_phrase`, or the only text of a record written before phrases existed.
     pub summary: String,
+    /// The summary as a code and parameters, for the UI to write in its own language. `null` for
+    /// a record written before phrases existed.
+    pub summary_phrase: Option<PhraseView>,
     /// The tweak id or plan label, when known.
     pub label: Option<String>,
     /// The tweak's title when the label is a catalogue tweak.
@@ -291,6 +299,8 @@ pub struct ActivityItem {
     /// The value before the change, redacted: numbers and service start types are shown, string
     /// and binary data only as kind and length. Only set for a change that was made.
     pub previous: Option<String>,
+    /// `previous` as a code and parameters.
+    pub previous_phrase: Option<PhraseView>,
     /// Whether this line can be undone, was undone, failed and so on.
     pub state: ChangeState,
     /// One line saying why the change cannot be undone, when `state` is `cannotUndo`.
@@ -332,8 +342,12 @@ pub struct UndoFailure {
     pub entry: String,
     /// What it touches, in words, without any data.
     pub what: String,
+    /// `what` as a code and parameters, without the capital letter a sentence starts with.
+    pub what_phrase: Option<PhraseView>,
     /// Why it could not be restored, in words. Never contains command output or data.
     pub reason: String,
+    /// `reason` as a code and parameters.
+    pub reason_phrase: Option<PhraseView>,
 }
 
 /// Precise result of [`undo_entry`] and [`undo_batch`].
@@ -361,9 +375,13 @@ pub struct UndoPreviewItem {
     pub entry: String,
     /// What it touches, in words, without any data.
     pub what: String,
+    /// `what` as a code and parameters, without the capital letter a sentence starts with.
+    pub what_phrase: PhraseView,
     /// What undoing does to it, redacted: `set back to REG_DWORD 1`, `removed (it did not exist
     /// before)`.
     pub restore: String,
+    /// `restore` as a code and parameters.
+    pub restore_phrase: PhraseView,
 }
 
 /// What [`undo_batch`] would restore right now. Reads only.
@@ -385,6 +403,8 @@ pub struct UndoOverwrite {
     pub entry: String,
     /// What the later change touches, in words, without any data.
     pub what: String,
+    /// `what` as a code and parameters, without the capital letter a sentence starts with.
+    pub what_phrase: PhraseView,
     /// The later journal entry, as a decimal string.
     pub later_entry: String,
     /// When the later change was made (ISO 8601, UTC).
@@ -851,6 +871,7 @@ fn overwrite_items(
         .map(|found| UndoOverwrite {
             entry: found.entry.0.to_string(),
             what: capitalised(&subject(&found.later.operation)),
+            what_phrase: (&subject_phrase(&found.later.operation)).into(),
             later_entry: found.later.id.0.to_string(),
             later_time: found.later.timestamp.to_iso8601(),
             later_source: match found.later.source {
@@ -892,7 +913,9 @@ fn undo_preview(core: &AppCore, applied: &[JournalEntry]) -> Result<UndoPreview,
         .map(|entry| UndoPreviewItem {
             entry: entry.id.0.to_string(),
             what: capitalised(&subject(&entry.operation)),
+            what_phrase: (&subject_phrase(&entry.operation)).into(),
             restore: restore_words_for(&entry.operation, &entry.prior),
+            restore_phrase: (&restore_phrase_for(&entry.operation, &entry.prior)).into(),
         })
         .collect();
     Ok(UndoPreview { items, overwrites })
@@ -1202,12 +1225,13 @@ fn activity_item(core: &AppCore, record: &ActivityRecord) -> ActivityItem {
     let lookup = lookup_entry(core, record);
     let (state, reason) = change_state(record.outcome, &lookup);
     // The value before the change belongs to a change that was made.
-    let previous = match (&lookup, record.outcome) {
+    let previous_phrase = match (&lookup, record.outcome) {
         (EntryLookup::Found(entry), ActivityOutcome::Applied) => {
-            Some(activity::redacted_prior_for(&entry.operation, &entry.prior))
+            Some(activity::prior_phrase_for(&entry.operation, &entry.prior))
         }
         _ => None,
     };
+    let previous = previous_phrase.as_ref().map(volt_core::Phrase::english);
     ActivityItem {
         id: record.id.0.to_string(),
         time: record.timestamp.to_iso8601(),
@@ -1224,6 +1248,7 @@ fn activity_item(core: &AppCore, record: &ActivityRecord) -> ActivityItem {
             _ => ActivityStatus::Other,
         },
         summary: record.summary.clone(),
+        summary_phrase: record.phrase.as_ref().map(PhraseView::from),
         title: record
             .label
             .as_deref()
@@ -1232,6 +1257,7 @@ fn activity_item(core: &AppCore, record: &ActivityRecord) -> ActivityItem {
         batch: record.batch.map(|batch| batch.0.to_string()),
         entry: record.entry.map(|entry| entry.0.to_string()),
         previous,
+        previous_phrase: previous_phrase.as_ref().map(PhraseView::from),
         state,
         reason: reason.map(str::to_owned),
     }
@@ -1272,14 +1298,22 @@ fn undo_result(core: &AppCore, report: &RevertReport) -> UndoResult {
         match &outcome.result {
             Ok(()) => restored += 1,
             Err(error) => {
-                let what = match core.journal.entry(outcome.entry) {
-                    Ok(Some(entry)) => capitalised(&subject(&entry.operation)),
-                    _ => "A change".to_owned(),
+                let operation = match core.journal.entry(outcome.entry) {
+                    Ok(Some(entry)) => Some(entry.operation),
+                    _ => None,
                 };
+                let what = operation.as_ref().map_or_else(
+                    || "A change".to_owned(),
+                    |operation| capitalised(&subject(operation)),
+                );
                 failures.push(UndoFailure {
                     entry: outcome.entry.0.to_string(),
                     what,
+                    what_phrase: operation
+                        .as_ref()
+                        .map(|operation| (&subject_phrase(operation)).into()),
                     reason: revert_reason(error),
+                    reason_phrase: Some((&revert_phrase(error)).into()),
                 });
             }
         }

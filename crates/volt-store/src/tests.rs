@@ -383,13 +383,19 @@ fn an_entry_left_pending_by_a_crash_is_reconciled_on_the_next_start() {
 // ---- migrations -----------------------------------------------------------------------------
 
 /// A migration after the last real one, to prove upgrades keep data.
-const TEST_V4: Migration = Migration {
-    version: 4,
+const TEST_V5: Migration = Migration {
+    version: 5,
     sql: "ALTER TABLE journal_entries ADD COLUMN note TEXT;",
 };
 
-fn migrations_with_test_v4() -> [Migration; 4] {
-    [MIGRATIONS[0], MIGRATIONS[1], MIGRATIONS[2], TEST_V4]
+fn migrations_with_test_v5() -> [Migration; 5] {
+    [
+        MIGRATIONS[0],
+        MIGRATIONS[1],
+        MIGRATIONS[2],
+        MIGRATIONS[3],
+        TEST_V5,
+    ]
 }
 
 fn user_version(conn: &Connection) -> u32 {
@@ -418,9 +424,9 @@ fn a_database_at_an_older_schema_version_is_upgraded_and_keeps_its_data() {
     }
 
     let mut conn = Connection::open(&path).expect("open raw");
-    assert_eq!(user_version(&conn), 3);
-    migrate(&mut conn, &migrations_with_test_v4()).expect("upgrade");
     assert_eq!(user_version(&conn), 4);
+    migrate(&mut conn, &migrations_with_test_v5()).expect("upgrade");
+    assert_eq!(user_version(&conn), 5);
     let (rows, note): (i64, Option<String>) = conn
         .query_row("SELECT COUNT(*), MAX(note) FROM journal_entries", [], |r| {
             Ok((r.get(0)?, r.get(1)?))
@@ -435,8 +441,8 @@ fn a_database_at_an_older_schema_version_is_upgraded_and_keeps_its_data() {
     assert_eq!(theme, "\"dark\"");
 
     // Migrating again is a no-op.
-    migrate(&mut conn, &migrations_with_test_v4()).expect("idempotent");
-    assert_eq!(user_version(&conn), 4);
+    migrate(&mut conn, &migrations_with_test_v5()).expect("idempotent");
+    assert_eq!(user_version(&conn), 5);
 }
 
 #[test]
@@ -473,7 +479,7 @@ fn a_version_1_database_is_upgraded_and_keeps_its_journal() {
 
     // The next start of the app opens it and migrates it.
     let store = open(&path);
-    assert_eq!(user_version(&store.conn()), 3);
+    assert_eq!(user_version(&store.conn()), 4);
     let old = store.batch_entries(BatchId(1)).expect("old entries");
     assert_eq!(old.len(), 1);
     assert_eq!(old[0].operation, operation);
@@ -543,15 +549,21 @@ fn a_failing_migration_rolls_back_and_keeps_the_old_version() {
     let mut conn = Connection::open_in_memory().expect("memory db");
     migrate(&mut conn, MIGRATIONS).expect("current schema");
     let broken = Migration {
-        version: 4,
+        version: 5,
         sql: "ALTER TABLE journal_entries ADD COLUMN ok TEXT; ALTER TABLE nope ADD COLUMN x TEXT;",
     };
     let result = migrate(
         &mut conn,
-        &[MIGRATIONS[0], MIGRATIONS[1], MIGRATIONS[2], broken],
+        &[
+            MIGRATIONS[0],
+            MIGRATIONS[1],
+            MIGRATIONS[2],
+            MIGRATIONS[3],
+            broken,
+        ],
     );
     assert!(matches!(result, Err(MigrateError::Sql(_))));
-    assert_eq!(user_version(&conn), 3);
+    assert_eq!(user_version(&conn), 4);
     // The half-applied first statement was rolled back with the rest.
     assert!(
         conn.prepare("SELECT ok FROM journal_entries").is_err(),
@@ -574,7 +586,7 @@ fn a_database_from_a_newer_build_is_refused_and_left_alone() {
         error,
         StoreError::SchemaTooNew {
             found: 99,
-            supported: 3
+            supported: 4
         }
     );
     assert_eq!(fs::read(&path).expect("read"), before);
@@ -751,11 +763,12 @@ fn new_activity(summary: &str, millis: i64) -> NewActivity {
         batch: None,
         entry: None,
         label: None,
+        phrase: None,
     }
 }
 
 #[test]
-fn a_version_2_database_is_upgraded_to_version_3_and_gains_an_empty_activity_log() {
+fn a_version_2_database_is_upgraded_and_gains_an_empty_activity_log() {
     let dir = TempDir::new().expect("temp dir");
     let path = db_path(&dir);
     let operation = set_dword("A", 1);
@@ -792,7 +805,7 @@ fn a_version_2_database_is_upgraded_to_version_3_and_gains_an_empty_activity_log
     }
 
     let store = open(&path);
-    assert_eq!(user_version(&store.conn()), 3);
+    assert_eq!(user_version(&store.conn()), 4);
     // Everything from version 2 is intact.
     assert_eq!(store.batches_with_label("tweak-a"), Ok(vec![BatchId(1)]));
     let old = store.batch_entries(BatchId(1)).expect("old entries");
@@ -847,6 +860,7 @@ fn activity_records_survive_a_restart_and_page_newest_first() {
             batch: linked.batch,
             entry: linked.entry,
             label: linked.label,
+            phrase: None,
         }
     );
     let last = store.list(10, Some(ActivityId(2))).expect("last page");
@@ -937,6 +951,7 @@ fn activity_at(millis: i64, entry: Option<EntryId>) -> NewActivity {
         batch: None,
         entry,
         label: None,
+        phrase: None,
     }
 }
 
@@ -1032,4 +1047,23 @@ fn the_log_prunes_itself_while_it_is_written() {
     store.record(activity_at(now, None)).expect("record");
     let left = store.list(200, None).expect("list");
     assert_eq!(left.len(), 1);
+}
+
+#[test]
+fn a_phrase_is_stored_with_the_record_and_an_old_record_has_none() {
+    use volt_core::Phrase;
+    let dir = TempDir::new().expect("temp dir");
+    let store = open(&db_path(&dir));
+    let phrase = Phrase::new("scan.tooNew").count("count", 3_u32);
+    let mut said = new_activity("3 too new", 1);
+    said.phrase = Some(phrase.clone());
+    store.record(said).expect("record");
+    store.record(new_activity("plain", 2)).expect("record");
+    let records = store.list(10, None).expect("list");
+    assert_eq!(
+        records[0].phrase, None,
+        "a record without a phrase has none"
+    );
+    assert_eq!(records[1].phrase, Some(phrase));
+    assert_eq!(records[1].summary, "3 too new");
 }

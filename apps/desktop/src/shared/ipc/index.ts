@@ -27,7 +27,6 @@ import {
   type HealthView,
   type HistoryStatus,
   type IpcError,
-  type Lang,
   type LanguageChoice,
   type LanguageSetting,
   type LargeFilesProgress,
@@ -61,6 +60,7 @@ export type {
   AppReady,
   AreaResult,
   AreaStatus,
+  ArgView,
   BoostConfigView,
   BoostResult,
   ChangeState,
@@ -105,6 +105,7 @@ export type {
   MetricsView,
   MovedToBinView,
   OperationState,
+  PhraseView,
   ProcessEndView,
   ProcessGroupView,
   ProcessListView,
@@ -556,18 +557,12 @@ export async function endApp(id: string): Promise<EndAppResult> {
   return call(() => commands.endApp(id));
 }
 
-/** The saved language choice and what System resolved to on this PC the last time. */
+/** The saved language choice and the display language of Windows, which `System` stands for. */
 export async function getLanguageSetting(): Promise<LanguageSetting> {
   return call(() => commands.languageSetting());
 }
 
-/**
- * Saves the language choice. `system` is what the choice System means on this PC, so the tray
- * menu and the Boost notification can use it while no window is open.
- */
-export async function saveLanguageSetting(
-  choice: LanguageChoice,
-  system: Lang,
-): Promise<LanguageSetting> {
-  return call(() => commands.setLanguage(choice, system));
+/** Saves the language choice. The shell also rewrites the tray menu in the new language at once. */
+export async function saveLanguageSetting(choice: LanguageChoice): Promise<LanguageSetting> {
+  return call(() => commands.setLanguage(choice));
 }

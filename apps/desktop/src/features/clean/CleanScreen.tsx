@@ -1,6 +1,6 @@
 import { Loader2, Sparkles, TriangleAlert } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { t, tNodes, tn } from '../../shared/i18n';
+import { say, t, tNodes, tn } from '../../shared/i18n';
 import {
   type CleaningRuleInfo,
   type CleanRunResult,
@@ -105,7 +105,7 @@ function ResultCard({
               <li key={group.reason}>
                 {t('clean.result.group', {
                   items: tn('count.item', group.count),
-                  reason: group.reason,
+                  reason: say(group.reasonPhrase, group.reason),
                 })}
               </li>
             ))}

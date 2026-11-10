@@ -71,14 +71,11 @@ describe('numbers and sizes', () => {
 });
 
 describe('the choice', () => {
-  it('follows the first language of the system for System and obeys any other choice', () => {
-    expect(resolveLocale('system', ['vi-VN', 'en-US'])).toBe('vi');
-    expect(resolveLocale('system', ['vi'])).toBe('vi');
-    expect(resolveLocale('system', ['en-US', 'vi'])).toBe('en');
-    expect(resolveLocale('system', ['fr-FR'])).toBe('en');
-    expect(resolveLocale('system', [])).toBe('en');
-    expect(resolveLocale('en', ['vi-VN'])).toBe('en');
-    expect(resolveLocale('vi', ['en-US'])).toBe('vi');
+  it('follows the display language of Windows for System and obeys any other choice', () => {
+    expect(resolveLocale('system', 'vi')).toBe('vi');
+    expect(resolveLocale('system', 'en')).toBe('en');
+    expect(resolveLocale('en', 'vi')).toBe('en');
+    expect(resolveLocale('vi', 'en')).toBe('vi');
   });
 
   it('accepts only the three known values', () => {
