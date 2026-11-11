@@ -30,6 +30,9 @@ import {
 } from '../../shared/text/memory';
 import { formatBytes } from '../../shared/text/size';
 import { Badge, Button, Card, ListGroup, ListRow, PageHeader } from '../../shared/ui';
+import { ExclusionsCard } from './ExclusionsCard';
+import { MemoryChart } from './MemoryChart';
+import { useMemoryHistory } from './useMemoryHistory';
 
 type Load =
   | { status: 'loading' }
@@ -169,8 +172,9 @@ function GuidanceCard() {
  * The Memory screen: how memory is used by list (in use, standby, modified, free), one button
  * per cleaning operation and a before and after report for each run. An operation that needs
  * administrator rights shows a shield: when administrator actions are available it runs through
- * the elevated helper (one Windows prompt per session), otherwise it is locked and says why. All
- * rules live in the Rust core: this renders what the commands report.
+ * the elevated helper (one Windows prompt per session), otherwise it is locked and says why. A chart
+ * shows the lists over the last minutes and a card edits the list of programs that trimming skips.
+ * All rules live in the Rust core: this renders what the commands report.
  */
 export function MemoryScreen() {
   const [load, setLoad] = useState<Load>({ status: 'loading' });
@@ -180,6 +184,7 @@ export function MemoryScreen() {
   // `null` until it is known, and when it could not be read: administrator actions stay locked.
   const [elevation, setElevation] = useState<ElevationStatusView | null>(null);
   const alive = useRef(true);
+  const history = useMemoryHistory();
 
   useEffect(() => {
     alive.current = true;
@@ -291,6 +296,7 @@ export function MemoryScreen() {
         ) : null}
 
         {state?.lists ? <ListsCard lists={state.lists} /> : null}
+        {state?.lists ? <MemoryChart points={history} /> : null}
         {state && !state.lists ? (
           <Card role="status" className="text-body text-muted">
             {state.problem
@@ -368,6 +374,7 @@ export function MemoryScreen() {
           </ListGroup>
         ) : null}
 
+        {state ? <ExclusionsCard /> : null}
         {report ? <ReportCard report={report} /> : null}
         <GuidanceCard />
       </div>

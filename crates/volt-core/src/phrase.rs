@@ -430,6 +430,7 @@ pub const ENGLISH: &[(&str, &str)] = &[
     ("summary.memory.head.admin", "Cleaned memory as administrator (cannot be undone)"),
     ("summary.memory.headDone.admin", "Cleaned memory as administrator (cannot be undone): {areas}"),
     ("summary.memory.trimmed", "{area} ({count} processes)"),
+    ("summary.memory.trimmedExcluded", "{area} ({count} processes, {excluded} left alone on the exclusion list)"),
     ("summary.memory.areaFailed", "{area} ({class})"),
     ("summary.memory.couldNot", "could not clean {areas}"),
     ("summary.memory.free", "free memory {before} to {after}, standby {standbyBefore} to {standbyAfter}"),

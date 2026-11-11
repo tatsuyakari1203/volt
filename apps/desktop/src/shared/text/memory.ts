@@ -132,9 +132,14 @@ export function describeArea(result: AreaResult): string {
     case 'done':
       if (result.area === 'workingSets') {
         const trimmed = tn('memory.area.trimmed', result.processesTrimmed);
-        return result.processesSkipped > 0
-          ? t('memory.area.trimmedWithSkipped', { trimmed, skipped: result.processesSkipped })
-          : t('memory.area.trimmedOnly', { trimmed });
+        const sentence =
+          result.processesSkipped > 0
+            ? t('memory.area.trimmedWithSkipped', { trimmed, skipped: result.processesSkipped })
+            : t('memory.area.trimmedOnly', { trimmed });
+        // Programs the user protected: said apart from the ones Windows would not let Volt open.
+        return result.processesExcluded > 0
+          ? `${sentence} ${tn('memory.area.excluded', result.processesExcluded)}`
+          : sentence;
       }
       return t('memory.area.done');
     case 'needsAdministrator':

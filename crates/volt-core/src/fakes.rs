@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use crate::activity::{ActivityId, ActivityLog, ActivityRecord, NewActivity, Retention};
 use crate::command::{Command, CommandOutput, Commands};
 use crate::error::PortError;
+use crate::exclusions::ExclusionList;
 use crate::executor::Executor;
 use crate::journal::{BatchId, EntryId, EntryState, Journal, JournalEntry, NewEntry};
 use crate::ports::{
@@ -757,6 +758,8 @@ pub struct FakeMemory {
     unavailable: Mutex<HashMap<MemoryArea, Availability>>,
     failures: Mutex<HashMap<MemoryArea, PortError>>,
     lists_fail: Mutex<Option<PortError>>,
+    processes: Mutex<Vec<(String, bool)>>,
+    trimmed: Mutex<Vec<String>>,
     log: EventLog,
 }
 
@@ -776,8 +779,30 @@ impl FakeMemory {
             unavailable: Mutex::new(HashMap::new()),
             failures: Mutex::new(HashMap::new()),
             lists_fail: Mutex::new(None),
+            processes: Mutex::new(vec![
+                ("app.exe".to_owned(), true),
+                ("editor.exe".to_owned(), true),
+                ("service.exe".to_owned(), false),
+            ]),
+            trimmed: Mutex::new(Vec::new()),
             log,
         }
+    }
+
+    /// Replaces the running processes a working-set trim sees: each is an image name and whether
+    /// the trim may open it (a process it cannot open is counted as skipped, like a protected one
+    /// on a real machine). The default is two openable processes and one that is not.
+    pub fn set_processes(&self, processes: &[(&str, bool)]) {
+        *lock(&self.processes) = processes
+            .iter()
+            .map(|&(name, openable)| (name.to_owned(), openable))
+            .collect();
+    }
+
+    /// Image names whose working set was trimmed so far, in order.
+    #[must_use]
+    pub fn trimmed_processes(&self) -> Vec<String> {
+        lock(&self.trimmed).clone()
     }
 
     /// Areas purged so far, in order.
@@ -838,6 +863,20 @@ impl Memory for FakeMemory {
     /// standby pages becomes free. Modified: all modified pages become standby. File cache:
     /// nothing moves.
     fn purge(&self, area: MemoryArea) -> Result<PurgeOutcome, PortError> {
+        self.purge_protecting(area, &ExclusionList::new())
+    }
+
+    fn trim_working_sets(&self, protected: &ExclusionList) -> Result<PurgeOutcome, PortError> {
+        self.purge_protecting(MemoryArea::WorkingSets, protected)
+    }
+}
+
+impl FakeMemory {
+    fn purge_protecting(
+        &self,
+        area: MemoryArea,
+        protected: &ExclusionList,
+    ) -> Result<PurgeOutcome, PortError> {
         match self.availability(area) {
             Availability::Available => {}
             Availability::NeedsAdministrator => {
@@ -863,10 +902,16 @@ impl Memory for FakeMemory {
                 let moved = GIB.min(lists.in_use_bytes);
                 lists.in_use_bytes -= moved;
                 lists.standby_bytes += moved;
-                outcome = PurgeOutcome {
-                    processes_trimmed: 2,
-                    processes_skipped: 1,
-                };
+                for (name, openable) in lock(&self.processes).iter() {
+                    if protected.protects(name) {
+                        outcome.processes_excluded += 1;
+                    } else if *openable {
+                        outcome.processes_trimmed += 1;
+                        lock(&self.trimmed).push(name.clone());
+                    } else {
+                        outcome.processes_skipped += 1;
+                    }
+                }
             }
             MemoryArea::StandbyList => {
                 lists.free_bytes += lists.standby_bytes;

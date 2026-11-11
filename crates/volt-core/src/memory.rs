@@ -10,9 +10,11 @@ use std::sync::Arc;
 
 use crate::activity::{ActivityLog, ActivityOutcome, NewActivity, error_class, error_class_phrase};
 use crate::error::PortError;
+use crate::exclusions::ExclusionList;
 use crate::journal::Source;
 use crate::phrase::Phrase;
 use crate::ports::{Availability, Memory, MemoryArea, MemoryLists, PurgeOutcome};
+use crate::settings::Settings;
 use crate::time::Clock;
 
 /// The activity label of a memory cleaning run.
@@ -53,6 +55,7 @@ pub struct MemoryCleaner {
     memory: Arc<dyn Memory>,
     clock: Arc<dyn Clock>,
     activity: Option<Arc<dyn ActivityLog>>,
+    exclusions: Option<Arc<dyn Settings>>,
 }
 
 impl std::fmt::Debug for MemoryCleaner {
@@ -69,7 +72,17 @@ impl MemoryCleaner {
             memory,
             clock,
             activity: None,
+            exclusions: None,
         }
+    }
+
+    /// Reads the exclusion list (see [`ExclusionList`]) from `settings` at the start of every
+    /// working-set trim, so a change takes effect on the next run. Without it nothing is
+    /// protected.
+    #[must_use]
+    pub fn with_exclusions(mut self, settings: Arc<dyn Settings>) -> Self {
+        self.exclusions = Some(settings);
+        self
     }
 
     /// Writes one activity record per run to `log`.
@@ -115,7 +128,7 @@ impl MemoryCleaner {
             .into_iter()
             .map(|area| AreaReport {
                 area,
-                result: self.memory.purge(area),
+                result: self.purge(area),
             })
             .collect();
         let after = self.read_lists("after");
@@ -135,6 +148,26 @@ impl MemoryCleaner {
     #[must_use]
     pub fn record_elevated_run(&self, report: &MemoryCleanReport, source: Source) -> bool {
         self.record(report, source, true)
+    }
+
+    /// One purge. A working-set trim is given the exclusion list; when the list is stored but
+    /// cannot be read, nothing is trimmed (the run reports why) rather than trimming a program
+    /// the user asked to protect.
+    fn purge(&self, area: MemoryArea) -> Result<PurgeOutcome, PortError> {
+        if area != MemoryArea::WorkingSets {
+            return self.memory.purge(area);
+        }
+        let protected = match &self.exclusions {
+            Some(settings) => ExclusionList::load(settings.as_ref()).map_err(|error| {
+                log::warn!(
+                    "the exclusion list could not be read, so nothing was trimmed ({})",
+                    error_class(&error)
+                );
+                PortError::Other("the exclusion list could not be read".to_owned())
+            })?,
+            None => ExclusionList::new(),
+        };
+        self.memory.trim_working_sets(&protected)
     }
 
     fn read_lists(&self, when: &str) -> Option<MemoryLists> {
@@ -187,11 +220,20 @@ fn summary(report: &MemoryCleanReport, elevated: bool) -> Phrase {
     let mut failed = Vec::new();
     for entry in &report.areas {
         match &entry.result {
-            Ok(outcome) if entry.area == MemoryArea::WorkingSets => done.push(
-                Phrase::new("summary.memory.trimmed")
-                    .phrase("area", entry.area.phrase())
-                    .count("count", outcome.processes_trimmed),
-            ),
+            Ok(outcome) if entry.area == MemoryArea::WorkingSets => {
+                let trimmed = Phrase::new(if outcome.processes_excluded > 0 {
+                    "summary.memory.trimmedExcluded"
+                } else {
+                    "summary.memory.trimmed"
+                })
+                .phrase("area", entry.area.phrase())
+                .count("count", outcome.processes_trimmed);
+                done.push(if outcome.processes_excluded > 0 {
+                    trimmed.count("excluded", outcome.processes_excluded)
+                } else {
+                    trimmed
+                });
+            }
             Ok(_) => done.push(entry.area.phrase()),
             Err(error) => failed.push(
                 Phrase::new("summary.memory.areaFailed")
@@ -233,7 +275,8 @@ fn summary(report: &MemoryCleanReport, elevated: bool) -> Phrase {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fakes::{FakeActivityLog, FakeMemory, ManualClock};
+    use crate::exclusions::EXCLUSIONS_SETTINGS_KEY;
+    use crate::fakes::{FakeActivityLog, FakeMemory, FakeSettings, ManualClock};
 
     const GIB: u64 = 1 << 30;
 
@@ -340,6 +383,93 @@ mod tests {
         assert!(record.summary.contains("system file cache (error)"));
         assert!(!record.summary.contains("secret"));
         assert!(record.summary.contains("standby 4.0 GB to 5.0 GB"));
+    }
+
+    fn with_exclusions(names: &[&str]) -> (Arc<FakeMemory>, Arc<FakeActivityLog>, MemoryCleaner) {
+        let memory = Arc::new(FakeMemory::new());
+        let log = Arc::new(FakeActivityLog::new());
+        let settings = Arc::new(FakeSettings::new());
+        let mut list = ExclusionList::new();
+        for name in names {
+            list.add(name).expect("add");
+        }
+        list.save(settings.as_ref()).expect("save");
+        let cleaner = MemoryCleaner::new(memory.clone(), Arc::new(ManualClock::new(5)))
+            .with_activity_log(log.clone())
+            .with_exclusions(settings);
+        (memory, log, cleaner)
+    }
+
+    #[test]
+    fn a_process_on_the_exclusion_list_is_never_trimmed_and_is_counted() {
+        let (memory, _, cleaner) = with_exclusions(&["Editor"]);
+        let report = cleaner.run(&[MemoryArea::WorkingSets], Source::Manual);
+        assert_eq!(memory.trimmed_processes(), ["app.exe"]);
+        let outcome = report.areas[0].result.clone().expect("trimmed");
+        assert_eq!(
+            (
+                outcome.processes_trimmed,
+                outcome.processes_skipped,
+                outcome.processes_excluded
+            ),
+            (1, 1, 1)
+        );
+    }
+
+    #[test]
+    fn the_activity_record_says_how_many_processes_the_list_protected() {
+        let (_, log, cleaner) = with_exclusions(&["editor.exe", "app.exe"]);
+        let _ = cleaner.run(&[MemoryArea::WorkingSets], Source::Manual);
+        let summary = log.records()[0].summary.clone();
+        assert!(
+            summary.contains("working sets (0 processes, 2 left alone on the exclusion list)"),
+            "{summary}"
+        );
+    }
+
+    #[test]
+    fn without_a_list_every_openable_process_is_trimmed() {
+        let (memory, _, cleaner) = setup();
+        let report = cleaner.run(&[MemoryArea::WorkingSets], Source::Manual);
+        assert_eq!(memory.trimmed_processes(), ["app.exe", "editor.exe"]);
+        let outcome = report.areas[0].result.clone().expect("ok");
+        assert_eq!(outcome.processes_excluded, 0);
+    }
+
+    #[test]
+    fn the_list_is_read_again_on_every_run() {
+        let memory = Arc::new(FakeMemory::new());
+        let settings = Arc::new(FakeSettings::new());
+        let cleaner = MemoryCleaner::new(memory.clone(), Arc::new(ManualClock::new(5)))
+            .with_exclusions(settings.clone());
+        let _ = cleaner.run(&[MemoryArea::WorkingSets], Source::Manual);
+        let mut list = ExclusionList::new();
+        list.add("app").expect("add");
+        list.save(settings.as_ref()).expect("save");
+        let _ = cleaner.run(&[MemoryArea::WorkingSets], Source::Manual);
+        assert_eq!(
+            memory.trimmed_processes(),
+            ["app.exe", "editor.exe", "editor.exe"]
+        );
+    }
+
+    #[test]
+    fn an_unreadable_list_trims_nothing_and_says_so() {
+        let memory = Arc::new(FakeMemory::new());
+        let settings = Arc::new(FakeSettings::new());
+        settings
+            .set(EXCLUSIONS_SETTINGS_KEY, &serde_json::json!("garbage"))
+            .expect("set");
+        let cleaner = MemoryCleaner::new(memory.clone(), Arc::new(ManualClock::new(5)))
+            .with_exclusions(settings);
+        let report = cleaner.run(
+            &[MemoryArea::WorkingSets, MemoryArea::StandbyList],
+            Source::Manual,
+        );
+        assert!(memory.trimmed_processes().is_empty());
+        assert!(report.areas[0].result.is_err());
+        // The other areas do not depend on the list.
+        assert!(report.areas[1].result.is_ok());
     }
 
     #[test]

@@ -10,6 +10,7 @@ pub mod cleaner;
 mod commands;
 pub mod elevated_start;
 pub mod elevation;
+pub mod exclusions;
 pub mod health;
 mod ipc;
 pub mod language;
@@ -21,6 +22,7 @@ pub mod phrase;
 pub mod processes;
 mod sampler;
 mod tray;
+mod trend;
 pub mod unsupported;
 mod window;
 pub mod wiring;
@@ -35,6 +37,7 @@ use tauri_specta::Event as _;
 pub use boost::BoostFinished;
 pub use ipc::{AppReady, IpcError, bindings_builder, export_bindings};
 pub use metrics::MetricsUpdated;
+pub use trend::{MemoryPointView, MemoryTrendUpdated};
 
 /// Product name shown in the UI.
 const APP_NAME: &str = "Volt";
@@ -101,7 +104,9 @@ pub fn run() {
             // already ask for tweaks.
             app.manage(wiring::init(app.handle()));
             // The sampler thread is not started here: it runs only while the main window exists.
-            app.manage(sampler::real(app.handle()));
+            let trend = std::sync::Arc::new(trend::MemoryTrend::default());
+            app.manage(std::sync::Arc::clone(&trend));
+            app.manage(sampler::real(app.handle(), trend));
             bindings.mount_events(app);
             tray::setup(app)?;
             if window::LaunchMode::from_args(std::env::args().skip(1)) == window::LaunchMode::Foreground {
