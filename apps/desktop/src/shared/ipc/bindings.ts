@@ -552,6 +552,52 @@ async endApp(id: string) : Promise<Result<EndAppResult, IpcError>> {
 }
 },
 /**
+ * Tauri command: what the processes of an app hold now (priority, cores, Efficiency mode) and
+ * how many of them can be changed without administrator rights. Reads only.
+ */
+async inspectApp(id: string) : Promise<Result<InspectionView, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("inspect_app", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: changes the priority, cores and Efficiency mode of an app, and optionally saves
+ * them as a rule that is reapplied whenever the app starts. Recorded in the undo journal.
+ */
+async tuneApp(id: string, request: TuneRequestView, saveRule: boolean) : Promise<Result<TuneResult, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("tune_app", { id, request, saveRule }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: the saved rules.
+ */
+async listProcessRules() : Promise<Result<RuleView[], IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_process_rules") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: removes a saved rule. Resolves with the rules that are left.
+ */
+async removeProcessRule(id: string) : Promise<Result<RuleView[], IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("remove_process_rule", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Tauri command: the installed apps with size, publisher and install date. Reads the system
  * only.
  */
@@ -1720,6 +1766,52 @@ export type HistoryStatus = {
  */
 incomplete: boolean }
 /**
+ * What an app's processes hold now and how many of them can be changed.
+ */
+export type InspectionView = { 
+/**
+ * The executable name.
+ */
+name: string; 
+/**
+ * The executable path, when known.
+ */
+path: string | null; 
+/**
+ * How many processes the app has that Volt may offer to change.
+ */
+processes: number; 
+/**
+ * How many of them can be changed now.
+ */
+changeable: number; 
+/**
+ * How many Windows will not let Volt change without administrator rights.
+ */
+needsAdministrator: number; 
+/**
+ * How many could not be read for another reason.
+ */
+unsupported: number; 
+/**
+ * The class every changeable process has, or `null` when they differ (or none can be
+ * changed).
+ */
+priority: PriorityView | null; 
+/**
+ * The cores every changeable process runs on, or `null` when they differ.
+ */
+cores: number[] | null; 
+/**
+ * The cores that can be chosen: the ones every changeable process may use. Empty when none
+ * can be changed.
+ */
+availableCores: number[]; 
+/**
+ * Whether Efficiency mode is on for every changeable process, or `null` when they differ.
+ */
+efficiency: boolean | null }
+/**
  * The one error type every command returns.
  * 
  * It reaches the UI as a discriminated value, `{ kind: "notFound", message: "..." }`, so the
@@ -2138,6 +2230,30 @@ code: string;
  */
 args: Partial<{ [key in string]: ArgView }> }
 /**
+ * The priority classes Volt offers. Mirrors [`volt_core::PriorityClass`]; there is no Realtime.
+ */
+export type PriorityView = 
+/**
+ * Low (Windows calls it Idle).
+ */
+"idle" | 
+/**
+ * Below normal.
+ */
+"belowNormal" | 
+/**
+ * Normal.
+ */
+"normal" | 
+/**
+ * Above normal.
+ */
+"aboveNormal" | 
+/**
+ * High.
+ */
+"high"
+/**
  * One process of an ended app.
  */
 export type ProcessEndView = { 
@@ -2317,6 +2433,18 @@ movedBytes: number;
  */
 skipped: number }
 /**
+ * Why a saved rule could not be applied.
+ */
+export type RuleProblemView = 
+/**
+ * Windows lets only an administrator change the app.
+ */
+"needsAdministrator" | 
+/**
+ * It failed for another reason.
+ */
+"failed"
+/**
  * What a scan found for one rule.
  */
 export type RuleScanView = { 
@@ -2379,6 +2507,31 @@ items: ScanItemView[];
  * (for example `CARGO_HOME`), or `null`.
  */
 followedBy: string | null }
+/**
+ * A saved rule.
+ */
+export type RuleView = { 
+/**
+ * Identity of the rule (pass it to `removeProcessRule`): the executable path in lower case,
+ * or the name when the path was not known.
+ */
+id: string; 
+/**
+ * The executable name.
+ */
+name: string; 
+/**
+ * The executable path, when it was known.
+ */
+path: string | null; 
+/**
+ * What it applies.
+ */
+request: TuneRequestView; 
+/**
+ * Why it was last not applied, until it works again.
+ */
+problem: RuleProblemView | null }
 /**
  * One item of a rule the user picks from.
  */
@@ -2591,6 +2744,56 @@ export type StartupSource =
  * A source this version of the UI does not know.
  */
 "other"
+/**
+ * What the user chose for an app. A field left out (`null`) is left alone.
+ */
+export type TuneRequestView = { 
+/**
+ * The priority class. Efficiency mode on overrides it with Low.
+ */
+priority: PriorityView | null; 
+/**
+ * The cores to run on, by number (0 is the first). Must not be empty.
+ */
+cores: number[] | null; 
+/**
+ * Efficiency mode: on is power throttling together with Low priority; off turns throttling
+ * off.
+ */
+efficiency: boolean | null }
+/**
+ * What a change did.
+ */
+export type TuneResult = { 
+/**
+ * The executable name.
+ */
+name: string; 
+/**
+ * Processes whose settings were changed.
+ */
+changed: number; 
+/**
+ * Processes that already had what was asked for.
+ */
+alreadySet: number; 
+/**
+ * Processes Windows would not let Volt change (administrator rights).
+ */
+needsAdministrator: number; 
+/**
+ * Processes that had ended or could not be read.
+ */
+skipped: number; 
+/**
+ * Whether the change was written to the activity history. It is in the undo journal either
+ * way.
+ */
+recorded: boolean; 
+/**
+ * Whether the settings were saved as a rule for the app.
+ */
+ruleSaved: boolean }
 /**
  * The group a tweak is listed under.
  */

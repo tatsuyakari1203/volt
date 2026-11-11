@@ -18,10 +18,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::activity::{
     self, ActivityLog, ActivityOutcome, NewActivity, RestoreVerb, applied_summary, exec_phrase,
-    failure_summary, restored_summary, revert_phrase,
+    failure_summary, nothing_to_restore_summary, restored_summary, revert_phrase,
 };
 use crate::error::{ExecError, PortError, RevertError};
 use crate::journal::{BatchId, EntryId, EntryState, Journal, NewEntry, Source};
+use crate::operation::Operation;
 use crate::phrase::Phrase;
 use crate::plan::{Plan, PlanItem};
 use crate::ports::Ports;
@@ -601,6 +602,20 @@ impl Executor {
         // Restoring is idempotent, so a crash between this call and the state
         // update below only means the entry is reverted again later.
         if let Err(error) = entry.operation.revert(&entry.prior, &self.ports) {
+            // Processes that have all ended have nothing left to restore: the undo is a no-op
+            // that says so, and the entry counts as undone.
+            if matches!(error, PortError::NotFound(_))
+                && matches!(entry.operation, Operation::TuneProcesses { .. })
+            {
+                let marked = self.journal.set_state(id, EntryState::Reverted, None);
+                self.note(
+                    outcome,
+                    source,
+                    nothing_to_restore_summary(verb, &entry.operation, marked.is_err()),
+                    links,
+                );
+                return marked.map_err(RevertError::MarkReverted);
+            }
             let error = RevertError::Port(error);
             self.note(
                 ActivityOutcome::Failed,

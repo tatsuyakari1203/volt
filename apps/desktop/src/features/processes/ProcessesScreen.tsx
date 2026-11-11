@@ -1,7 +1,7 @@
 import { Loader2, TriangleAlert } from 'lucide-react';
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { t, tn } from '../../shared/i18n';
-import { endApp, type ProcessGroupView } from '../../shared/ipc';
+import { endApp, type ProcessGroupView, type TuneResult } from '../../shared/ipc';
 import { describeError } from '../../shared/text/memory';
 import {
   Button,
@@ -14,7 +14,9 @@ import {
 } from '../../shared/ui';
 import { EndDialog } from './EndDialog';
 import { ProcessRow } from './ProcessRow';
-import { endSummary, type SortKey, visibleGroups } from './processes';
+import { endSummary, type SortKey, tuneSummary, visibleGroups } from './processes';
+import { RulesCard, useProcessRules } from './RulesCard';
+import { TuneDialog } from './TuneDialog';
 import { useProcessList } from './useProcessList';
 
 function sortOptions() {
@@ -47,16 +49,20 @@ function Notice({ message, onDismiss }: { message: string; onDismiss?: () => voi
 
 /**
  * The Processes screen: what uses memory and CPU right now, grouped by app, refreshed about every
- * two seconds while the screen is open. An app can be ended after a confirmation. What may be
- * ended is decided by the Rust core (Windows-critical apps and Volt are never offered and are
- * refused there too): this renders what the commands report.
+ * two seconds while the screen is open. An app can be ended after a confirmation, or have its
+ * priority, cores and Efficiency mode changed (optionally saved as a rule that is applied again
+ * whenever it starts). What may be ended or changed is decided by the Rust core (Windows-critical
+ * apps and Volt are never offered and are refused there too): this renders what the commands
+ * report.
  */
 export function ProcessesScreen() {
   const toast = useToast();
   const { load, refresh } = useProcessList();
+  const processRules = useProcessRules();
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState<SortKey>('memory');
   const [target, setTarget] = useState<ProcessGroupView | null>(null);
+  const [tuning, setTuning] = useState<ProcessGroupView | null>(null);
   const [ending, setEnding] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const alive = useRef(true);
@@ -77,6 +83,16 @@ export function ProcessesScreen() {
 
   // A stable function, so a reading does not redraw rows whose numbers did not change.
   const askToEnd = useCallback((group: ProcessGroupView) => setTarget(group), []);
+  const openTune = useCallback((group: ProcessGroupView) => setTuning(group), []);
+
+  const tuned = (result: TuneResult) => {
+    const summary = tuneSummary(result);
+    setTuning(null);
+    if (summary.problem) setNotice(summary.text);
+    else toast.show({ message: summary.text });
+    if (result.ruleSaved) processRules.reload();
+    refresh();
+  };
 
   const confirmEnd = async () => {
     if (!target) return;
@@ -163,11 +179,11 @@ export function ProcessesScreen() {
                   <span className="flex-1">{t('processes.column.app')}</span>
                   <span className="w-16 text-right">{t('processes.column.memory')}</span>
                   <span className="w-12 text-right">{t('processes.column.cpu')}</span>
-                  <span className="w-20" />
+                  <span className="w-24" />
                 </div>
                 <ListGroup aria-label={t('processes.list.label')}>
                   {shown.map((group) => (
-                    <ProcessRow key={group.id} group={group} onEnd={askToEnd} />
+                    <ProcessRow key={group.id} group={group} onEnd={askToEnd} onTune={openTune} />
                   ))}
                 </ListGroup>
               </div>
@@ -181,7 +197,14 @@ export function ProcessesScreen() {
             <p className="text-caption text-muted">{t('processes.footnote')}</p>
           </>
         ) : null}
+        <RulesCard
+          rules={processRules.rules}
+          problem={processRules.problem}
+          busy={processRules.busy}
+          onRemove={(id) => void processRules.remove(id)}
+        />
       </div>
+      <TuneDialog group={tuning} onClose={() => setTuning(null)} onDone={tuned} />
       <EndDialog
         group={target}
         ending={ending}

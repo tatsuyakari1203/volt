@@ -23,6 +23,7 @@ pub mod processes;
 mod sampler;
 mod tray;
 mod trend;
+pub mod tuning;
 pub mod unsupported;
 mod window;
 pub mod wiring;

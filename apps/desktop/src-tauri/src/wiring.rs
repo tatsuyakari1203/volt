@@ -20,9 +20,9 @@ use tauri::{AppHandle, Manager as _};
 use volt_core::{
     ActivityLog, AppManager, Catalogue, CatalogueError, CleanEngine, CleaningRules, Clock,
     Elevator, Executor, FilePublisher, Journal, KnownFolders, LargeFilesFinder, LogonTasks,
-    MemoryCleaner, OwnInstall, PortError, Ports, ProcessMonitor, ReconcileReport,
-    RecycleBinManager, Resolution, RulesError, Settings, ShortcutResolver, StartupManager,
-    StartupSources, SystemClock, TweakEngine,
+    MemoryCleaner, OwnInstall, PortError, Ports, ProcessMonitor, ProcessTuner, Processes,
+    ReconcileReport, RecycleBinManager, Resolution, RulesError, Settings, ShortcutResolver,
+    StartupManager, StartupSources, SystemClock, TweakEngine,
 };
 use volt_store::{CorruptionRecovery, OpenOutcome, Store, StoreError};
 use volt_win::{
@@ -118,6 +118,7 @@ pub struct AppCore {
     recycle_bin: Option<RecycleBinManager>,
     memory_cleaner: Option<MemoryCleaner>,
     process_monitor: Option<ProcessMonitor>,
+    process_tuner: Option<ProcessTuner>,
     elevator: Option<Arc<dyn Elevator>>,
     apps: Option<AppManager>,
 }
@@ -159,6 +160,7 @@ impl AppCore {
             recycle_bin: None,
             memory_cleaner: None,
             process_monitor: None,
+            process_tuner: None,
             elevator: None,
             apps: None,
         }
@@ -265,6 +267,24 @@ impl AppCore {
             .as_ref()
             .ok_or_else(|| IpcError::Unsupported {
                 message: "the process list is not available in this build".to_owned(),
+            })
+    }
+
+    /// The same core with the process tuner attached. [`build_core`] always does; a core
+    /// assembled by hand has none until this is called.
+    #[must_use]
+    pub fn with_process_tuner(mut self, tuner: ProcessTuner) -> Self {
+        self.process_tuner = Some(tuner);
+        self
+    }
+
+    /// The process tuner (priority, affinity, Efficiency mode and the saved rules), or the error
+    /// the commands return without one.
+    pub fn process_tuner(&self) -> Result<&ProcessTuner, IpcError> {
+        self.process_tuner
+            .as_ref()
+            .ok_or_else(|| IpcError::Unsupported {
+                message: "changing process settings is not available in this build".to_owned(),
             })
     }
 
@@ -504,9 +524,17 @@ fn build_core_inner(
     .with_activity_log(activity.clone());
 
     let (registry, file_system) = (ports.registry.clone(), ports.file_system.clone());
+    let (tuner_processes, tuner_clock) = (ports.processes.clone(), clock.clone());
     let startup_clock = clock.clone();
     let engine = TweakEngine::new(catalogue, ports, journal.clone(), clock)
         .with_activity_log(activity.clone());
+    let process_tuner = process_tuner(
+        tuner_processes,
+        engine.executor().clone(),
+        settings.clone(),
+        tuner_clock,
+        activity.clone(),
+    );
     let startup_apps = startup.map(|wiring| {
         let (shortcuts, logon_tasks) = (wiring.shortcuts, wiring.logon_tasks);
         let mut manager = StartupManager::new(
@@ -541,11 +569,25 @@ fn build_core_inner(
     .with_clean_engine(clean)
     .with_large_files(large_files)
     .with_memory_cleaner(memory_cleaner)
-    .with_process_monitor(process_monitor);
+    .with_process_monitor(process_monitor)
+    .with_process_tuner(process_tuner);
     Ok(match startup_apps {
         Some(manager) => core.with_startup_apps(manager),
         None => core,
     })
+}
+
+/// The process tuner. Process settings go through the engine's executor (`executor`): the same
+/// journal and activity log, so a change shows on the Undo page and can be undone like any other.
+fn process_tuner(
+    processes: Arc<dyn Processes>,
+    executor: Executor,
+    settings: Arc<dyn Settings>,
+    clock: Arc<dyn Clock>,
+    activity: Arc<dyn ActivityLog>,
+) -> ProcessTuner {
+    ProcessTuner::new(processes, executor, settings, clock, std::process::id())
+        .with_activity_log(activity)
 }
 
 /// The ports of the real machine: the Windows adapters of `volt-win`, plus

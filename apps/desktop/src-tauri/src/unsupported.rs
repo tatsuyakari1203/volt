@@ -8,7 +8,7 @@
 //!
 //! The one tweak in the catalogue today is a registry value, so this is not reached.
 
-use volt_core::{PortError, ProcessInfo, Processes};
+use volt_core::{PortError, ProcessChange, ProcessInfo, ProcessSettings, Processes};
 
 fn unsupported(what: &str) -> PortError {
     PortError::Unsupported(format!("{what} has no Windows adapter yet"))
@@ -25,6 +25,19 @@ impl Processes for UnsupportedProcesses {
 
     fn terminate(&self, _pid: u32, _created_at_100ns: u64) -> Result<(), PortError> {
         Err(unsupported("ending a process"))
+    }
+
+    fn settings(&self, _pid: u32, _created_at_100ns: u64) -> Result<ProcessSettings, PortError> {
+        Err(unsupported("reading process settings"))
+    }
+
+    fn apply_settings(
+        &self,
+        _pid: u32,
+        _created_at_100ns: u64,
+        _change: &ProcessChange,
+    ) -> Result<(), PortError> {
+        Err(unsupported("changing process settings"))
     }
 }
 

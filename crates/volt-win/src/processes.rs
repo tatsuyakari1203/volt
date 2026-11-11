@@ -7,18 +7,34 @@
 //! path needs one limited-rights handle per process (it is left out for the processes a normal user
 //! cannot open). Ending a process opens only that process with `PROCESS_TERMINATE`, and checks on
 //! that handle that it started when the listing said, so a reused process id is never ended.
+//!
+//! Reading and changing the priority class, the CPU affinity and the power throttling of a process
+//! opens only that process with the right to change it (`PROCESS_SET_INFORMATION`), which an
+//! unelevated user has for their own unprotected processes and not for elevated, other users' or
+//! protected ones. Asking for that right when reading means a process that can be read can be
+//! changed, so a refusal shows up before anything is journaled. The creation time is checked on
+//! the handle, as for ending a process.
 
 use std::ffi::c_void;
 
-use volt_core::{PortError, ProcessInfo, Processes};
+use volt_core::{
+    PortError, PowerThrottling, PriorityClass, ProcessChange, ProcessInfo, ProcessSettings,
+    Processes,
+};
 use windows::Wdk::System::SystemInformation::{NtQuerySystemInformation, SYSTEM_INFORMATION_CLASS};
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, FILETIME, HANDLE,
     STATUS_BUFFER_TOO_SMALL, STATUS_INFO_LENGTH_MISMATCH,
 };
 use windows::Win32::System::Threading::{
-    GetProcessTimes, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
-    PROCESS_TERMINATE, QueryFullProcessImageNameW, TerminateProcess,
+    ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, GetPriorityClass,
+    GetProcessAffinityMask, GetProcessInformation, GetProcessTimes, HIGH_PRIORITY_CLASS,
+    IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS, OpenProcess, PROCESS_CREATION_FLAGS,
+    PROCESS_NAME_WIN32, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+    PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION, PROCESS_TERMINATE,
+    ProcessPowerThrottling, QueryFullProcessImageNameW, SetPriorityClass, SetProcessAffinityMask,
+    SetProcessInformation, TerminateProcess,
 };
 use windows::core::PWSTR;
 
@@ -229,6 +245,188 @@ impl Processes for WinProcesses {
         // SAFETY: `handle.0` is a valid process handle with the terminate right.
         unsafe { TerminateProcess(handle.0, 1) }.map_err(|e| terminate_error(win32_code(&e), pid))
     }
+
+    fn settings(&self, pid: u32, created_at_100ns: u64) -> Result<ProcessSettings, PortError> {
+        let handle = open_for_tuning(pid, created_at_100ns)?;
+        read_settings(&handle, pid)
+    }
+
+    fn apply_settings(
+        &self,
+        pid: u32,
+        created_at_100ns: u64,
+        change: &ProcessChange,
+    ) -> Result<(), PortError> {
+        let handle = open_for_tuning(pid, created_at_100ns)?;
+        let before = read_settings(&handle, pid)?;
+        if let Err(error) = write_settings(&handle, change) {
+            // All or nothing: put back the fields that were already written.
+            let _ = write_settings(&handle, &change.restoring(&before));
+            return Err(error);
+        }
+        Ok(())
+    }
+}
+
+/// Opens `pid` with the right to read and change its settings, and checks that it is the process
+/// that started at `created_at_100ns`.
+fn open_for_tuning(pid: u32, created_at_100ns: u64) -> Result<Handle, PortError> {
+    // The kernel's own processes are never tuned (the core refuses them too).
+    if pid <= SYSTEM_PID || pid == std::process::id() {
+        return Err(PortError::InvalidInput(format!(
+            "process {pid} is never changed by Volt"
+        )));
+    }
+    // SAFETY: plain call; the handle is wrapped at once so it is closed on every path.
+    let handle = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION,
+            false,
+            pid,
+        )
+    }
+    .map(Handle)
+    .map_err(|e| tuning_error(win32_code(&e), pid))?;
+    match created_at(&handle) {
+        Some(created) if created == created_at_100ns => Ok(handle),
+        Some(_) => Err(PortError::NotFound(format!("process {pid}"))),
+        None => Err(PortError::Other(
+            "the start time of the process could not be read".into(),
+        )),
+    }
+}
+
+/// Bytes of a `PROCESS_POWER_THROTTLING_STATE` (three 32-bit fields), as the calls want them.
+const THROTTLING_STATE_SIZE: u32 = 12;
+const _: () =
+    assert!(size_of::<PROCESS_POWER_THROTTLING_STATE>() == THROTTLING_STATE_SIZE as usize);
+
+fn priority_flags(class: PriorityClass) -> PROCESS_CREATION_FLAGS {
+    match class {
+        PriorityClass::Idle => IDLE_PRIORITY_CLASS,
+        PriorityClass::BelowNormal => BELOW_NORMAL_PRIORITY_CLASS,
+        PriorityClass::Normal => NORMAL_PRIORITY_CLASS,
+        PriorityClass::AboveNormal => ABOVE_NORMAL_PRIORITY_CLASS,
+        PriorityClass::High => HIGH_PRIORITY_CLASS,
+    }
+}
+
+/// The class behind a `GetPriorityClass` value; `None` for one Volt does not offer (Realtime).
+fn priority_of(flags: u32) -> Option<PriorityClass> {
+    PriorityClass::OFFERED
+        .into_iter()
+        .find(|class| priority_flags(*class).0 == flags)
+}
+
+fn read_priority(handle: &Handle, pid: u32) -> Result<PriorityClass, PortError> {
+    // SAFETY: `handle.0` is a valid process handle with the query right.
+    let flags = unsafe { GetPriorityClass(handle.0) };
+    if flags == 0 {
+        return Err(from_win32(
+            win32_code(&windows::core::Error::from_thread()),
+            "reading a priority class",
+        ));
+    }
+    priority_of(flags).ok_or_else(|| {
+        PortError::Unsupported(format!(
+            "process {pid} has a priority class Volt does not offer"
+        ))
+    })
+}
+
+fn read_affinity(handle: &Handle) -> Result<(u64, u64), PortError> {
+    let (mut process, mut system) = (0usize, 0usize);
+    // SAFETY: `handle.0` is a valid process handle with the query right and both out pointers
+    // are valid for the call.
+    unsafe { GetProcessAffinityMask(handle.0, &raw mut process, &raw mut system) }
+        .map_err(|e| from_win32(win32_code(&e), "reading an affinity"))?;
+    Ok((process as u64, system as u64))
+}
+
+fn read_throttling(handle: &Handle) -> Result<PowerThrottling, PortError> {
+    // Windows wants the version in the structure it fills.
+    let mut state = PROCESS_POWER_THROTTLING_STATE {
+        Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        ..PROCESS_POWER_THROTTLING_STATE::default()
+    };
+    // SAFETY: `state` is a writable `PROCESS_POWER_THROTTLING_STATE` of the size passed, valid
+    // for the call.
+    unsafe {
+        GetProcessInformation(
+            handle.0,
+            ProcessPowerThrottling,
+            (&raw mut state).cast::<c_void>(),
+            THROTTLING_STATE_SIZE,
+        )
+    }
+    .map_err(|e| from_win32(win32_code(&e), "reading power throttling"))?;
+    Ok(
+        if state.ControlMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED == 0 {
+            PowerThrottling::Default
+        } else if state.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED != 0 {
+            PowerThrottling::On
+        } else {
+            PowerThrottling::Off
+        },
+    )
+}
+
+fn write_throttling(handle: &Handle, throttling: PowerThrottling) -> Result<(), PortError> {
+    // `Default` hands the decision back to Windows: the bit is no longer controlled.
+    let (control, state) = match throttling {
+        PowerThrottling::Default => (0, 0),
+        PowerThrottling::On => (
+            PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+            PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+        ),
+        PowerThrottling::Off => (PROCESS_POWER_THROTTLING_EXECUTION_SPEED, 0),
+    };
+    let state = PROCESS_POWER_THROTTLING_STATE {
+        Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        ControlMask: control,
+        StateMask: state,
+    };
+    // SAFETY: `state` is a valid `PROCESS_POWER_THROTTLING_STATE` of the size passed, and the
+    // handle has the set-information right.
+    unsafe {
+        SetProcessInformation(
+            handle.0,
+            ProcessPowerThrottling,
+            (&raw const state).cast::<c_void>(),
+            THROTTLING_STATE_SIZE,
+        )
+    }
+    .map_err(|e| from_win32(win32_code(&e), "setting power throttling"))
+}
+
+fn read_settings(handle: &Handle, pid: u32) -> Result<ProcessSettings, PortError> {
+    let (affinity_mask, system_affinity_mask) = read_affinity(handle)?;
+    Ok(ProcessSettings {
+        priority: read_priority(handle, pid)?,
+        affinity_mask,
+        system_affinity_mask,
+        throttling: read_throttling(handle)?,
+    })
+}
+
+/// Writes the fields of `change`, in the order priority, affinity, throttling.
+fn write_settings(handle: &Handle, change: &ProcessChange) -> Result<(), PortError> {
+    if let Some(class) = change.priority {
+        // SAFETY: `handle.0` is a valid process handle with the set-information right.
+        unsafe { SetPriorityClass(handle.0, priority_flags(class)) }
+            .map_err(|e| from_win32(win32_code(&e), "setting a priority class"))?;
+    }
+    if let Some(mask) = change.affinity_mask {
+        let mask = usize::try_from(mask)
+            .map_err(|_| PortError::InvalidInput("the affinity is not valid".into()))?;
+        // SAFETY: `handle.0` is a valid process handle with the set-information right.
+        unsafe { SetProcessAffinityMask(handle.0, mask) }
+            .map_err(|e| from_win32(win32_code(&e), "setting an affinity"))?;
+    }
+    if let Some(throttling) = change.throttling {
+        write_throttling(handle, throttling)?;
+    }
+    Ok(())
 }
 
 /// When the process behind `handle` started, as a file time in 100 ns ticks.
@@ -290,6 +488,17 @@ fn terminate_error(code: u32, pid: u32) -> PortError {
         PortError::AccessDenied(format!("ending process {pid}"))
     } else {
         from_win32(code, "ending a process")
+    }
+}
+
+/// The typed error of a failed open for tuning, as for [`terminate_error`].
+fn tuning_error(code: u32, pid: u32) -> PortError {
+    if code == ERROR_INVALID_PARAMETER.0 {
+        PortError::NotFound(format!("process {pid}"))
+    } else if code == ERROR_ACCESS_DENIED.0 {
+        PortError::AccessDenied(format!("changing process {pid}"))
+    } else {
+        from_win32(code, "changing a process")
     }
 }
 
@@ -408,6 +617,122 @@ mod tests {
         let status = child.wait().expect("wait");
         assert_eq!(status.code(), Some(1));
         assert!(!processes.list().expect("list").iter().any(|p| p.pid == pid));
+    }
+
+    #[test]
+    fn a_child_the_test_started_can_be_tuned_and_put_back() {
+        let mut child = sleeper();
+        let pid = child.id();
+        let processes = WinProcesses::new();
+        let created = processes
+            .list()
+            .expect("list")
+            .iter()
+            .find(|p| p.pid == pid)
+            .expect("the child")
+            .created_at_100ns;
+
+        let before = processes.settings(pid, created).expect("read");
+        assert_eq!(before.priority, PriorityClass::Normal);
+        assert_ne!(before.affinity_mask, 0);
+        assert_eq!(before.affinity_mask & !before.system_affinity_mask, 0);
+        assert_eq!(before.throttling, PowerThrottling::Default);
+
+        // Efficiency mode, as the core asks for it: the lowest class and forced throttling.
+        let efficiency = ProcessChange {
+            priority: Some(PriorityClass::Idle),
+            affinity_mask: None,
+            throttling: Some(PowerThrottling::On),
+        };
+        processes
+            .apply_settings(pid, created, &efficiency)
+            .expect("efficiency");
+        let tuned = processes.settings(pid, created).expect("read");
+        assert_eq!(tuned.priority, PriorityClass::Idle);
+        assert_eq!(tuned.throttling, PowerThrottling::On);
+        assert_eq!(tuned.affinity_mask, before.affinity_mask);
+
+        // One core: the lowest bit that the system offers.
+        let one_core = before.system_affinity_mask & before.system_affinity_mask.wrapping_neg();
+        processes
+            .apply_settings(
+                pid,
+                created,
+                &ProcessChange {
+                    priority: Some(PriorityClass::AboveNormal),
+                    affinity_mask: Some(one_core),
+                    throttling: None,
+                },
+            )
+            .expect("one core");
+        let narrow = processes.settings(pid, created).expect("read");
+        assert_eq!(
+            (narrow.priority, narrow.affinity_mask),
+            (PriorityClass::AboveNormal, one_core)
+        );
+        assert_eq!(
+            narrow.throttling,
+            PowerThrottling::On,
+            "not asked for, so left alone"
+        );
+
+        // An empty affinity is refused by Windows, and nothing is half-changed.
+        let refused = processes.apply_settings(
+            pid,
+            created,
+            &ProcessChange {
+                priority: Some(PriorityClass::High),
+                affinity_mask: Some(0),
+                throttling: None,
+            },
+        );
+        assert!(refused.is_err());
+        assert_eq!(processes.settings(pid, created).expect("read"), narrow);
+
+        // Putting back what was read restores everything.
+        let restore = ProcessChange {
+            priority: Some(before.priority),
+            affinity_mask: Some(before.affinity_mask),
+            throttling: Some(before.throttling),
+        };
+        processes
+            .apply_settings(pid, created, &restore)
+            .expect("restore");
+        assert_eq!(processes.settings(pid, created).expect("read"), before);
+
+        // A stale listing (another creation time) touches nothing.
+        assert!(matches!(
+            processes.apply_settings(pid, created + 1, &efficiency),
+            Err(PortError::NotFound(_))
+        ));
+        assert_eq!(processes.settings(pid, created).expect("read"), before);
+
+        child.kill().expect("end the test's own child");
+        child.wait().expect("wait");
+        // An id that no process has is not found.
+        assert!(matches!(
+            processes.settings(0x7FFF_FFF0, 0),
+            Err(PortError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn the_adapter_refuses_the_kernel_and_itself_for_tuning_too() {
+        let processes = WinProcesses::new();
+        for pid in [0, 4, std::process::id()] {
+            assert!(matches!(
+                processes.settings(pid, 0),
+                Err(PortError::InvalidInput(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn priority_flags_round_trip_and_realtime_is_not_offered() {
+        for class in PriorityClass::OFFERED {
+            assert_eq!(priority_of(priority_flags(class).0), Some(class));
+        }
+        assert_eq!(priority_of(0x100), None);
     }
 
     #[test]

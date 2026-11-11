@@ -314,6 +314,9 @@ pub fn prior_phrase(prior: &PriorState) -> Phrase {
         PriorState::ServiceStartType(start_type) => start_type_phrase(*start_type),
         PriorState::CommandState(true) => Phrase::new("prior.applied"),
         PriorState::CommandState(false) => Phrase::new("prior.notApplied"),
+        PriorState::Processes(settings) => {
+            Phrase::new("prior.processes").count("count", settings.iter().flatten().count())
+        }
     }
 }
 
@@ -341,6 +344,9 @@ pub fn restore_phrase(prior: &PriorState) -> Phrase {
         PriorState::ServiceStartType(start_type) => set_back(start_type_phrase(*start_type)),
         PriorState::CommandState(true) => Phrase::new("restore.inEffect"),
         PriorState::CommandState(false) => Phrase::new("restore.notInEffect"),
+        PriorState::Processes(settings) => {
+            Phrase::new("restore.processes").count("count", settings.iter().flatten().count())
+        }
     }
 }
 
@@ -390,6 +396,9 @@ pub fn subject_phrase(operation: &Operation) -> Phrase {
         Operation::RunCommand { apply, .. } => {
             Phrase::new("subject.command").text("program", apply.program.to_string())
         }
+        Operation::TuneProcesses { name, .. } => {
+            Phrase::new("subject.process").text("name", name.clone())
+        }
     }
 }
 
@@ -419,6 +428,9 @@ pub(crate) fn applied_summary(operation: &Operation) -> Phrase {
         }
         Operation::RunCommand { .. } => {
             Phrase::new("summary.appliedPlain").phrase("subject", subject_phrase(operation))
+        }
+        Operation::TuneProcesses { name, change, .. } => {
+            crate::tuning::applied_phrase_of(name, change)
         }
     }
 }
@@ -475,8 +487,23 @@ pub(crate) fn restored_summary(
         Phrase::new("summary.restored")
             .phrase("verb", verb.done())
             .phrase("subject", subject_phrase(operation))
-            .phrase("prior", prior_phrase(prior)),
+            .phrase("prior", prior_phrase_for(operation, prior)),
     )
+}
+
+/// `Reverted <subject>: every process had already ended, so there was nothing to restore`.
+pub(crate) fn nothing_to_restore_summary(
+    verb: RestoreVerb,
+    operation: &Operation,
+    journal_note: bool,
+) -> Phrase {
+    Phrase::new("summary.processesEnded")
+        .phrase("verb", verb.done())
+        .phrase("subject", subject_phrase(operation))
+        .maybe(
+            "note",
+            journal_note.then(|| Phrase::new("summary.journalNote")),
+        )
 }
 
 // ---- startup entries: the same change, said in plain words ---------------------------------
@@ -517,10 +544,23 @@ fn startup_restored_state(operation: &Operation, prior: &PriorState) -> Option<(
 /// `disabled` instead of `REG_BINARY (12 bytes)`.
 #[must_use]
 pub fn prior_phrase_for(operation: &Operation, prior: &PriorState) -> Phrase {
+    if let Some(settings) = process_prior(operation, prior) {
+        return settings;
+    }
     match startup_prior_words(operation, prior) {
         Some(state) => Phrase::new(state),
         None => prior_phrase(prior),
     }
+}
+
+/// What processes held before a change, for the fields the change touched.
+fn process_prior(operation: &Operation, prior: &PriorState) -> Option<Phrase> {
+    let (Operation::TuneProcesses { change, .. }, PriorState::Processes(before)) =
+        (operation, prior)
+    else {
+        return None;
+    };
+    crate::tuning::prior_phrase_of(change, before)
 }
 
 /// [`prior_phrase_for`] in English.
@@ -532,6 +572,9 @@ pub fn redacted_prior_for(operation: &Operation, prior: &PriorState) -> String {
 /// [`restore_phrase`] for a journal entry, with the same startup wording.
 #[must_use]
 pub fn restore_phrase_for(operation: &Operation, prior: &PriorState) -> Phrase {
+    if let Some(settings) = process_prior(operation, prior) {
+        return Phrase::new("restore.setBack").phrase("to", settings);
+    }
     match startup_prior_words(operation, prior) {
         Some("startup.noRecord") => Phrase::new("restore.startupNoRecord"),
         Some(state) => Phrase::new("restore.setBack").phrase("to", Phrase::new(state)),

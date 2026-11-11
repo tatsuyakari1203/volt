@@ -28,6 +28,7 @@ import {
   type FolderRefusal,
   type HealthView,
   type HistoryStatus,
+  type InspectionView,
   type IpcError,
   type ItemPick,
   type LanguageChoice,
@@ -44,8 +45,11 @@ import {
   type RecycleBinView,
   type Result,
   type RevertResult,
+  type RuleView,
   type StartupChangeResult,
   type StartupList,
+  type TuneRequestView,
+  type TuneResult,
   type TweakInfo,
   type TweakPlanView,
   type UndoPreview,
@@ -99,6 +103,7 @@ export type {
   HealthLevelView,
   HealthView,
   HiddenReasonView,
+  InspectionView,
   IpcError,
   ItemPick,
   JunkView,
@@ -120,6 +125,7 @@ export type {
   MovedToBinView,
   OperationState,
   PhraseView,
+  PriorityView,
   ProcessEndView,
   ProcessGroupView,
   ProcessListView,
@@ -129,7 +135,9 @@ export type {
   RevertStatus,
   RiskLevel,
   RuleCleanView,
+  RuleProblemView,
   RuleScanView,
+  RuleView,
   ScanItemView,
   ScheduledTaskView,
   SkipGroup,
@@ -140,6 +148,8 @@ export type {
   StartupList,
   StartupProblemView,
   StartupSource,
+  TuneRequestView,
+  TuneResult,
   TweakCategory,
   TweakInfo,
   TweakPlanView,
@@ -635,6 +645,39 @@ export async function listProcesses(): Promise<ProcessListView> {
  */
 export async function endApp(id: string): Promise<EndAppResult> {
   return call(() => commands.endApp(id));
+}
+
+/**
+ * What the processes of an app (by `id`) hold now: priority, cores and Efficiency mode when all
+ * its processes agree, and how many of them can be changed without administrator rights. Reads
+ * only. Protected apps are refused (`invalidInput`), an app that is not running is `notFound`.
+ */
+export async function inspectApp(id: string): Promise<InspectionView> {
+  return call(() => commands.inspectApp(id));
+}
+
+/**
+ * Changes the priority, cores and Efficiency mode of an app. A field set to `null` is left alone;
+ * an empty `cores` list is refused. Recorded in the undo journal (one entry for the whole app).
+ * With `saveRule` the same settings are saved as a rule that is applied again whenever the app
+ * starts. Processes that need administrator rights are counted in the result, not changed.
+ */
+export async function tuneApp(
+  id: string,
+  request: TuneRequestView,
+  saveRule: boolean,
+): Promise<TuneResult> {
+  return call(() => commands.tuneApp(id, request, saveRule));
+}
+
+/** The saved process rules, sorted by name. */
+export async function listProcessRules(): Promise<RuleView[]> {
+  return call(() => commands.listProcessRules());
+}
+
+/** Removes a saved rule by its `id`. Resolves with the rules that are left. */
+export async function removeProcessRule(id: string): Promise<RuleView[]> {
+  return call(() => commands.removeProcessRule(id));
 }
 
 /** The saved language choice and the display language of Windows, which `System` stands for. */

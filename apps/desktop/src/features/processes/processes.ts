@@ -1,5 +1,11 @@
 import { formatNumber, t, tn } from '../../shared/i18n';
-import type { EndAppResult, ProcessGroupView } from '../../shared/ipc';
+import type {
+  EndAppResult,
+  PriorityView,
+  ProcessGroupView,
+  TuneRequestView,
+  TuneResult,
+} from '../../shared/ipc';
 import { formatSize } from '../../shared/text/size';
 
 export type SortKey = 'memory' | 'cpu';
@@ -61,5 +67,62 @@ export function endSummary(result: EndAppResult): { text: string; problem: boole
     parts.push(t('processes.end.notRecorded'));
   }
   const problem = result.needsAdministrator > 0 || result.failed > 0 || !result.recorded;
+  return { text: parts.join(' '), problem };
+}
+
+/** The priority classes offered, lowest first. There is no Realtime: the core never offers it. */
+export const PRIORITIES: readonly PriorityView[] = [
+  'idle',
+  'belowNormal',
+  'normal',
+  'aboveNormal',
+  'high',
+];
+
+export function priorityLabel(priority: PriorityView): string {
+  return t(`processes.tune.priority.${priority}`);
+}
+
+/** What a saved rule applies, in one line: `Low priority, 4 cores, Efficiency mode on`. */
+export function ruleSummary(request: TuneRequestView): string {
+  const parts: string[] = [];
+  // Efficiency mode on means Low priority; it is said once, as the mode.
+  if (request.priority && request.efficiency !== true) {
+    parts.push(t('processes.rules.priority', { priority: priorityLabel(request.priority) }));
+  }
+  if (request.cores) parts.push(tn('count.core', request.cores.length));
+  if (request.efficiency !== null) {
+    parts.push(
+      request.efficiency ? t('processes.rules.efficiencyOn') : t('processes.rules.efficiencyOff'),
+    );
+  }
+  return parts.join(', ');
+}
+
+/** What a change did, in a few sentences. `problem` is true when something was left unchanged. */
+export function tuneSummary(result: TuneResult): { text: string; problem: boolean } {
+  const parts: string[] = [];
+  parts.push(
+    result.changed > 0
+      ? t('processes.tune.done', {
+          name: result.name,
+          processes: processesText(result.changed),
+        })
+      : t('processes.tune.nothingChanged', { name: result.name }),
+  );
+  if (result.alreadySet > 0) {
+    parts.push(t('processes.tune.alreadySet', { processes: processesText(result.alreadySet) }));
+  }
+  if (result.needsAdministrator > 0) {
+    parts.push(
+      t('processes.tune.leftAlone', { processes: processesText(result.needsAdministrator) }),
+    );
+  }
+  if (result.skipped > 0) {
+    parts.push(t('processes.tune.skipped', { processes: processesText(result.skipped) }));
+  }
+  if (result.ruleSaved) parts.push(t('processes.tune.ruleSaved', { name: result.name }));
+  if (!result.recorded) parts.push(t('processes.tune.notRecorded'));
+  const problem = result.needsAdministrator > 0 || result.skipped > 0 || !result.recorded;
   return { text: parts.join(' '), problem };
 }

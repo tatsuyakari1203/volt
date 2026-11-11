@@ -27,6 +27,7 @@ use crate::registry::{
 use crate::service::ServiceStartType;
 use crate::settings::Settings;
 use crate::time::{Clock, Timestamp};
+use crate::tuning::{PowerThrottling, PriorityClass, ProcessChange, ProcessSettings};
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -54,6 +55,8 @@ pub enum Event {
     FileTrashed(PathBuf),
     /// A process was terminated.
     ProcessTerminated(u32),
+    /// The settings of a process were changed.
+    ProcessTuned(u32),
     /// A memory area was purged.
     MemoryPurged(MemoryArea),
     /// A command that changes something was run (detect commands are reads
@@ -631,10 +634,25 @@ pub struct FakeProcesses {
     terminate_failures: Mutex<HashMap<u32, PortError>>,
     /// Creation times `list` reports instead of the real ones (a pid reused after the listing).
     listed_creation: Mutex<HashMap<u32, u64>>,
+    /// Settings of processes that differ from [`FakeProcesses::DEFAULT_SETTINGS`].
+    tuned: Mutex<HashMap<u32, ProcessSettings>>,
+    /// Errors `settings` returns for a pid.
+    settings_failures: Mutex<HashMap<u32, PortError>>,
+    /// Errors `apply_settings` returns for a pid (nothing is changed then).
+    apply_failures: Mutex<HashMap<u32, PortError>>,
     log: EventLog,
 }
 
 impl FakeProcesses {
+    /// What a process holds until a test or a change sets it: normal priority, eight cores,
+    /// power throttling left to Windows.
+    pub const DEFAULT_SETTINGS: ProcessSettings = ProcessSettings {
+        priority: PriorityClass::Normal,
+        affinity_mask: 0xFF,
+        system_affinity_mask: 0xFF,
+        throttling: PowerThrottling::Default,
+    };
+
     /// No processes, own event log.
     #[must_use]
     pub fn new() -> Self {
@@ -718,6 +736,40 @@ impl FakeProcesses {
     pub fn fail_terminate(&self, pid: u32, error: PortError) {
         lock(&self.terminate_failures).insert(pid, error);
     }
+
+    /// The settings of a running process, or `None` when there is none with that id.
+    #[must_use]
+    pub fn settings_of(&self, pid: u32) -> Option<ProcessSettings> {
+        let known = lock(&self.processes).iter().any(|p| p.pid == pid);
+        known.then(|| {
+            lock(&self.tuned)
+                .get(&pid)
+                .copied()
+                .unwrap_or(Self::DEFAULT_SETTINGS)
+        })
+    }
+
+    /// Sets what a process holds.
+    pub fn set_settings(&self, pid: u32, settings: ProcessSettings) {
+        lock(&self.tuned).insert(pid, settings);
+    }
+
+    /// Makes reading the settings of `pid` fail with `error` (for example access denied).
+    pub fn fail_settings(&self, pid: u32, error: PortError) {
+        lock(&self.settings_failures).insert(pid, error);
+    }
+
+    /// Makes changing the settings of `pid` fail with `error`; nothing is changed then.
+    pub fn fail_apply_settings(&self, pid: u32, error: PortError) {
+        lock(&self.apply_failures).insert(pid, error);
+    }
+
+    /// Whether a process with this id and creation time runs.
+    fn runs(&self, pid: u32, created_at_100ns: u64) -> bool {
+        lock(&self.processes)
+            .iter()
+            .any(|p| p.pid == pid && p.created_at_100ns == created_at_100ns)
+    }
 }
 
 impl Processes for FakeProcesses {
@@ -742,6 +794,43 @@ impl Processes for FakeProcesses {
             return Err(PortError::NotFound(format!("process {pid}")));
         }
         self.log.push(Event::ProcessTerminated(pid));
+        Ok(())
+    }
+
+    fn settings(&self, pid: u32, created_at_100ns: u64) -> Result<ProcessSettings, PortError> {
+        if !self.runs(pid, created_at_100ns) {
+            return Err(PortError::NotFound(format!("process {pid}")));
+        }
+        if let Some(error) = lock(&self.settings_failures).get(&pid) {
+            return Err(error.clone());
+        }
+        Ok(self.settings_of(pid).unwrap_or(Self::DEFAULT_SETTINGS))
+    }
+
+    fn apply_settings(
+        &self,
+        pid: u32,
+        created_at_100ns: u64,
+        change: &ProcessChange,
+    ) -> Result<(), PortError> {
+        let mut current = self.settings(pid, created_at_100ns)?;
+        if let Some(error) = lock(&self.apply_failures).get(&pid) {
+            return Err(error.clone());
+        }
+        if let Some(priority) = change.priority {
+            current.priority = priority;
+        }
+        if let Some(mask) = change.affinity_mask {
+            if mask == 0 || mask & !current.system_affinity_mask != 0 {
+                return Err(PortError::InvalidInput("the affinity is not valid".into()));
+            }
+            current.affinity_mask = mask;
+        }
+        if let Some(throttling) = change.throttling {
+            current.throttling = throttling;
+        }
+        lock(&self.tuned).insert(pid, current);
+        self.log.push(Event::ProcessTuned(pid));
         Ok(())
     }
 }
