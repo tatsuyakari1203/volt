@@ -615,19 +615,36 @@ fn killed_mid_apply(report: &mut Report, elevator: &WinElevator, registry: WinRe
         hello.is_ok(),
         format!("{:?}", hello.as_ref().map(|h| h.helper_version.clone())),
     );
-    let history = elevator.history(0, 20);
-    let settled = history.as_ref().ok().and_then(|reply| {
-        reply.records.iter().find(|record| {
-            record
-                .phrase
-                .as_ref()
-                .is_some_and(|phrase| phrase.code == "summary.interruptedNever")
-        })
+    // A reply holds as many records as fit one message, so read the log page by page to its end.
+    let mut records = Vec::new();
+    let mut after = 0_u64;
+    for _ in 0..50 {
+        let Ok(page) = elevator.history(after, 20) else {
+            break;
+        };
+        let Some(last) = page.records.last().map(|record| record.id.0) else {
+            break;
+        };
+        after = last;
+        records.extend(page.records);
+        if !page.more {
+            break;
+        }
+    }
+    let settled = records.iter().find(|record| {
+        record
+            .phrase
+            .as_ref()
+            .is_some_and(|phrase| phrase.code == "summary.interruptedNever")
     });
     report.check(
         "the next start settled the interrupted apply: the log says the change never happened",
         settled.is_some_and(|record| record.outcome == ActivityOutcome::Failed),
-        format!("{:?}", settled.map(|record| record.summary.clone())),
+        format!(
+            "{:?} of {} rows",
+            settled.map(|record| record.summary.clone()),
+            records.len()
+        ),
     );
     let nothing = elevator.tweak_revert(CRASH_TWEAK);
     report.check(
