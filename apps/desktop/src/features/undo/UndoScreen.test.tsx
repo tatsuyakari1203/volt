@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, it, vi } from 'vitest';
 import type { ActivityItem, ActivityPage, UndoResult } from '../../shared/ipc';
@@ -68,9 +68,10 @@ function deferred<T>() {
 
 /** The rows of the change list, groups flattened away. */
 function rows() {
-  return screen
-    .getAllByRole('listitem')
-    .filter((row) => row.querySelector('time') && !row.querySelector('ul'));
+  // A plain DOM query: role queries walk the accessibility tree and are slow with hundreds of rows.
+  return Array.from(document.querySelectorAll('li')).filter(
+    (row) => row.querySelector('time') && !row.querySelector('ul'),
+  );
 }
 
 beforeEach(() => {
@@ -622,29 +623,33 @@ it('shows a notice while the history is known to be incomplete', async () => {
 });
 
 it('keeps every loaded row, also beyond one page of 200, when the list is read again after an undo', async () => {
-  const user = userEvent.setup();
+  // 210 rows are just enough to need a second page of 200 on the re-read; fireEvent, not
+  // user-event, because every simulated pointer step is slow with that many rows on a busy machine.
   const many = (from: number, to: number) =>
     Array.from({ length: to - from + 1 }, (_, i) =>
       item(String(to - i), { summary: `Row ${to - i}` }),
     );
-  const first = many(201, 400);
-  first[0] = undoable('400', { summary: 'Row 400' });
-  ipc.listActivity.mockResolvedValueOnce(page(first, '201'));
-  ipc.listActivity.mockResolvedValueOnce(page(many(101, 200), '101'));
+  const first = many(111, 220);
+  first[0] = undoable('220', { summary: 'Row 220' });
+  ipc.listActivity.mockResolvedValueOnce(page(first, '111'));
+  ipc.listActivity.mockResolvedValueOnce(page(many(11, 110), '11'));
   render(<UndoScreen />);
-  await screen.findByText('Row 400');
-  await user.click(await screen.findByRole('button', { name: 'Show older' }));
-  await vi.waitFor(() => expect(rows()).toHaveLength(300));
+  await screen.findByText('Row 220');
+  fireEvent.click(await screen.findByText('Show older'));
+  await vi.waitFor(() => expect(rows()).toHaveLength(210));
   ipc.undoEntry.mockResolvedValue(result());
   // After the undo there is one more record at the top; the shell caps a page at 200.
-  const after = [item('401', { summary: 'Row 401', status: 'reverted' }), ...many(101, 400)];
-  ipc.listActivity.mockResolvedValueOnce(page(after.slice(0, 200), '202'));
+  const after = [item('221', { summary: 'Row 221', status: 'reverted' }), ...many(11, 220)];
+  ipc.listActivity.mockResolvedValueOnce(page(after.slice(0, 200), '22'));
   ipc.listActivity.mockResolvedValueOnce(page(after.slice(200), null));
-  await user.click(screen.getAllByRole('button', { name: /^Undo/ })[0] as HTMLElement);
-  await screen.findByText('Row 401');
-  expect(ipc.listActivity).toHaveBeenLastCalledWith(200, '202');
-  await vi.waitFor(() => expect(rows()).toHaveLength(301));
-}, 30_000);
+  const undoButton = Array.from(document.querySelectorAll('button')).find((b) =>
+    /^Undo/.test(b.textContent ?? ''),
+  );
+  fireEvent.click(undoButton as HTMLElement);
+  await screen.findByText('Row 221');
+  expect(ipc.listActivity).toHaveBeenLastCalledWith(200, '22');
+  await vi.waitFor(() => expect(rows()).toHaveLength(211));
+});
 
 it('clears the history after a confirmation that says undoable changes stay', async () => {
   const user = userEvent.setup();
