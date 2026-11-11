@@ -7,11 +7,13 @@ import {
   type DriftView,
   type ElevationStatusView,
   getElevationStatus,
+  getSystemProtection,
   getTweakPlan,
   listTweakDrift,
   listTweaks,
   resetTweak,
   revertTweak,
+  type SystemProtectionView,
   type TweakCategory,
   type TweakInfo,
   type TweakStateView,
@@ -97,6 +99,9 @@ export function TweaksScreen() {
   const [confirming, setConfirming] = useState<Confirmation | null>(null);
   // `null` until it is known, and when it could not be read: administrator tweaks stay locked.
   const [elevation, setElevation] = useState<ElevationStatusView | null>(null);
+  // A hint, read without any prompt: whether Windows can make the restore point that a Caution or
+  // Advanced administrator tweak needs. `unknown` until it is read, and when it cannot be.
+  const [protection, setProtection] = useState<SystemProtectionView>('unknown');
   const cancelRef = useRef<HTMLButtonElement>(null);
   const alive = useRef(true);
 
@@ -136,6 +141,16 @@ export function TweaksScreen() {
       })
       .catch(() => {
         if (alive.current) setElevation(null);
+      });
+  }, []);
+
+  useEffect(() => {
+    getSystemProtection()
+      .then((value) => {
+        if (alive.current) setProtection(value);
+      })
+      .catch(() => {
+        if (alive.current) setProtection('unknown');
       });
   }, []);
 
@@ -449,6 +464,7 @@ export function TweaksScreen() {
                         detailed={detailed}
                         busy={busy[tweak.id]}
                         elevation={elevation}
+                        protection={protection}
                         plan={plans[tweak.id]}
                         onToggle={toggle}
                         onUndo={(target) => void revert(target, true)}

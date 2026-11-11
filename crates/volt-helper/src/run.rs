@@ -45,6 +45,9 @@ pub mod exit {
     pub const STATE: u8 = 9;
     /// Another helper holds the single-helper lock.
     pub const LOCKED: u8 = 10;
+    /// The confirmation was shown and the input could not be put back on the person's desktop: the
+    /// helper ends so the private desktop goes with it. Nothing was changed.
+    pub const DESKTOP: u8 = 11;
 }
 
 /// Runs the helper for the argument list `argv` (the program name first) and returns the process
@@ -172,6 +175,7 @@ mod tests {
             exit::FAILED,
             exit::STATE,
             exit::LOCKED,
+            exit::DESKTOP,
         ];
         let mut sorted = codes.to_vec();
         sorted.sort_unstable();

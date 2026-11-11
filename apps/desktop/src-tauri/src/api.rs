@@ -198,6 +198,10 @@ pub enum ApplyStatus {
     /// The tweak needs a restore point first and Windows could not create one. Nothing was
     /// changed.
     RestorePointFailed,
+    /// No answer came in time (the person may still be answering the helper's confirmation, or
+    /// Windows is slow to make the restore point). The change may still be made: the helper's
+    /// record shows up on the Undo page the next time the helper runs.
+    TimedOut,
 }
 
 /// Precise result of [`apply_tweak`].
@@ -234,6 +238,9 @@ pub enum RevertStatus {
     /// The same request was declined lately, so it was refused without asking. Nothing was
     /// changed.
     Blocked,
+    /// No answer came in time. The revert may still be made: the helper's record shows up on the
+    /// Undo page the next time the helper runs.
+    TimedOut,
 }
 
 /// Precise result of [`revert_tweak`].
@@ -376,6 +383,9 @@ pub enum UndoStatus {
     /// The same request was declined lately, so it was refused without asking. Nothing was
     /// changed.
     Blocked,
+    /// No answer came in time. The undo may still be made: the helper's record shows up on the
+    /// Undo page the next time the helper runs.
+    TimedOut,
 }
 
 /// One change an undo could not restore.

@@ -144,6 +144,7 @@ pub fn apply(core: &AppCore, id: &str) -> Result<ApplyResult, IpcError> {
         Err(ElevationError::Refused(ErrorCode::RestorePointFailed)) => {
             Ok(result(ApplyStatus::RestorePointFailed, state()))
         }
+        Err(ElevationError::TimedOut) => Ok(result(ApplyStatus::TimedOut, state())),
         Err(error) => Err(ipc_error(&error)),
     }
 }
@@ -172,6 +173,7 @@ pub fn revert(core: &AppCore, id: &str) -> Result<RevertResult, IpcError> {
             Ok(result(RevertStatus::NotConfirmed, 0, 0))
         }
         Err(ElevationError::Refused(ErrorCode::Blocked)) => Ok(result(RevertStatus::Blocked, 0, 0)),
+        Err(ElevationError::TimedOut) => Ok(result(RevertStatus::TimedOut, 0, 0)),
         Err(error) => Err(ipc_error(&error)),
     }
 }
@@ -199,6 +201,7 @@ pub fn undo_change(core: &AppCore, tweak: &str) -> Result<UndoResult, IpcError> 
             Ok(outcome(UndoStatus::NotConfirmed, 0, 0))
         }
         Err(ElevationError::Refused(ErrorCode::Blocked)) => Ok(outcome(UndoStatus::Blocked, 0, 0)),
+        Err(ElevationError::TimedOut) => Ok(outcome(UndoStatus::TimedOut, 0, 0)),
         Err(error) => Err(ipc_error(&error)),
     }
 }

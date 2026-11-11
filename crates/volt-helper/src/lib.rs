@@ -31,6 +31,8 @@ compile_error!("the `elevated-ci` feature must never be enabled in a release bui
 pub mod confirm;
 #[cfg(not(helper_release))]
 pub mod debug;
+#[cfg(feature = "elevated-ci")]
+pub mod failpoint;
 pub mod ports;
 pub mod prompt_text;
 pub mod run;

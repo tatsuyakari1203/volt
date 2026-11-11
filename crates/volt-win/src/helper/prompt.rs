@@ -16,6 +16,13 @@
 //! 3. It fails closed: when the desktop cannot be created, cannot be switched to, or the current
 //!    input desktop cannot be read (the session is locked, say), the answer is
 //!    [`PromptAnswer::Unavailable`] and nothing is shown.
+//! 4. The person is never left on the empty private desktop: the switch back is retried
+//!    ([`SWITCH_BACK_TRIES`] times) and then tried once more to the session's `Default` desktop; when
+//!    even that fails the answer is [`PromptAnswer::SwitchBackFailed`] (whatever was clicked), and the
+//!    caller must end the process, which destroys the desktop and returns the input to `Default`.
+//!    A window thread that is not ready in time, or does not end, is handed to a reaper that closes
+//!    the desktop handle once the thread is gone (a desktop with a thread on it cannot be closed),
+//!    so the handle is never left open for the life of the process.
 //!
 //! The only way to get [`PromptAnswer::Accepted`] is a click on the accept button, or Enter or
 //! Space with that button focused, after [`BUTTON_DELAY`]. There is no argument, environment
@@ -111,6 +118,10 @@ pub enum PromptAnswer {
     TimedOut,
     /// The question could not be shown at all, for this reason. Nothing was shown.
     Unavailable(String),
+    /// The question was shown, but the input could not be put back on the person's desktop (not
+    /// even on `Default`). Whatever was clicked does not count. The caller ends the process: that
+    /// destroys the private desktop and Windows returns the input to the default one.
+    SwitchBackFailed(String),
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -304,9 +315,85 @@ impl Drop for InputDesktop {
     }
 }
 
-/// Makes `to` the input desktop and puts `back` there again on drop, whatever happens in between.
+/// How many times the switch back to the person's desktop is tried before the fallback.
+pub const SWITCH_BACK_TRIES: u32 = 5;
+/// The pause between two tries.
+const SWITCH_BACK_PAUSE: Duration = Duration::from_millis(300);
+/// The name of the session's ordinary desktop, the last place to try.
+const DEFAULT_DESKTOP: &str = "Default";
+
+/// Calls `attempt` until it succeeds or `tries` calls have failed, waiting `pause` between two
+/// calls with `sleep`. Returns the last error.
+fn retry<S>(
+    tries: u32,
+    pause: Duration,
+    mut attempt: impl FnMut() -> Result<(), String>,
+    sleep: S,
+) -> Result<(), String>
+where
+    S: Fn(Duration),
+{
+    let mut last = Err("no attempt was made".to_owned());
+    for index in 0..tries {
+        last = attempt();
+        if last.is_ok() {
+            return last;
+        }
+        if index + 1 < tries {
+            sleep(pause);
+        }
+    }
+    last
+}
+
+/// Puts the input back where the person was: the desktop that was the input desktop before, tried
+/// [`SWITCH_BACK_TRIES`] times, then the `Default` desktop by name, tried the same way.
+fn switch_back(back: &InputDesktop) -> Result<(), String> {
+    let first = retry(
+        SWITCH_BACK_TRIES,
+        SWITCH_BACK_PAUSE,
+        || {
+            // SAFETY: `back` is a valid handle to the desktop that was the input desktop before.
+            unsafe { SwitchDesktop(back.0) }.map_err(|e| failed("SwitchDesktop", &e))
+        },
+        std::thread::sleep,
+    );
+    let Err(first_error) = first else {
+        return Ok(());
+    };
+    log::error!("could not switch back to the user's desktop: {first_error}; trying `Default`");
+    retry(
+        SWITCH_BACK_TRIES,
+        SWITCH_BACK_PAUSE,
+        || {
+            let name = wide(DEFAULT_DESKTOP);
+            // SAFETY: the name is NUL-terminated and outlives the call.
+            let desktop = unsafe {
+                OpenDesktopW(
+                    PCWSTR(name.as_ptr()),
+                    DESKTOP_CONTROL_FLAGS(0),
+                    false,
+                    DESKTOP_SWITCHDESKTOP.0,
+                )
+            }
+            .map_err(|e| failed("OpenDesktopW", &e))?;
+            // SAFETY: the handle was just opened with switch access.
+            let switched =
+                unsafe { SwitchDesktop(desktop) }.map_err(|e| failed("SwitchDesktop", &e));
+            // SAFETY: the handle was just opened and is closed once.
+            let _ = unsafe { CloseDesktop(desktop) };
+            switched
+        },
+        std::thread::sleep,
+    )
+    .map_err(|second_error| format!("{first_error}; {second_error}"))
+}
+
+/// Makes `to` the input desktop and puts the input back on `back` when it ends: through
+/// [`Switched::restore`], which says whether it worked, or on drop as a last resort.
 struct Switched<'a> {
     back: &'a InputDesktop,
+    restored: bool,
 }
 
 impl<'a> Switched<'a> {
@@ -314,16 +401,44 @@ impl<'a> Switched<'a> {
         // SAFETY: the handle is a valid desktop handle with switch access (created with full
         // access).
         unsafe { SwitchDesktop(desktop.handle()) }.map_err(|e| failed("SwitchDesktop", &e))?;
-        Ok(Self { back })
+        Ok(Self {
+            back,
+            restored: false,
+        })
+    }
+
+    /// Puts the input back on the person's desktop, with the retries of [`switch_back`].
+    fn restore(&mut self) -> Result<(), String> {
+        let result = switch_back(self.back);
+        if result.is_ok() {
+            self.restored = true;
+        }
+        result
     }
 }
 
 impl Drop for Switched<'_> {
     fn drop(&mut self) {
-        // SAFETY: `back` is a valid handle to the desktop that was the input desktop before.
-        if let Err(error) = unsafe { SwitchDesktop(self.back.0) } {
+        if !self.restored
+            && let Err(error) = switch_back(self.back)
+        {
             log::error!("could not switch back to the user's desktop: {error}");
         }
+    }
+}
+
+/// Hands the window thread and the desktop to a thread that closes the desktop handle once the
+/// window thread has ended. A desktop that has a thread attached cannot be closed, so closing it
+/// here would leave the handle open for the life of the process.
+fn reap(worker: std::thread::JoinHandle<()>, desktop: PrivateDesktop) {
+    let reaper = std::thread::Builder::new()
+        .name("volt-confirm-reaper".to_owned())
+        .spawn(move || {
+            let _ = worker.join();
+            drop(desktop);
+        });
+    if let Err(error) = reaper {
+        log::error!("the prompt desktop could not be handed to a reaper: {error}");
     }
 }
 
@@ -913,18 +1028,25 @@ pub fn ask(text: &PromptText, timeout: Duration) -> PromptAnswer {
             return PromptAnswer::Unavailable(error);
         }
         Err(_) => {
+            // The thread may still be building its window: stop it as soon as it can be, and close
+            // the desktop only after it has ended.
             abort.store(true, Ordering::SeqCst);
+            reap(worker, desktop);
             return PromptAnswer::Unavailable("the prompt window did not appear".to_owned());
         }
     }
 
     // The window exists on the private desktop. Make it the one the person sees.
-    let switched = match Switched::to(&desktop, &original) {
+    let mut switched = match Switched::to(&desktop, &original) {
         Ok(switched) => switched,
         Err(error) => {
             abort.store(true, Ordering::SeqCst);
-            let _ = done_rx.recv_timeout(Duration::from_secs(5));
-            let _ = worker.join();
+            if done_rx.recv_timeout(Duration::from_secs(5)).is_ok() {
+                let _ = worker.join();
+                drop(desktop);
+            } else {
+                reap(worker, desktop);
+            }
             return PromptAnswer::Unavailable(error);
         }
     };
@@ -933,9 +1055,17 @@ pub fn ask(text: &PromptText, timeout: Duration) -> PromptAnswer {
         abort.store(true, Ordering::SeqCst);
     }
     // Back to the person's desktop before anything else, then tidy up.
+    let restored = switched.restore();
     drop(switched);
-    let _ = worker.join();
-    drop(desktop);
+    if kind.is_ok() {
+        let _ = worker.join();
+        drop(desktop);
+    } else {
+        reap(worker, desktop);
+    }
+    if let Err(error) = restored {
+        return PromptAnswer::SwitchBackFailed(error);
+    }
     match kind {
         Ok(PromptAnswerKind::Accepted) => PromptAnswer::Accepted,
         Ok(PromptAnswerKind::Declined) => PromptAnswer::Declined,
@@ -955,6 +1085,49 @@ mod tests {
         // Only Administrators, nothing inherited (P), and a High label: no other principal.
         assert!(DESKTOP_SDDL.starts_with("D:P(A;;GA;;;BA)"));
         assert_eq!(DESKTOP_SDDL.matches("(A;").count(), 1);
+    }
+
+    #[test]
+    fn a_failed_switch_back_is_retried_and_stops_at_the_first_success() {
+        let calls = Cell::new(0_u32);
+        let pauses = Cell::new(0_u32);
+        let result = retry(
+            5,
+            Duration::from_millis(1),
+            || {
+                calls.set(calls.get() + 1);
+                if calls.get() < 3 {
+                    Err(format!("busy {}", calls.get()))
+                } else {
+                    Ok(())
+                }
+            },
+            |_| pauses.set(pauses.get() + 1),
+        );
+        assert_eq!(result, Ok(()));
+        assert_eq!(calls.get(), 3);
+        assert_eq!(
+            pauses.get(),
+            2,
+            "it waits between tries, not after the last"
+        );
+    }
+
+    #[test]
+    fn a_switch_back_that_never_works_gives_the_last_error_after_every_try() {
+        let calls = Cell::new(0_u32);
+        let result = retry(
+            SWITCH_BACK_TRIES,
+            Duration::ZERO,
+            || {
+                calls.set(calls.get() + 1);
+                Err(format!("denied {}", calls.get()))
+            },
+            |_| {},
+        );
+        assert_eq!(result, Err(format!("denied {SWITCH_BACK_TRIES}")));
+        assert_eq!(calls.get(), SWITCH_BACK_TRIES);
+        assert!(retry(0, Duration::ZERO, || Ok(()), |_| {}).is_err());
     }
 
     #[test]

@@ -105,6 +105,8 @@ export function describeApply(tweak: TweakInfo, result: ApplyResult): Outcome {
         tone: 'problem',
         undoable: false,
       };
+    case 'timedOut':
+      return { message: t('tweaks.apply.timedOut', { title }), tone: 'problem', undoable: false };
     default:
       return assertNever(result.status);
   }
@@ -147,6 +149,8 @@ export function describeRevert(
       };
     case 'blocked':
       return { message: t('tweaks.revert.blocked', { title }), tone: 'problem', undoable: false };
+    case 'timedOut':
+      return { message: t('tweaks.revert.timedOut', { title }), tone: 'problem', undoable: false };
     default:
       return assertNever(result.status);
   }

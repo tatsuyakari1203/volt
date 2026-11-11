@@ -2,6 +2,7 @@ import { ChevronDown, ChevronRight, ShieldCheck } from 'lucide-react';
 import { say, sayCapitalised, t } from '../../shared/i18n';
 import type {
   ElevationStatusView,
+  SystemProtectionView,
   TweakInfo,
   TweakPlanView,
   TweakStepView,
@@ -61,6 +62,7 @@ function stateLine(
   tweak: TweakInfo,
   busy: Busy | undefined,
   elevation: ElevationStatusView | null,
+  protection: SystemProtectionView,
 ): string | null {
   if (tweak.needsAdmin && busy !== undefined) return t('tweaks.row.waitingAdmin');
   if (busy === 'applying') return t('tweaks.row.turningOn');
@@ -69,6 +71,11 @@ function stateLine(
     if (elevation === null) return t('tweaks.row.needsAdmin');
     if (elevation.state === 'unavailable') return elevationReasonText(elevation.reason);
     if (tweak.state.kind === 'applied' && !tweak.appliedByVolt) return t('tweaks.row.alreadyOn');
+    // The helper makes a restore point before a Caution or Advanced tweak and refuses it when
+    // Windows cannot: say so, and what to do, before the user tries.
+    if (protection === 'off' && tweak.risk !== 'safe' && tweak.state.kind !== 'applied') {
+      return t('tweaks.row.protectionOff');
+    }
     return t('tweaks.row.adminReady');
   }
   const state = tweak.state;
@@ -91,6 +98,8 @@ export interface TweakRowProps {
   busy: Busy | undefined;
   /** Whether administrator actions can be used; `null` until it is known. */
   elevation: ElevationStatusView | null;
+  /** Whether System Protection looks on; `unknown` when it was not read. */
+  protection?: SystemProtectionView;
   /** The plan, when the user opened "What it changes". Absent when closed. */
   plan: PlanLoad | undefined;
   onToggle: (tweak: TweakInfo, value: boolean) => void;
@@ -104,12 +113,13 @@ export function TweakRow({
   detailed,
   busy,
   elevation,
+  protection = 'unknown',
   plan,
   onToggle,
   onUndo,
   onShowPlan,
 }: TweakRowProps) {
-  const status = stateLine(tweak, busy, elevation);
+  const status = stateLine(tweak, busy, elevation, protection);
   const open = plan !== undefined;
   return (
     <ListRow

@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 
 use crate::error::PortError;
 use crate::label::Risk;
+use crate::registry::{Registry, RegistryHive, RegistryValue, RegistryValueRef};
 
 /// The shortest time between two restore points of one helper session.
 pub const RESTORE_POINT_MIN_GAP: Duration = Duration::from_secs(10 * 60);
@@ -37,6 +38,53 @@ pub trait RestorePoints: Send + Sync {
 #[must_use]
 pub const fn needs_restore_point(risk: Risk) -> bool {
     !matches!(risk, Risk::Safe)
+}
+
+/// Whether System Protection looks turned on, as far as a read without administrator rights can
+/// tell.
+///
+/// It is a hint, never the authority: only a call that tries to make the restore point knows, and
+/// the helper refuses a Caution or Advanced tweak whenever that call fails. The UI uses the hint to
+/// say what to do (turn on System Protection for the system drive) before the user tries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum SystemProtection {
+    /// System Protection looks on: restore points can be made.
+    On,
+    /// System Protection looks off (turned off, or by policy): no restore point can be made.
+    Off,
+    /// The registry does not say.
+    Unknown,
+}
+
+/// The key where the System Restore service keeps its state, and the policy key above it.
+const SYSTEM_RESTORE_KEY: &str = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore";
+const SYSTEM_RESTORE_POLICY_KEY: &str = r"SOFTWARE\Policies\Microsoft\Windows NT\SystemRestore";
+
+/// Reads whether System Protection looks on. Reads two machine registry values (readable by any
+/// user) and changes nothing: the policy `DisableSR` set to 1 is off; otherwise the service's own
+/// `RPSessionInterval` is 0 when System Protection is off for every drive and 1 when it is on.
+/// Anything else, or a value that cannot be read, is [`SystemProtection::Unknown`].
+#[must_use]
+pub fn system_protection_of(registry: &dyn Registry) -> SystemProtection {
+    let read = |key: &str, name: &str| {
+        registry
+            .read_value(&RegistryValueRef::new(
+                RegistryHive::LocalMachine,
+                key,
+                name,
+            ))
+            .ok()
+            .flatten()
+    };
+    if read(SYSTEM_RESTORE_POLICY_KEY, "DisableSR") == Some(RegistryValue::Dword(1)) {
+        return SystemProtection::Off;
+    }
+    match read(SYSTEM_RESTORE_KEY, "RPSessionInterval") {
+        Some(RegistryValue::Dword(0)) => SystemProtection::Off,
+        Some(RegistryValue::Dword(1)) => SystemProtection::On,
+        _ => SystemProtection::Unknown,
+    }
 }
 
 /// Remembers when the last restore point of the session was made.
@@ -86,6 +134,40 @@ mod tests {
         assert!(!needs_restore_point(Risk::Safe));
         assert!(needs_restore_point(Risk::Caution));
         assert!(needs_restore_point(Risk::Advanced));
+    }
+
+    #[test]
+    fn system_protection_is_read_from_the_service_state_and_the_policy() {
+        use crate::fakes::FakeRegistry;
+        let key =
+            |name: &str, key: &str| RegistryValueRef::new(RegistryHive::LocalMachine, key, name);
+        let registry = FakeRegistry::new();
+        assert_eq!(system_protection_of(&registry), SystemProtection::Unknown);
+        registry.set(
+            &key("RPSessionInterval", SYSTEM_RESTORE_KEY),
+            RegistryValue::Dword(1),
+        );
+        assert_eq!(system_protection_of(&registry), SystemProtection::On);
+        registry.set(
+            &key("RPSessionInterval", SYSTEM_RESTORE_KEY),
+            RegistryValue::Dword(0),
+        );
+        assert_eq!(system_protection_of(&registry), SystemProtection::Off);
+        registry.set(
+            &key("RPSessionInterval", SYSTEM_RESTORE_KEY),
+            RegistryValue::Dword(1),
+        );
+        // The policy wins over the service's state.
+        registry.set(
+            &key("DisableSR", SYSTEM_RESTORE_POLICY_KEY),
+            RegistryValue::Dword(1),
+        );
+        assert_eq!(system_protection_of(&registry), SystemProtection::Off);
+        registry.set(
+            &key("DisableSR", SYSTEM_RESTORE_POLICY_KEY),
+            RegistryValue::Dword(0),
+        );
+        assert_eq!(system_protection_of(&registry), SystemProtection::On);
     }
 
     #[test]

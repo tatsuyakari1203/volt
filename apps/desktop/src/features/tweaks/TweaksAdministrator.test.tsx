@@ -18,6 +18,7 @@ const ipc = vi.hoisted(() => ({
   getTweakPlan: vi.fn(),
   resetTweak: vi.fn(),
   getElevationStatus: vi.fn(),
+  getSystemProtection: vi.fn(),
 }));
 vi.mock('../../shared/ipc', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../shared/ipc')>()),
@@ -86,6 +87,7 @@ beforeEach(() => {
   ipc.getTweakPlan.mockResolvedValue(plan());
   ipc.listTweaks.mockResolvedValue([machine]);
   ipc.getElevationStatus.mockResolvedValue(available);
+  ipc.getSystemProtection.mockResolvedValue('unknown');
 });
 
 describe('administrator tweaks through the helper', () => {
@@ -130,7 +132,8 @@ describe('administrator tweaks through the helper', () => {
     for (const [status, text] of [
       ['notConfirmed', /confirmation was declined or timed out/],
       ['blocked', /Try again in 10 minutes/],
-      ['restorePointFailed', /could not create a restore point/],
+      ['restorePointFailed', /Turn on System Protection for the system drive/],
+      ['timedOut', /stopped waiting for "Turn off Windows Error Reporting"/],
       ['declined', /cancelled the administrator prompt/],
     ] as const) {
       ipc.applyTweak.mockResolvedValueOnce(applyResult(status));
@@ -139,6 +142,25 @@ describe('administrator tweaks through the helper', () => {
       expect(alert.textContent).toMatch(text);
       expect((await theSwitch()).getAttribute('aria-checked')).toBe('false');
     }
+  });
+
+  it('says before the user tries that System Protection is off, for a tweak that needs a restore point', async () => {
+    ipc.getSystemProtection.mockResolvedValue('off');
+    ipc.listTweaks.mockResolvedValue([
+      { ...machine, risk: 'caution' },
+      { ...machine, id: 'safe-one', title: 'A safe one', risk: 'safe' },
+    ]);
+    renderScreen();
+    const rows = (await screen.findAllByRole('listitem')) as HTMLElement[];
+    expect(rows).toHaveLength(2);
+    const caution = rows[0] as HTMLElement;
+    const safe = rows[1] as HTMLElement;
+    expect(caution.textContent).toContain('System Protection is off');
+    expect(caution.textContent).toContain('System Protection tab');
+    // The switch is not locked by the hint: the helper is the authority.
+    expect((within(caution).getByRole('switch') as HTMLButtonElement).disabled).toBe(false);
+    // A Safe tweak needs no restore point, so it says nothing about it.
+    expect(safe.textContent).not.toContain('System Protection is off');
   });
 
   it('turns one off through the helper only when Volt turned it on', async () => {

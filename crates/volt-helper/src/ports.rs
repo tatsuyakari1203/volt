@@ -157,8 +157,13 @@ pub fn catalogue_services(catalogue: &Catalogue) -> Vec<String> {
 /// The ports of the real helper for `catalogue`.
 #[must_use]
 pub fn helper_ports(catalogue: &Catalogue, memory: Arc<dyn Memory>) -> Ports {
+    let registry: Arc<dyn volt_core::Registry> = Arc::new(AdminRegistry::new());
+    // The harness build ends the helper at the write of its crash tweak; no other build has this.
+    #[cfg(feature = "elevated-ci")]
+    let registry: Arc<dyn volt_core::Registry> =
+        Arc::new(crate::failpoint::FailpointRegistry::new(registry));
     Ports {
-        registry: Arc::new(AdminRegistry::new()),
+        registry,
         file_system: Arc::new(NoFileSystem),
         services: Arc::new(AllowedServices::new(
             Arc::new(WinServices::new()),

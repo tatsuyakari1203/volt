@@ -27,6 +27,8 @@
 //! helper through UAC, connect, authenticate the server) is a Windows adapter; [`fakes::FakeElevator`]
 //! stands in for it in tests, so UI code can be built and tested with no helper at all.
 
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -36,6 +38,8 @@ use crate::error::PortError;
 use crate::memory::{AreaReport, MemoryCleanReport};
 use crate::ports::{MemoryArea, MemoryLists, PurgeOutcome};
 use crate::tweak::ApplyOutcome;
+
+use self::restore::SystemProtection;
 
 pub mod confirm;
 #[cfg(any(test, feature = "fakes"))]
@@ -47,6 +51,24 @@ mod tests;
 
 /// The protocol version both sides must agree on in `hello`.
 pub const PROTOCOL_VERSION: u32 = 1;
+
+/// How long the helper's confirmation waits for a person. An unanswered question counts as a
+/// denial.
+pub const CONFIRM_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// The most the helper gives Windows to make a restore point before it refuses the tweak.
+pub const RESTORE_POINT_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// What is left of a tweak request after the question and the restore point: the change itself, the
+/// journal and the reply.
+pub const CHANGE_TAIL: Duration = Duration::from_secs(30);
+
+/// How long the UI waits for the answer to a tweak request: the confirmation, the restore point
+/// and the change, one after the other (the helper never needs more). An answer that comes later
+/// is not lost: the helper's activity log has it and the next history pull shows it.
+pub const CHANGE_TIMEOUT: Duration = Duration::from_secs(
+    CONFIRM_TIMEOUT.as_secs() + RESTORE_POINT_TIMEOUT.as_secs() + CHANGE_TAIL.as_secs(),
+);
 
 /// Longest request the helper accepts, in bytes.
 pub const MAX_REQUEST_BYTES: usize = 1024;
@@ -527,6 +549,11 @@ pub enum ElevationError {
     /// The session ended before the answer arrived.
     #[error("the administrator session ended")]
     Disconnected,
+    /// The request was sent and no answer came in time. The helper may still finish it (a person
+    /// can take their time over the confirmation), so the change may or may not have been made:
+    /// its activity log has the outcome, and the next history pull shows it.
+    #[error("no answer came in time; the request may still finish")]
+    TimedOut,
 }
 
 /// Why administrator features cannot be used, one typed reason each so the UI can say it in its
@@ -617,6 +644,13 @@ pub trait Elevator: Send + Sync {
 
     /// Reads the helper's activity log after the record `after` (0 for the start).
     fn history(&self, after: u64, limit: u32) -> Result<HistoryReply, ElevationError>;
+
+    /// Whether Windows can make the restore point that a Caution or Advanced tweak needs: a hint
+    /// read without any prompt, so the UI can say what to do before the user tries. It is not the
+    /// authority (the helper is: it refuses the tweak when no point can be made).
+    fn system_protection(&self) -> SystemProtection {
+        SystemProtection::Unknown
+    }
 
     /// Whether a session is open now, so a call would reuse it and show no prompt. Reads only: it
     /// never starts the helper. The UI uses it to pull the helper's history without ever asking
