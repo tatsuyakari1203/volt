@@ -8,7 +8,7 @@
 //!
 //! One request or reply per pipe message, as JSON. A request is a [`RequestEnvelope`]: a `u64`
 //! id and a [`Request`] from a CLOSED set (`hello`, `memory_purge`, `tweak_apply`,
-//! `tweak_revert`, `history`, `bye`). It carries no path, command, registry location or service
+//! `tweak_revert`, `clean_scan`, `clean_apply`, `history`, `bye`). It carries no path, command, registry location or service
 //! name (a tweak is named by its catalogue id and nothing else), so the helper has nothing to be
 //! talked into running. The rules that make it hard to abuse, all enforced by [`decode_request`] and
 //! [`RequestSequencer`]:
@@ -34,6 +34,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::activity::ActivityRecord;
+use crate::clean::machine::{CleanApplyReply, CleanScanReply};
 use crate::error::PortError;
 use crate::memory::{AreaReport, MemoryCleanReport};
 use crate::ports::{MemoryArea, MemoryLists, PurgeOutcome};
@@ -58,6 +59,17 @@ pub const CONFIRM_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// The most the helper gives Windows to make a restore point before it refuses the tweak.
 pub const RESTORE_POINT_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// How long the UI waits for the answer to a machine scan: the helper's own limit for a scan, and a
+/// little more.
+pub const CLEAN_SCAN_TIMEOUT: Duration =
+    Duration::from_secs(crate::clean::machine::MACHINE_DEADLINE_SECS + 20);
+
+/// How long the UI waits for the answer to a machine clean: the confirmation, then the helper's own
+/// limit for the delete, and a little more.
+pub const CLEAN_APPLY_TIMEOUT: Duration = Duration::from_secs(
+    CONFIRM_TIMEOUT.as_secs() + crate::clean::machine::MACHINE_DEADLINE_SECS + 20,
+);
 
 /// What is left of a tweak request after the question and the restore point: the change itself, the
 /// journal and the reply.
@@ -112,6 +124,24 @@ pub enum Request {
         /// The tweak id.
         tweak: String,
     },
+    /// Scans one machine-wide cleaning rule of the helper's own catalogue (read-only: nothing is
+    /// deleted). The answer has counts, sizes and reasons, never a file name. The request names a
+    /// rule id and nothing that could carry a path; `min_age_days` can only raise the
+    /// catalogue's minimum age.
+    CleanScan {
+        /// The rule id.
+        rule: String,
+        /// A minimum age in days of at least the catalogue's own (it is a floor).
+        #[serde(default)]
+        min_age_days: Option<u32>,
+    },
+    /// Deletes, permanently, what the scan named by `scan` found and that is still the same and
+    /// old enough. The scan id is single use and belongs to this connection. A rule whose folder
+    /// a normal user can write to is confirmed by the helper first.
+    CleanApply {
+        /// The id from the `clean_scan` answer (32 hex digits).
+        scan: String,
+    },
     /// Reads the helper's activity log, oldest first, so the UI can mirror it by pull: records
     /// with an id above `after` (0 for all), at most `limit` of them (the helper may send fewer
     /// to fit a reply).
@@ -126,11 +156,13 @@ pub enum Request {
 }
 
 /// The request types of this version, as they appear in the `type` field.
-const REQUEST_TYPES: [&str; 6] = [
+const REQUEST_TYPES: [&str; 8] = [
     "hello",
     "memory_purge",
     "tweak_apply",
     "tweak_revert",
+    "clean_scan",
+    "clean_apply",
     "history",
     "bye",
 ];
@@ -159,6 +191,10 @@ pub enum ReplyBody {
     TweakApply(TweakApplyReply),
     /// Answer to `tweak_revert`.
     TweakRevert(TweakRevertReply),
+    /// Answer to `clean_scan`.
+    CleanScan(CleanScanReply),
+    /// Answer to `clean_apply`.
+    CleanApply(CleanApplyReply),
     /// Answer to `history`.
     History(HistoryReply),
     /// Answer to `bye`.
@@ -401,6 +437,17 @@ pub enum ErrorCode {
     /// one, so nothing was changed.
     #[error("a restore point could not be created")]
     RestorePointFailed,
+    /// The rule id is not a machine-wide cleaning rule of the helper's catalogue.
+    #[error("unknown machine cleaning rule")]
+    UnknownRule,
+    /// The scan id is not one this connection holds (never made, already used, or replaced by a
+    /// newer scan of the same rule).
+    #[error("unknown scan")]
+    UnknownScan,
+    /// The clean could not be carried out at all (the helper could not open the folder to work
+    /// in it). Nothing was deleted.
+    #[error("the clean could not be carried out")]
+    CleanFailed,
 }
 
 impl ErrorCode {
@@ -421,6 +468,9 @@ impl ErrorCode {
                 | Self::TweakFailed
                 | Self::Unavailable
                 | Self::RestorePointFailed
+                | Self::UnknownRule
+                | Self::UnknownScan
+                | Self::CleanFailed
         )
     }
 }
@@ -641,6 +691,19 @@ pub trait Elevator: Send + Sync {
 
     /// Reverts the helper's own record of the tweak, confirmed like an apply.
     fn tweak_revert(&self, tweak: &str) -> Result<TweakRevertReply, ElevationError>;
+
+    /// Scans a machine-wide cleaning rule in the helper (read-only), naming the rule by its id.
+    /// `min_age_days` can only raise the catalogue's minimum age.
+    fn clean_scan(
+        &self,
+        rule: &str,
+        min_age_days: Option<u32>,
+    ) -> Result<CleanScanReply, ElevationError>;
+
+    /// Deletes permanently what the scan `scan` found (see [`Request::CleanApply`]). The helper
+    /// confirms on its own first when the rule's folder is one a normal user can write to; a
+    /// refusal ([`ErrorCode::NotConfirmed`], [`ErrorCode::Blocked`]) deleted nothing.
+    fn clean_apply(&self, scan: &str) -> Result<CleanApplyReply, ElevationError>;
 
     /// Reads the helper's activity log after the record `after` (0 for the start).
     fn history(&self, after: u64, limit: u32) -> Result<HistoryReply, ElevationError>;

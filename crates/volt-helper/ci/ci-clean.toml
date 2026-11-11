@@ -1,0 +1,66 @@
+# The test-only cleaning rules of the elevated CI harness. They are appended to the embedded rules ONLY
+# in the harness build (the `elevated-ci` feature), never in a product helper. Each works in a
+# throwaway folder under C:\ProgramData\VoltTest\Clean of a hosted runner.
+
+# A rule the helper cleans without asking, because its folder is one that only administrators can
+# change (the harness gives it that access list).
+[[rule]]
+id = "ci-voltest-clean-silent"
+title = "CI silent rule"
+description = "Cleans a throwaway folder that only administrators can write to. Exists only in the CI harness build."
+category = "temporary_files"
+risk = "safe"
+include = ["**"]
+requires_admin = true
+permanent = true
+
+[rule.root]
+location = "program_data"
+path = "VoltTest/Clean/Silent"
+
+[rule.constraints]
+min_age_days = 7
+max_depth = 6
+remove_empty_dirs = true
+
+# A rule the catalogue says is confirmed every time.
+[[rule]]
+id = "ci-voltest-clean-ask"
+title = "CI confirmed rule"
+description = "Cleans a throwaway folder after a confirmation. Exists only in the CI harness build."
+category = "temporary_files"
+risk = "caution"
+include = ["**"]
+requires_admin = true
+permanent = true
+confirm_each_time = true
+
+[rule.root]
+location = "program_data"
+path = "VoltTest/Clean/Ask"
+
+[rule.constraints]
+min_age_days = 7
+max_depth = 6
+remove_empty_dirs = true
+
+# A rule the catalogue does not mark, whose folder the harness makes writable for Users: the helper
+# must find that out itself and confirm.
+[[rule]]
+id = "ci-voltest-clean-open"
+title = "CI open folder rule"
+description = "Cleans a throwaway folder that Users can write to. Exists only in the CI harness build."
+category = "temporary_files"
+risk = "safe"
+include = ["**"]
+requires_admin = true
+permanent = true
+
+[rule.root]
+location = "program_data"
+path = "VoltTest/Clean/Open"
+
+[rule.constraints]
+min_age_days = 7
+max_depth = 6
+remove_empty_dirs = true

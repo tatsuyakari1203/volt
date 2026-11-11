@@ -15,6 +15,7 @@ use volt_core::{
     encode_reply,
 };
 
+use crate::clean::CleanDesk;
 use crate::tweaks::TweakDesk;
 
 /// How often the requests that change something may come.
@@ -116,6 +117,7 @@ pub struct Session {
     greeted: bool,
     quotas: Quotas,
     tweaks: Option<TweakDesk>,
+    clean: Option<CleanDesk>,
 }
 
 impl std::fmt::Debug for Session {
@@ -149,6 +151,7 @@ impl Session {
             greeted: false,
             quotas: Quotas::new(quotas),
             tweaks: None,
+            clean: None,
         }
     }
 
@@ -157,6 +160,14 @@ impl Session {
     #[must_use]
     pub fn with_tweaks(mut self, desk: TweakDesk) -> Self {
         self.tweaks = Some(desk);
+        self
+    }
+
+    /// The same session, serving the machine-wide cleaning requests through `desk`. Without a desk
+    /// those requests are answered [`ErrorCode::Unavailable`].
+    #[must_use]
+    pub fn with_cleaning(mut self, desk: CleanDesk) -> Self {
+        self.clean = Some(desk);
         self
     }
 
@@ -225,6 +236,20 @@ impl Session {
             }
             Request::TweakApply { tweak } => self.change(id, now, &tweak, TweakDesk::apply),
             Request::TweakRevert { tweak } => self.change(id, now, &tweak, TweakDesk::revert),
+            Request::CleanScan { rule, min_age_days } => {
+                self.clean_request(id, now, &rule, |desk, rule, _| {
+                    desk.scan(rule, min_age_days)
+                })
+            }
+            Request::CleanApply { scan } => {
+                if !valid_scan_id(&scan) {
+                    if !self.greeted {
+                        return Self::refuse(id, ErrorCode::HelloRequired);
+                    }
+                    return Self::refuse(id, ErrorCode::InvalidRequest);
+                }
+                self.clean_request(id, now, &scan, CleanDesk::apply)
+            }
             Request::History { after, limit } => {
                 if !self.greeted {
                     return Self::refuse(id, ErrorCode::HelloRequired);
@@ -241,6 +266,37 @@ impl Session {
                 }
             }
             Request::Bye {} => Self::reply(id, ReplyBody::Bye {}, true, true),
+        }
+    }
+
+    /// A machine cleaning request: order, id syntax and the per-minute quota are checked here, then
+    /// the desk scans or deletes. A refusal by the desk counts as refused and never extends the
+    /// session.
+    fn clean_request(
+        &mut self,
+        id: u64,
+        now: Instant,
+        argument: &str,
+        run: impl FnOnce(&mut CleanDesk, &str, Instant) -> Result<ReplyBody, ErrorCode>,
+    ) -> Handled {
+        if !self.greeted {
+            return Self::refuse(id, ErrorCode::HelloRequired);
+        }
+        if !valid_tweak_id(argument) && !valid_scan_id(argument) {
+            return Self::refuse(id, ErrorCode::InvalidRequest);
+        }
+        if self.clean.is_none() {
+            return Self::refuse(id, ErrorCode::Unavailable);
+        }
+        if !self.quotas.allow_change(now) {
+            return Self::refuse(id, ErrorCode::RateLimited);
+        }
+        let Some(desk) = self.clean.as_mut() else {
+            return Self::refuse(id, ErrorCode::Unavailable);
+        };
+        match run(desk, argument, now) {
+            Ok(body) => Self::reply(id, body, false, true),
+            Err(code) => Self::refuse(id, code),
         }
     }
 
@@ -275,6 +331,14 @@ impl Session {
             Err(code) => Self::refuse(id, code),
         }
     }
+}
+
+/// A scan id as the helper writes it: 32 lower-case hex digits.
+fn valid_scan_id(id: &str) -> bool {
+    id.len() == 32
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// A tweak id as the catalogue spells it: lower-case letters, digits and hyphens, at most 64.
@@ -812,6 +876,162 @@ value = { dword = 1 }
                 start + Duration::from_secs(61),
             );
             assert_eq!(code(&reply), ErrorCode::NotConfirmed);
+        }
+    }
+
+    // ---- machine cleaning over the wire ----------------------------------------------------
+
+    mod clean_requests {
+        use std::io::Write as _;
+        use std::path::PathBuf;
+        use std::time::SystemTime;
+
+        use volt_core::elevation::fakes::FakeConfirmer;
+        use volt_core::{CleaningRule, CleaningRules, ConfirmAction, ErrorCode};
+        use volt_win::safetree::{Limits, TreeError};
+
+        use super::*;
+        use crate::clean::{CleanDesk, CleanParts, IdSource, MachineRoots};
+
+        const RULES: &str = r#"
+[[rule]]
+id = "machine-thing"
+title = "Machine thing"
+description = "d"
+category = "temporary_files"
+risk = "safe"
+include = ["**"]
+requires_admin = true
+permanent = true
+confirm_each_time = true
+
+[rule.root]
+location = "windows"
+path = "Temp"
+
+[rule.constraints]
+min_age_days = 7
+max_depth = 3
+"#;
+
+        struct Roots(PathBuf);
+
+        impl MachineRoots for Roots {
+            fn root(&self, _rule: &CleaningRule) -> Result<PathBuf, TreeError> {
+                Ok(self.0.clone())
+            }
+        }
+
+        struct Id;
+
+        impl IdSource for Id {
+            fn next(&self) -> Option<String> {
+                Some("0123456789abcdef0123456789abcdef".to_owned())
+            }
+        }
+
+        fn session_with_desk(root: PathBuf, confirmer: Arc<FakeConfirmer>) -> Session {
+            let desk = CleanDesk::new(CleanParts {
+                rules: Arc::new(CleaningRules::from_toml(RULES).expect("rules")),
+                roots: Arc::new(Roots(root)),
+                clock: Arc::new(volt_core::SystemClock),
+                confirmer,
+                ids: Arc::new(Id),
+                pending: Arc::new(crate::clean::RegistryPending),
+                limits: Limits::default(),
+                budget: Duration::from_secs(30),
+            });
+            let mut session = Session::new(
+                Arc::new(FakeMemory::new()),
+                catalogues(),
+                "0.0.0-test",
+                QuotaLimits::default(),
+            )
+            .with_cleaning(desk);
+            let (reply, _) = send(&mut session, HELLO, Instant::now());
+            assert!(matches!(reply.body, ReplyBody::Hello(_)));
+            session
+        }
+
+        fn scan_json(id: u64, rule: &str) -> String {
+            format!(r#"{{"id":{id},"request":{{"type":"clean_scan","rule":"{rule}"}}}}"#)
+        }
+
+        fn apply_json(id: u64, scan: &str) -> String {
+            format!(r#"{{"id":{id},"request":{{"type":"clean_apply","scan":"{scan}"}}}}"#)
+        }
+
+        #[test]
+        fn a_scan_and_an_apply_over_the_wire_carry_only_ids_and_delete_what_was_scanned() {
+            let dir = tempfile::tempdir().expect("temp");
+            let root = dir.path().join("tree");
+            std::fs::create_dir_all(&root).expect("root");
+            let canonical = root.canonicalize().expect("canonical");
+            let root = PathBuf::from(canonical.to_string_lossy().trim_start_matches(r"\\?\"));
+            let mut file = std::fs::File::create(root.join("old.tmp")).expect("file");
+            file.write_all(b"0123456789").expect("write");
+            file.set_modified(SystemTime::now() - Duration::from_secs(30 * 86_400))
+                .expect("age");
+            drop(file);
+
+            let confirmer = Arc::new(FakeConfirmer::accepting());
+            let mut session = session_with_desk(root.clone(), Arc::clone(&confirmer));
+            let scan = scan_json(2, "machine-thing");
+            assert!(scan.len() < volt_core::MAX_REQUEST_BYTES);
+            let (reply, handled) = send(&mut session, &scan, Instant::now());
+            let ReplyBody::CleanScan(scanned) = reply.body else {
+                panic!("expected a scan reply");
+            };
+            assert!(handled.accepted && !handled.close);
+            assert_eq!((scanned.files, scanned.bytes), (1, 10));
+            assert!(root.join("old.tmp").exists());
+
+            let (reply, handled) =
+                send(&mut session, &apply_json(3, &scanned.scan), Instant::now());
+            let ReplyBody::CleanApply(done) = reply.body else {
+                panic!("expected an apply reply");
+            };
+            assert!(handled.accepted);
+            assert_eq!((done.files, done.bytes), (1, 10));
+            assert!(!root.join("old.tmp").exists());
+            assert_eq!(confirmer.asked()[0].action, ConfirmAction::CleanRule);
+        }
+
+        #[test]
+        fn cleaning_requests_that_cannot_be_served_are_refused_without_touching_anything() {
+            let confirmer = Arc::new(FakeConfirmer::accepting());
+            let mut session = session_with_desk(PathBuf::from(r"C:\nowhere"), confirmer.clone());
+            for (id, json, expected) in [
+                (2, scan_json(2, "Not-A-Rule"), ErrorCode::InvalidRequest),
+                (3, scan_json(3, "../x"), ErrorCode::InvalidRequest),
+                (4, scan_json(4, "no-such-rule"), ErrorCode::UnknownRule),
+                (5, apply_json(5, "short"), ErrorCode::InvalidRequest),
+                (6, apply_json(6, &"A".repeat(32)), ErrorCode::InvalidRequest),
+                (7, apply_json(7, &"0".repeat(32)), ErrorCode::UnknownScan),
+            ] {
+                let (reply, handled) = send(&mut session, &json, Instant::now());
+                assert_eq!(code(&reply), expected, "request {id}");
+                assert!(!handled.close && !handled.accepted);
+            }
+            assert!(confirmer.asked().is_empty());
+        }
+
+        #[test]
+        fn cleaning_before_hello_or_without_a_desk_is_refused() {
+            let mut bare = session_over(Arc::new(FakeMemory::new()));
+            let (reply, _) = send(&mut bare, &scan_json(1, "machine-thing"), Instant::now());
+            assert_eq!(code(&reply), ErrorCode::HelloRequired);
+            let (reply, _) = send(
+                &mut bare,
+                HELLO.replace(":1,", ":2,").as_str(),
+                Instant::now(),
+            );
+            assert!(matches!(reply.body, ReplyBody::Hello(_)));
+            let (reply, handled) = send(&mut bare, &scan_json(3, "machine-thing"), Instant::now());
+            assert_eq!(code(&reply), ErrorCode::Unavailable);
+            assert!(!handled.close && !handled.accepted);
+            let (reply, _) = send(&mut bare, &apply_json(4, &"0".repeat(32)), Instant::now());
+            assert_eq!(code(&reply), ErrorCode::Unavailable);
         }
     }
 }

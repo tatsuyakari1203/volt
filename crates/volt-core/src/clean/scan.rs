@@ -20,7 +20,11 @@ use crate::time::Timestamp;
 const DAY_MS: i64 = 86_400_000;
 
 /// Whether the entry is old enough for the rule, as of `now`.
-pub(super) fn age_allows(
+///
+/// # Errors
+/// [`SkipReason::TooNew`] when it is younger than `min_age_days`, [`SkipReason::AgeUnknown`] when
+/// there is a minimum and no modification time.
+pub fn age_allows(
     min_age_days: u32,
     modified: Option<Timestamp>,
     now: Timestamp,

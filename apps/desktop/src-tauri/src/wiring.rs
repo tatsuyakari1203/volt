@@ -36,6 +36,7 @@ use crate::IpcError;
 use crate::catalogue::{EMBEDDED_CATALOGUE, EMBEDDED_CLEANING_RULES, embedded_hashes};
 use crate::cleaner::CleanSession;
 use crate::large_files::LargeFilesSession;
+use crate::machine_clean::MachineScans;
 use crate::tidy::TidySession;
 
 /// File name of the database inside the app data directory.
@@ -116,6 +117,7 @@ pub struct AppCore {
     mirror_lock: Mutex<()>,
     clean: Option<CleanEngine>,
     clean_session: CleanSession,
+    machine_scans: MachineScans,
     large_files: Option<LargeFilesFinder>,
     large_files_session: LargeFilesSession,
     tidy: Option<TidyFinder>,
@@ -163,6 +165,7 @@ impl AppCore {
             mirror_lock: Mutex::new(()),
             clean: None,
             clean_session: CleanSession::default(),
+            machine_scans: MachineScans::default(),
             large_files: None,
             large_files_session: LargeFilesSession::default(),
             tidy: None,
@@ -250,6 +253,12 @@ impl AppCore {
     #[must_use]
     pub fn clean_session(&self) -> &CleanSession {
         &self.clean_session
+    }
+
+    /// The helper's scan ids of the machine-wide cleaning rules, between a scan and its clean.
+    #[must_use]
+    pub fn machine_scans(&self) -> &MachineScans {
+        &self.machine_scans
     }
 
     /// The same core with the memory cleaner attached. [`build_core`] always does; a core

@@ -131,6 +131,28 @@ mod cleaning_tests {
     }
 
     #[test]
+    fn what_the_helper_cleans_is_deleted_permanently_and_windows_temp_asks_every_time() {
+        // The elevated helper cleans exactly the rules that need administrator rights, and it
+        // deletes for good (files of other accounts cannot go to one account's Recycle Bin): the
+        // catalogue says so for each, so every surface can say so too.
+        for rule in rules().rules() {
+            assert_eq!(rule.permanent, rule.requires_admin, "{}", rule.id);
+            // A folder that an account other than the administrators owns or can write to is
+            // confirmed every time: Windows Temp (every account can create files there) and the
+            // Delivery Optimization cache (owned by a service account).
+            assert_eq!(
+                rule.confirm_each_time,
+                matches!(
+                    rule.id.as_str(),
+                    "windows-temp" | "delivery-optimization-cache"
+                ),
+                "{}",
+                rule.id
+            );
+        }
+    }
+
+    #[test]
     fn nothing_in_the_shipped_set_is_advanced() {
         assert!(
             rules()

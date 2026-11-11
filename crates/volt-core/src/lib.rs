@@ -122,6 +122,9 @@ pub use boost::{
     BOOST_SETTINGS_KEY, BOOST_TEMP_RULE_ID, BoostConfig, BoostReport, JunkFound, SkippedOperation,
     run_boost,
 };
+pub use clean::machine::{
+    ApplySkips, CleanApplyReply, CleanScanReply, MachineProblem, ScanSkips, machine_rule,
+};
 pub use clean::{
     CleanCategory, CleanEngine, CleanItem, CleanPlan, CleanReport, CleanSkip, CleanSkipReason,
     CleaningRule, CleaningRules, ConfirmedPlan, EmptyReport, FolderError, ItemKind, ItemUnit,
@@ -139,12 +142,12 @@ pub use elevation::restore::{
     system_protection_of,
 };
 pub use elevation::{
-    AreaResult, AreaStatus, CHANGE_TAIL, CHANGE_TIMEOUT, CONFIRM_TIMEOUT, CatalogueHashes,
-    ElevationError, ElevationStatus, Elevator, ErrorCode, HISTORY_MAX_RECORDS, HelloReply,
-    HistoryReply, MAX_REPLY_BYTES, MAX_REQUEST_BYTES, MemoryPurgeReply, PROTOCOL_VERSION,
-    RESTORE_POINT_TIMEOUT, Reply, ReplyBody, Request, RequestEnvelope, RequestSequencer,
-    TweakApplyReply, TweakRevertReply, UnavailableReason, catalogue_hash, decode_reply,
-    decode_request, encode_reply, encode_request,
+    AreaResult, AreaStatus, CHANGE_TAIL, CHANGE_TIMEOUT, CLEAN_APPLY_TIMEOUT, CLEAN_SCAN_TIMEOUT,
+    CONFIRM_TIMEOUT, CatalogueHashes, ElevationError, ElevationStatus, Elevator, ErrorCode,
+    HISTORY_MAX_RECORDS, HelloReply, HistoryReply, MAX_REPLY_BYTES, MAX_REQUEST_BYTES,
+    MemoryPurgeReply, PROTOCOL_VERSION, RESTORE_POINT_TIMEOUT, Reply, ReplyBody, Request,
+    RequestEnvelope, RequestSequencer, TweakApplyReply, TweakRevertReply, UnavailableReason,
+    catalogue_hash, decode_reply, decode_request, encode_reply, encode_request,
 };
 pub use error::{ExecError, PlanError, PortError, RevertError};
 pub use exclusions::{EXCLUSIONS_SETTINGS_KEY, ExclusionList, MAX_EXCLUSIONS};

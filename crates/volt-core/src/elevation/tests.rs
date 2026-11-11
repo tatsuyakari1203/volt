@@ -45,6 +45,19 @@ fn every_request_round_trips() {
             id: 6,
             request: Request::Bye {},
         },
+        RequestEnvelope {
+            id: 7,
+            request: Request::CleanScan {
+                rule: "windows-temp".into(),
+                min_age_days: Some(14),
+            },
+        },
+        RequestEnvelope {
+            id: 8,
+            request: Request::CleanApply {
+                scan: "0123456789abcdef0123456789abcdef".into(),
+            },
+        },
     ] {
         let bytes = encode_request(&envelope).expect("encodes");
         assert!(bytes.len() <= MAX_REQUEST_BYTES);
@@ -185,6 +198,9 @@ fn only_framing_and_order_violations_close_the_connection() {
         ErrorCode::TweakFailed,
         ErrorCode::Unavailable,
         ErrorCode::RestorePointFailed,
+        ErrorCode::UnknownRule,
+        ErrorCode::UnknownScan,
+        ErrorCode::CleanFailed,
     ] {
         assert!(!code.closes_connection(), "{code}");
     }
@@ -461,4 +477,113 @@ fn a_purge_reply_becomes_the_report_an_activity_record_is_written_from() {
     let first = report.areas[0].result.as_ref().expect("purged");
     assert_eq!((first.processes_trimmed, first.processes_skipped), (5, 2));
     assert!(report.areas[1].result.is_err());
+}
+
+#[test]
+fn a_cleaning_request_names_a_rule_or_a_scan_and_nothing_that_could_carry_a_path() {
+    assert_eq!(
+        request(r#"{"id":2,"request":{"type":"clean_scan","rule":"windows-temp"}}"#),
+        Ok(RequestEnvelope {
+            id: 2,
+            request: Request::CleanScan {
+                rule: "windows-temp".into(),
+                min_age_days: None,
+            },
+        })
+    );
+    assert_eq!(
+        request(
+            r#"{"id":3,"request":{"type":"clean_apply","scan":"00112233445566778899aabbccddeeff"}}"#
+        ),
+        Ok(RequestEnvelope {
+            id: 3,
+            request: Request::CleanApply {
+                scan: "00112233445566778899aabbccddeeff".into(),
+            },
+        })
+    );
+    // A path, a pattern or a root is not a field of either request.
+    for json in [
+        r#"{"id":2,"request":{"type":"clean_scan","rule":"windows-temp","path":"C:\\"}}"#,
+        r#"{"id":2,"request":{"type":"clean_scan","rule":"x","root":"C:\Windows"}}"#,
+        r#"{"id":3,"request":{"type":"clean_apply","scan":"x","items":["a"]}}"#,
+        r#"{"id":3,"request":{"type":"clean_apply"}}"#,
+    ] {
+        assert_eq!(request(json), Err(ErrorCode::Malformed), "{json}");
+    }
+}
+
+#[test]
+fn the_cleaning_replies_fit_a_reply_with_room_to_spare() {
+    use crate::clean::machine::{
+        ApplySkips, CleanApplyReply, CleanScanReply, MachineProblem, ScanSkips,
+    };
+    let scan = Reply {
+        id: u64::MAX,
+        body: ReplyBody::CleanScan(CleanScanReply {
+            scan: "f".repeat(32),
+            rule: "a-rule-id-of-some-length-for-the-test".into(),
+            files: u64::MAX,
+            folders: u64::MAX,
+            bytes: u64::MAX,
+            min_age_days: u32::MAX,
+            truncated: true,
+            confirm: true,
+            skipped: ScanSkips {
+                too_new: u64::MAX,
+                age_unknown: u64::MAX,
+                links: u64::MAX,
+                user_writable: u64::MAX,
+                access_denied: u64::MAX,
+                unreadable: u64::MAX,
+                invalid_name: u64::MAX,
+                too_deep: u64::MAX,
+                pending_restart: u64::MAX,
+            },
+            problem: Some(MachineProblem::AccessDenied),
+        }),
+    };
+    let apply = Reply {
+        id: u64::MAX,
+        body: ReplyBody::CleanApply(CleanApplyReply {
+            rule: "a-rule-id-of-some-length-for-the-test".into(),
+            files: u64::MAX,
+            folders: u64::MAX,
+            bytes: u64::MAX,
+            skipped: ApplySkips {
+                gone: u64::MAX,
+                changed: u64::MAX,
+                links: u64::MAX,
+                hard_links: u64::MAX,
+                not_empty: u64::MAX,
+                locked: u64::MAX,
+                user_writable: u64::MAX,
+                pending_restart: u64::MAX,
+                failed: u64::MAX,
+            },
+            stopped: true,
+        }),
+    };
+    for reply in [scan, apply] {
+        let bytes = serde_json::to_vec(&reply).expect("json");
+        assert!(bytes.len() < MAX_REPLY_BYTES / 2, "{} bytes", bytes.len());
+        assert_eq!(decode_reply(&encode_reply(&reply)), Ok(reply));
+    }
+}
+
+#[test]
+fn the_fake_elevator_scans_and_applies_a_machine_rule_in_one_session() {
+    let elevator = FakeElevator::granted(Arc::new(FakeMemory::new()));
+    let scan = elevator.clean_scan("windows-temp", Some(14)).expect("scan");
+    assert_eq!(scan.rule, "windows-temp");
+    let done = elevator.clean_apply(&scan.scan).expect("apply");
+    assert_eq!(done.rule, "windows-temp");
+    assert_eq!(elevator.prompts(), 1);
+    assert_eq!(
+        elevator.calls()[..2],
+        [
+            ElevatorCall::CleanScan("windows-temp".into(), Some(14)),
+            ElevatorCall::CleanApply(scan.scan.clone()),
+        ]
+    );
 }

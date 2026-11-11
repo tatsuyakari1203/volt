@@ -191,6 +191,37 @@ pub(crate) fn of_kernel_handle(handle: &OwnedHandle) -> Result<SecurityInfo, Str
     info
 }
 
+/// Owner and DACL of an open file or folder, through a handle with `READ_CONTROL`: the object the
+/// handle names, never a path that could have been swapped since.
+///
+/// # Errors
+/// A message when the object cannot be read.
+pub(crate) fn of_file_handle(handle: &OwnedHandle) -> Result<SecurityInfo, String> {
+    let mut owner = PSID::default();
+    let mut dacl: *mut ACL = std::ptr::null_mut();
+    let mut descriptor = PSECURITY_DESCRIPTOR::default();
+    // SAFETY: a valid handle and valid out pointers; the owner and DACL pointers point into
+    // `descriptor`, which is freed by the guard below.
+    let status = unsafe {
+        GetSecurityInfo(
+            handle.raw(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            Some(&raw mut owner),
+            None,
+            Some(&raw mut dacl),
+            None,
+            Some(&raw mut descriptor),
+        )
+    };
+    let descriptor = Descriptor(descriptor);
+    check(status, "GetSecurityInfo")?;
+    // SAFETY: as in `of_path`.
+    let info = unsafe { read(owner, dacl, true) };
+    drop(descriptor);
+    info
+}
+
 /// Owner and DACL of an open registry key (a handle with `READ_CONTROL`).
 ///
 /// # Errors

@@ -32,6 +32,7 @@ mod chosen;
 mod folders;
 mod glob;
 mod loader;
+pub mod machine;
 mod plan;
 mod root;
 mod rule;
@@ -61,6 +62,7 @@ pub use rule::{
     CleanCategory, CleaningRule, Constraints, Follow, ItemUnit, MAX_DEPTH_LIMIT,
     MIN_AGE_SETTING_MAX, MIN_AGE_SETTING_MIN, RuleRoot, is_output_folder_name,
 };
+pub use scan::age_allows;
 
 use crate::activity::ActivityLog;
 use crate::ports::{FileSystem, Processes};

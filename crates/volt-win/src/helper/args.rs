@@ -80,6 +80,21 @@ impl fmt::Display for PipeName {
     }
 }
 
+/// 128 random bits of the system generator as 32 lower-case hex digits: the id of something the
+/// helper hands out once (a scan).
+///
+/// # Errors
+/// When the system generator fails.
+pub fn random_hex_128() -> Result<String, PortError> {
+    let mut bytes = [0_u8; 16];
+    fill_random(&mut bytes)?;
+    let mut text = String::with_capacity(32);
+    for byte in bytes {
+        let _ = write!(text, "{byte:02x}");
+    }
+    Ok(text)
+}
+
 /// Fills `buffer` from the system's preferred random number generator.
 fn fill_random(buffer: &mut [u8]) -> Result<(), PortError> {
     use windows::Win32::Security::Cryptography::{

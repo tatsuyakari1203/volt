@@ -418,6 +418,32 @@ async forgetCleaningFolder(ruleId: string) : Promise<Result<null, IpcError>> {
 }
 },
 /**
+ * Tauri command: scans a machine-wide cleaning rule as administrator, through the helper. The
+ * first call of a session shows one Windows prompt; cancelling it resolves with `declined`.
+ * Read-only: nothing is deleted.
+ */
+async scanMachineRule(ruleId: string) : Promise<Result<MachineScanResult, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("scan_machine_rule", { ruleId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: deletes, PERMANENTLY, what the last scan of a machine rule found. The UI asks
+ * first, in words that say it cannot be undone and does not use the Recycle Bin; for a folder that
+ * a normal user can write to the helper asks again on its own surface.
+ */
+async cleanMachineRule(ruleId: string) : Promise<Result<MachineCleanResult, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("clean_machine_rule", { ruleId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Tauri command: how many items the Recycle Bin holds and how big they are. Read-only.
  */
 async recycleBinStatus() : Promise<Result<RecycleBinView, IpcError>> {
@@ -2905,6 +2931,100 @@ locked: string | null;
  * `locked` as a phrase.
  */
 lockedPhrase: PhraseView | null }
+/**
+ * The answer to a machine clean.
+ */
+export type MachineCleanResult = 
+/**
+ * The helper deleted what it could. Permanent: it did not go to the Recycle Bin.
+ */
+{ outcome: "done"; ruleId: string; files: number; folders: number; bytes: number; skippedTotal: number; skipped: string | null; skippedPhrase: PhraseView | null; stopped: boolean; message: string; messagePhrase: PhraseView; historyIncomplete: boolean } | 
+/**
+ * The user cancelled the administrator prompt. Nothing was deleted.
+ */
+{ outcome: "declined" } | 
+/**
+ * The person did not confirm on the helper's own surface (or it could not be shown). Nothing
+ * was deleted.
+ */
+{ outcome: "notConfirmed" } | 
+/**
+ * A confirmation of this rule was declined lately, so the helper refused without asking.
+ * Nothing was deleted.
+ */
+{ outcome: "blocked" } | 
+/**
+ * No answer came in time. The helper may still finish: scan again to see what is left.
+ */
+{ outcome: "timedOut" } | 
+/**
+ * There is no scan to clean (it was used, replaced, or the helper's session ended). Scan again.
+ */
+{ outcome: "noScan" }
+/**
+ * The answer to a machine scan.
+ */
+export type MachineScanResult = 
+/**
+ * The helper scanned.
+ */
+{ outcome: "done"; scan: MachineScanView } | 
+/**
+ * The user cancelled the administrator prompt. Nothing was scanned.
+ */
+{ outcome: "declined" }
+/**
+ * What the helper found for one machine rule.
+ */
+export type MachineScanView = { 
+/**
+ * The rule's id.
+ */
+ruleId: string; 
+/**
+ * Files a clean would delete.
+ */
+files: number; 
+/**
+ * Empty folders a clean would delete.
+ */
+folders: number; 
+/**
+ * Size of those files in bytes.
+ */
+bytes: number; 
+/**
+ * The minimum age in days the scan applied (never below the rule's own).
+ */
+minAgeDays: number; 
+/**
+ * Whether the scan stopped at a limit: there is more than what is counted.
+ */
+truncated: boolean; 
+/**
+ * Whether the helper will ask a person on its own surface before it deletes.
+ */
+confirm: boolean; 
+/**
+ * Whether there is anything to delete now (a clean can be started).
+ */
+canClean: boolean; 
+/**
+ * What was left out and why, in a few words, or `null`.
+ */
+skipped: string | null; 
+/**
+ * `skipped` as a code and parameters.
+ */
+skippedPhrase: PhraseView | null; 
+/**
+ * Why nothing was scanned, or `null`.
+ */
+problem: string | null; 
+/**
+ * `problem` as a code and parameters.
+ */
+problemPhrase: PhraseView | null }
 /**
  * One memory cleaning operation. Mirrors [`volt_core::MemoryArea`].
  */

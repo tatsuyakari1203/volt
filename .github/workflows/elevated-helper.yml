@@ -9,7 +9,9 @@ name: Elevated helper
 # phases: against the RELEASE helper (the state folder it makes, the single-helper lock, a tweak
 # request that nobody can confirm), then, after a check that the release helper holds nothing of the
 # harness, against a HARNESS-feature build of the helper whose confirmer accepts (an apply and a
-# revert of a test-only tweak under a throwaway HKLM key). "Installer" builds the real installer,
+# revert of a test-only tweak under a throwaway HKLM key, and machine-wide cleaning: scan and apply
+# against throwaway trees under ProgramData\VoltTest, the race cases on real NTFS including a real
+# volume mount point, and a counts-only scan of the runner's own Windows Temp). "Installer" builds the real installer,
 # installs it on the runner (all users, then just this user), checks what it left behind and
 # removes it again.
 #
@@ -145,7 +147,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           pwsh scripts/check-helper-harness.ps1 -Binary target/debug/volt-helper.exe -Expect present
 
-      - name: Run the helper's tweak engine for real
+      - name: Run the helper's tweak engine and machine cleaning for real
         env:
           VOLT_ELEVATED_CI: "1"
         run: |
