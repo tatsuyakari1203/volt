@@ -19,6 +19,7 @@ use crate::IpcError;
 use crate::commands::blocking;
 use crate::memory::{MemoryAreaView, MemoryCleanResult, clean_result};
 use crate::wiring::{AppCore, AppState};
+use volt_core::Phrase;
 
 /// Why administrator actions cannot be used. The UI words each one itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -96,35 +97,20 @@ pub fn elevation_status_of(core: &AppCore) -> Result<ElevationStatusView, IpcErr
 /// The error a failed elevated call becomes.
 fn ipc_error(error: &ElevationError) -> IpcError {
     match error {
-        ElevationError::Unavailable(message) => IpcError::Unsupported {
-            message: message.clone(),
-        },
-        ElevationError::Untrusted(_) => IpcError::AccessDenied {
-            message: "Volt could not verify the administrator helper, so it sent nothing."
-                .to_owned(),
-        },
-        ElevationError::Mismatch(_) => IpcError::Other {
-            message: "The administrator helper does not match this version of Volt, so nothing \
-                      was sent. Reinstall Volt to update it."
-                .to_owned(),
-        },
-        ElevationError::Refused(ErrorCode::RateLimited) => IpcError::Other {
-            message: "The administrator helper asks for a few seconds between purges. Try again \
-                      in a moment."
-                .to_owned(),
-        },
-        ElevationError::Refused(_) => IpcError::Other {
-            message: "The administrator helper refused the request.".to_owned(),
-        },
-        ElevationError::Disconnected => IpcError::Other {
-            message: "The administrator session ended before it answered. Memory may or may not \
-                      have been cleaned: read it again and run it once more if needed."
-                .to_owned(),
-        },
+        ElevationError::Unavailable(_) => {
+            IpcError::unsupported(&Phrase::new("err.helper.unavailable"))
+        }
+        ElevationError::Untrusted(_) => {
+            IpcError::access_denied(&Phrase::new("err.helper.untrusted"))
+        }
+        ElevationError::Mismatch(_) => IpcError::other(&Phrase::new("err.helper.mismatch")),
+        ElevationError::Refused(ErrorCode::RateLimited) => {
+            IpcError::other(&Phrase::new("err.helper.rateLimited"))
+        }
+        ElevationError::Refused(_) => IpcError::other(&Phrase::new("err.helper.refused")),
+        ElevationError::Disconnected => IpcError::other(&Phrase::new("err.helper.disconnected")),
         // `ElevationError::Declined` is an outcome, not an error, and the enum is non-exhaustive.
-        _ => IpcError::Other {
-            message: "The administrator helper could not be used.".to_owned(),
-        },
+        _ => IpcError::other(&Phrase::new("err.helper.unusable")),
     }
 }
 
@@ -137,17 +123,12 @@ pub fn clean_memory_elevated_of(
     areas: &[MemoryAreaView],
 ) -> Result<ElevatedCleanResult, IpcError> {
     if areas.is_empty() {
-        return Err(IpcError::InvalidInput {
-            message: "choose at least one memory operation".to_owned(),
-        });
+        return Err(IpcError::invalid(&Phrase::new("err.noMemoryOperation")));
     }
     // Trimming working sets needs no administrator rights, and the helper does not know the
     // exclusion list: it would trim a protected program. The page never sends it here.
     if areas.contains(&MemoryAreaView::WorkingSets) {
-        return Err(IpcError::InvalidInput {
-            message: "trimming working sets does not need administrator rights: run it without them so the exclusion list applies"
-                .to_owned(),
-        });
+        return Err(IpcError::invalid(&Phrase::new("err.trimNeedsNoAdmin")));
     }
     let selected: Vec<_> = areas.iter().map(|area| area.to_core()).collect();
     // Not under the core's exclusive gate: the prompt can stay open for as long as the user takes,

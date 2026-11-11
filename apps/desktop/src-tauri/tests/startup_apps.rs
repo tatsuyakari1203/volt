@@ -370,7 +370,7 @@ fn machine_wide_entries_are_listed_but_refused_without_touching_anything() {
     ] {
         let error = set_startup_entry_enabled(&core, id, false).expect_err("refused");
         assert!(
-            matches!(&error, IpcError::AccessDenied { message } if message.contains("administrator rights")),
+            matches!(&error, IpcError::AccessDenied { message, .. } if message.contains("administrator rights")),
             "{id}: {error:?}"
         );
     }

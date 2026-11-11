@@ -1010,6 +1010,10 @@ status: ApplyStatus;
  */
 detail: string | null; 
 /**
+ * `detail` as a code and parameters, for the window to write in its language.
+ */
+detailPhrase: PhraseView | null; 
+/**
  * The state read again after the apply.
  */
 state: TweakStateView }
@@ -1857,27 +1861,27 @@ export type IpcError =
 /**
  * The addressed object (value, service, file, entry) does not exist.
  */
-{ kind: "notFound"; message: string } | 
+{ kind: "notFound"; message: string; phrase?: PhraseView | null } | 
 /**
  * The request needs rights the app does not have (for example administrator rights).
  */
-{ kind: "accessDenied"; message: string } | 
+{ kind: "accessDenied"; message: string; phrase?: PhraseView | null } | 
 /**
  * This platform or adapter cannot do what was asked.
  */
-{ kind: "unsupported"; message: string } | 
+{ kind: "unsupported"; message: string; phrase?: PhraseView | null } | 
 /**
  * The request itself is malformed.
  */
-{ kind: "invalidInput"; message: string } | 
+{ kind: "invalidInput"; message: string; phrase?: PhraseView | null } | 
 /**
  * A command did not finish in time and was stopped.
  */
-{ kind: "timedOut"; message: string } | 
+{ kind: "timedOut"; message: string; phrase?: PhraseView | null } | 
 /**
  * Any other failure.
  */
-{ kind: "other"; message: string }
+{ kind: "other"; message: string; phrase?: PhraseView | null }
 /**
  * The items the user picked of one rule.
  */
@@ -2418,6 +2422,10 @@ failed: number;
  * Why something could not be restored, in words.
  */
 detail: string | null; 
+/**
+ * `detail` as a code and parameters, for the window to write in its language.
+ */
+detailPhrase: PhraseView | null; 
 /**
  * The state read again after the revert.
  */
@@ -2969,7 +2977,7 @@ export type TweakStateView =
 /**
  * The state could not be read. Nothing was guessed.
  */
-{ kind: "unreadable"; message: string }
+{ kind: "unreadable"; message: string; phrase: PhraseView | null }
 /**
  * One step of a tweak: what it touches and the value now and after.
  */

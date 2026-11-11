@@ -51,7 +51,7 @@ const advanced: TweakInfo = {
 };
 
 function applied(state: TweakStateView = { kind: 'applied' }): ApplyResult {
-  return { tweak: fileExtensions.id, status: 'applied', detail: null, state };
+  return { tweak: fileExtensions.id, status: 'applied', detail: null, detailPhrase: null, state };
 }
 
 function reverted(state: TweakStateView = { kind: 'notApplied' }): RevertResult {
@@ -61,6 +61,7 @@ function reverted(state: TweakStateView = { kind: 'notApplied' }): RevertResult 
     restored: 1,
     failed: 0,
     detail: null,
+    detailPhrase: null,
     state,
   };
 }
@@ -276,6 +277,7 @@ describe('turning a tweak on and off', () => {
       tweak: fileExtensions.id,
       status: 'rolledBack',
       detail: 'the change failed (access denied)',
+      detailPhrase: null,
       state: { kind: 'notApplied' },
     } satisfies ApplyResult);
     renderScreen();
@@ -300,6 +302,7 @@ describe('turning a tweak on and off', () => {
       tweak: fileExtensions.id,
       status: 'needsAttention',
       detail: '1 change(s) could not be put back automatically',
+      detailPhrase: null,
       state: { kind: 'partial' },
     } satisfies ApplyResult);
     ipc.revertTweak.mockResolvedValue(reverted());

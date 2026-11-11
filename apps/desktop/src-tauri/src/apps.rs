@@ -219,11 +219,19 @@ fn result_view(report: &UninstallReport) -> UninstallResult {
 
 impl From<UninstallError> for IpcError {
     fn from(error: UninstallError) -> Self {
-        let message = error.to_string();
         match error {
-            UninstallError::NotFound => Self::NotFound { message },
-            // Not removable, or another removal is running (and anything added later).
-            _ => Self::InvalidInput { message },
+            UninstallError::NotFound => {
+                Self::not_found(&volt_core::Phrase::new("err.uninstall.notFound"))
+            }
+            UninstallError::NotUninstallable => {
+                Self::invalid(&volt_core::Phrase::new("err.uninstall.notUninstallable"))
+            }
+            UninstallError::Busy => Self::invalid(&volt_core::Phrase::new("err.uninstall.busy")),
+            UninstallError::HiddenByDefault => {
+                Self::invalid(&volt_core::Phrase::new("err.uninstall.hidden"))
+            }
+            // Anything added later.
+            other => Self::plain(crate::ipc::ErrorClass::InvalidInput, other.to_string()),
         }
     }
 }

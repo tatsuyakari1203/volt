@@ -29,8 +29,10 @@ where
     let core = state.core()?;
     tauri::async_runtime::spawn_blocking(move || work(&core))
         .await
-        .map_err(|error| IpcError::Other {
-            message: format!("the background task failed: {error}"),
+        .map_err(|error| {
+            IpcError::other(
+                &volt_core::Phrase::new("err.backgroundTask").text("detail", error.to_string()),
+            )
         })?
 }
 
@@ -357,8 +359,10 @@ fn save_export(app: &AppHandle, core: &AppCore) -> Result<ExportResult, IpcError
     let Some(chosen) = dialog.blocking_save_file() else {
         return Ok(ExportResult::Cancelled);
     };
-    let path = chosen.into_path().map_err(|error| IpcError::Other {
-        message: format!("the chosen location cannot be used: {error}"),
+    let path = chosen.into_path().map_err(|error| {
+        IpcError::other(
+            &volt_core::Phrase::new("err.locationUnusable").text("detail", error.to_string()),
+        )
     })?;
     api::write_export(&path, &export.text)?;
     Ok(ExportResult::Saved {

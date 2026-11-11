@@ -30,6 +30,7 @@ use crate::IpcError;
 use crate::cleaner::{SkipGroup, count32, count64};
 use crate::commands::blocking;
 use crate::wiring::{AppCore, AppState};
+use volt_core::Phrase;
 
 /// The type group of a file. Mirrors [`volt_core::FileGroup`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -175,9 +176,7 @@ impl LargeFilesSession {
 
     fn begin(&self) -> Result<ScanGuard<'_>, IpcError> {
         if self.scanning.swap(true, Ordering::SeqCst) {
-            return Err(IpcError::InvalidInput {
-                message: "a scan is already running".to_owned(),
-            });
+            return Err(IpcError::invalid(&Phrase::new("err.scanRunning")));
         }
         self.cancel.store(false, Ordering::SeqCst);
         Ok(ScanGuard(self))
@@ -210,19 +209,27 @@ impl LargeFilesObserver for Observer<'_> {
 }
 
 fn finder(core: &AppCore) -> Result<&LargeFilesFinder, IpcError> {
-    core.large_files().ok_or_else(|| IpcError::Unsupported {
-        message: "the large files finder is not available in this build".to_owned(),
-    })
+    core.large_files()
+        .ok_or_else(|| IpcError::unsupported(&Phrase::new("err.largeFilesUnavailable")))
 }
 
 fn scan_error(error: &LargeFilesError) -> IpcError {
-    let message = error.to_string();
     match error {
-        LargeFilesError::NotFound => IpcError::NotFound { message },
-        LargeFilesError::SystemFoldersUnavailable(_) => IpcError::Unsupported { message },
-        LargeFilesError::Unreadable(_) => IpcError::Other { message },
-        // Not absolute, not a folder, a system folder (and anything added later).
-        _ => IpcError::InvalidInput { message },
+        LargeFilesError::NotFound => IpcError::not_found(&Phrase::new("err.large.notFound")),
+        LargeFilesError::SystemFoldersUnavailable(class) => IpcError::unsupported(
+            &Phrase::new("err.large.systemUnavailable")
+                .phrase("class", volt_core::phrase::class_phrase(class)),
+        ),
+        LargeFilesError::Unreadable(class) => IpcError::other(
+            &Phrase::new("err.large.unreadable")
+                .phrase("class", volt_core::phrase::class_phrase(class)),
+        ),
+        LargeFilesError::NotAbsolute => IpcError::invalid(&Phrase::new("err.large.notAbsolute")),
+        LargeFilesError::NotDirectory => IpcError::invalid(&Phrase::new("err.large.notDirectory")),
+        LargeFilesError::SystemFolder => IpcError::invalid(&Phrase::new("err.large.systemFolder")),
+        LargeFilesError::Cancelled => IpcError::invalid(&Phrase::new("err.large.cancelled")),
+        // Anything added later.
+        other => IpcError::plain(crate::ipc::ErrorClass::InvalidInput, other.to_string()),
     }
 }
 
@@ -303,26 +310,18 @@ pub fn trash_with(
     let finder = finder(core)?;
     let session = core.large_files_session();
     if session.scanning.load(Ordering::SeqCst) {
-        return Err(IpcError::InvalidInput {
-            message: "a scan is running; wait for it to finish or cancel it".to_owned(),
-        });
+        return Err(IpcError::invalid(&Phrase::new("err.scanBusy")));
     }
     let mut stored = session.stored();
     let Some(current) = stored.as_mut().filter(|s| s.id == scan_id) else {
-        return Err(IpcError::NotFound {
-            message: "that scan is out of date; scan again".to_owned(),
-        });
+        return Err(IpcError::not_found(&Phrase::new("err.scanStale")));
     };
     if indices.is_empty() {
-        return Err(IpcError::InvalidInput {
-            message: "no file is chosen".to_owned(),
-        });
+        return Err(IpcError::invalid(&Phrase::new("err.noFile")));
     }
     let rows: Vec<usize> = indices.iter().map(|&i| i as usize).collect();
     if rows.iter().any(|&row| row >= current.scan.files.len()) {
-        return Err(IpcError::InvalidInput {
-            message: "a chosen file is not part of this scan".to_owned(),
-        });
+        return Err(IpcError::invalid(&Phrase::new("err.fileNotInScan")));
     }
     let report = finder.trash(&current.scan, &rows, Source::Manual);
     if report.activity_write_failed {
@@ -361,18 +360,14 @@ pub fn reveal_with(core: &AppCore, scan_id: &str, index: u32) -> Result<(), IpcE
     let path = {
         let stored = core.large_files_session().stored();
         let Some(current) = stored.as_ref().filter(|s| s.id == scan_id) else {
-            return Err(IpcError::NotFound {
-                message: "that scan is out of date; scan again".to_owned(),
-            });
+            return Err(IpcError::not_found(&Phrase::new("err.scanStale")));
         };
         current
             .scan
             .files
             .get(index as usize)
             .map(|file| file.path.clone())
-            .ok_or_else(|| IpcError::InvalidInput {
-                message: "that file is not part of this scan".to_owned(),
-            })?
+            .ok_or_else(|| IpcError::invalid(&Phrase::new("err.fileNotInScan")))?
     };
     open_in_explorer(&path)
 }
@@ -384,17 +379,15 @@ fn open_in_explorer(path: &Path) -> Result<(), IpcError> {
         .raw_arg(explorer_select_argument(path))
         .spawn()
         .map(drop)
-        .map_err(|error| IpcError::Other {
-            message: format!("Explorer could not be started: {error}"),
+        .map_err(|error| {
+            IpcError::other(&Phrase::new("err.explorer").text("detail", error.to_string()))
         })
 }
 
 #[cfg(not(windows))]
 fn open_in_explorer(path: &Path) -> Result<(), IpcError> {
     let _ = explorer_select_argument(path);
-    Err(IpcError::Unsupported {
-        message: "opening a folder is only available on Windows".to_owned(),
-    })
+    Err(IpcError::unsupported(&Phrase::new("err.openFolderWindows")))
 }
 
 /// Tauri command: scans a folder (the system drive when no folder is given) for its biggest files.
@@ -466,8 +459,8 @@ pub(crate) async fn pick_scan_folder(
         let Some(chosen) = dialog.blocking_pick_folder() else {
             return Ok(None);
         };
-        let path = chosen.into_path().map_err(|error| IpcError::Other {
-            message: format!("the chosen location cannot be used: {error}"),
+        let path = chosen.into_path().map_err(|error| {
+            IpcError::other(&Phrase::new("err.locationUnusable").text("detail", error.to_string()))
         })?;
         Ok(Some(path.display().to_string()))
     })

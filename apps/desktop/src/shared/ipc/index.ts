@@ -3,6 +3,7 @@
 // transfer type or call `invoke` directly. This file adds ergonomics on top of the generated
 // module and nothing else.
 
+import { sayCapitalised } from '../i18n/say';
 import { t } from '../i18n/translate';
 import {
   type ActivityExport,
@@ -179,8 +180,14 @@ export class IpcCommandError extends Error {
   }
 }
 
-/** One-line text for an IPC error. The switch is exhaustive: a new Rust variant fails typecheck. */
+/**
+ * One-line text for an IPC error. The switch is exhaustive: a new Rust variant fails typecheck.
+ * A sentence the shell built carries a phrase (a code and parameters): it is written here in the
+ * current language, as a whole sentence. Any other message is a detail from outside the shell
+ * (an adapter, the system) and goes after the kind of failure.
+ */
 export function describeIpcError(error: IpcError): string {
+  if (error.phrase) return sayCapitalised(error.phrase, error.message);
   switch (error.kind) {
     case 'notFound':
       return t('ipc.notFound', { message: error.message });

@@ -232,9 +232,7 @@ impl AppCore {
     pub fn memory_cleaner(&self) -> Result<&MemoryCleaner, IpcError> {
         self.memory_cleaner
             .as_ref()
-            .ok_or_else(|| IpcError::Unsupported {
-                message: "memory cleaning is not available in this build".to_owned(),
-            })
+            .ok_or_else(|| IpcError::unsupported(&volt_core::Phrase::new("err.memoryUnavailable")))
     }
 
     /// The same core with the administrator-session elevator attached. The real app does in
@@ -248,9 +246,9 @@ impl AppCore {
     /// The elevator, or the error the administrator commands return without one. Only the Memory
     /// page's shield actions call it: Boost and the tray never do.
     pub fn elevator(&self) -> Result<&Arc<dyn Elevator>, IpcError> {
-        self.elevator.as_ref().ok_or_else(|| IpcError::Unsupported {
-            message: "administrator actions are not available in this build".to_owned(),
-        })
+        self.elevator
+            .as_ref()
+            .ok_or_else(|| IpcError::unsupported(&volt_core::Phrase::new("err.adminUnavailable")))
     }
 
     /// The same core with the process monitor attached. [`build_core`] always does; a core
@@ -263,11 +261,9 @@ impl AppCore {
 
     /// The process monitor, or the error the process commands return without one.
     pub fn process_monitor(&self) -> Result<&ProcessMonitor, IpcError> {
-        self.process_monitor
-            .as_ref()
-            .ok_or_else(|| IpcError::Unsupported {
-                message: "the process list is not available in this build".to_owned(),
-            })
+        self.process_monitor.as_ref().ok_or_else(|| {
+            IpcError::unsupported(&volt_core::Phrase::new("err.processesUnavailable"))
+        })
     }
 
     /// The same core with the process tuner attached. [`build_core`] always does; a core
@@ -283,9 +279,7 @@ impl AppCore {
     pub fn process_tuner(&self) -> Result<&ProcessTuner, IpcError> {
         self.process_tuner
             .as_ref()
-            .ok_or_else(|| IpcError::Unsupported {
-                message: "changing process settings is not available in this build".to_owned(),
-            })
+            .ok_or_else(|| IpcError::unsupported(&volt_core::Phrase::new("err.tuningUnavailable")))
     }
 
     /// The same core with the installed apps manager attached. The real app does in [`init`];
@@ -298,9 +292,9 @@ impl AppCore {
 
     /// The installed apps manager, or the error the Apps commands return without one.
     pub fn apps(&self) -> Result<&AppManager, IpcError> {
-        self.apps.as_ref().ok_or_else(|| IpcError::Unsupported {
-            message: "the installed apps list is not available in this build".to_owned(),
-        })
+        self.apps
+            .as_ref()
+            .ok_or_else(|| IpcError::unsupported(&volt_core::Phrase::new("err.appsUnavailable")))
     }
 
     /// The same core with the startup apps manager attached. [`build_core_with`] does this;
@@ -315,9 +309,7 @@ impl AppCore {
     pub fn startup_apps(&self) -> Result<&StartupManager, IpcError> {
         self.startup_apps
             .as_ref()
-            .ok_or_else(|| IpcError::Unsupported {
-                message: "the startup apps manager is not available in this build".to_owned(),
-            })
+            .ok_or_else(|| IpcError::unsupported(&volt_core::Phrase::new("err.startupUnavailable")))
     }
 
     /// Serialises the operations that read or change tweak state, so two quick clicks (or a
@@ -672,9 +664,7 @@ impl AppState {
         self.core
             .as_ref()
             .map(Arc::clone)
-            .map_err(|message| IpcError::Other {
-                message: message.clone(),
-            })
+            .map_err(|message| IpcError::plain(crate::ipc::ErrorClass::Other, message.clone()))
     }
 }
 

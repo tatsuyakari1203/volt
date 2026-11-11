@@ -273,9 +273,9 @@ pub fn clean_memory_of(
     areas: &[MemoryAreaView],
 ) -> Result<MemoryCleanResult, IpcError> {
     if areas.is_empty() {
-        return Err(IpcError::InvalidInput {
-            message: "choose at least one memory operation".to_owned(),
-        });
+        return Err(IpcError::invalid(&volt_core::Phrase::new(
+            "err.noMemoryOperation",
+        )));
     }
     let cleaner = core.memory_cleaner()?;
     let selected: Vec<MemoryArea> = areas.iter().map(|area| area.to_core()).collect();
