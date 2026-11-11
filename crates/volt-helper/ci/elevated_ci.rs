@@ -308,47 +308,23 @@ fn installed(args: &[String]) -> u8 {
 }
 
 /// The installed helper started for real through `runas`, bound to this harness. This harness is
-/// not the installed UI executable, so the helper must pass its own install self-check on the
-/// folder the installer made, refuse every client, and end by itself at the connection deadline.
+/// not the installed UI executable, so the helper must get through its own install self-check on
+/// the folder the installer made (a failed check exits with the install code) and then refuse to
+/// serve a UI that is not the installed `volt-desktop.exe` (the bound-UI code). Replacing the
+/// installed UI with the harness is not an option, and the full serving path is proven by the
+/// other job with this same helper binary.
 fn installed_helper(report: &mut Report, helper: &Path, me: &ProcessFacts) {
-    let Ok(pipe) = PipeName::random() else {
-        report.check(
-            "the installed helper starts through runas",
-            false,
-            "no pipe name",
-        );
-        return;
-    };
-    let args = HelperArgs {
-        pipe: pipe.clone(),
-        ui_pid: me.identity.pid,
-        ui_created_at_100ns: me.identity.created_at_100ns,
-    }
-    .render();
     let started = Instant::now();
-    let process = match ci::launch(helper, &args) {
-        Ok(process) => process,
-        Err(error) => {
-            report.check("the installed helper starts through runas", false, error);
-            return;
-        }
-    };
-    let (code, text) = run_rogue(pipe.as_str());
+    let result = exit_code_within(helper, &valid_args(me), Duration::from_secs(30));
     report.check(
-        "the installed helper refuses a client that is not the installed UI",
-        code == Some(1) && text.contains("refused"),
-        format!("exit {code:?}, said {text:?}"),
-    );
-    // Alive for the whole deadline means the self-check passed on the installed folder (a failed
-    // check exits at once with the install code), and a clean exit means it ended by its own rule.
-    let exit_code = ci::wait_exit_code(&process, Duration::from_secs(60));
-    let elapsed = started.elapsed();
-    report.check(
-        "the installed helper passes its self-check, serves nobody and ends by itself with code 0",
-        exit_code == Some(0)
-            && elapsed >= Duration::from_secs(25)
-            && elapsed < Duration::from_secs(50),
-        format!("exit {exit_code:?} after {}", millis(elapsed)),
+        "the installed helper passes its install self-check and refuses a UI that is not the installed one",
+        result == Ok(Some(u32::from(exit::BOUND_UI))),
+        format!(
+            "exit {result:?} after {} (install self-check failure would be {}, bound UI refusal is {})",
+            millis(started.elapsed()),
+            exit::INSTALL,
+            exit::BOUND_UI
+        ),
     );
 }
 
