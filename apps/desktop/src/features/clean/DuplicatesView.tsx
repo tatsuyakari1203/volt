@@ -247,7 +247,11 @@ export function DuplicatesView({ onMoved }: { onMoved?: () => void }) {
       if (!alive.current) return;
       setResult(done);
       setScan({ ...scan, lists: done.lists });
-      setMarks((current) => pruneMarks(current, done.lists.duplicates));
+      // A duplicate move renumbers the groups and copies, so old marks would land on other
+      // files: start from nothing. Other moves leave the duplicate list as it was.
+      setMarks((current) =>
+        kind === 'duplicates' ? new Map() : pruneMarks(current, done.lists.duplicates),
+      );
       setFolders(new Set());
       setShortcuts(new Set());
       onMoved?.();
