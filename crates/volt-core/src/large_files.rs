@@ -44,10 +44,10 @@ const PROGRESS_EVERY: u64 = 256;
 const ACTIVITY_LABEL: &str = "large_files";
 
 /// File names that are never listed, wherever they are.
-const SYSTEM_FILES: [&str; 3] = ["pagefile.sys", "hiberfil.sys", "swapfile.sys"];
+pub(crate) const SYSTEM_FILES: [&str; 3] = ["pagefile.sys", "hiberfil.sys", "swapfile.sys"];
 
 /// Folder names that are never entered, wherever they are.
-const SYSTEM_DIRS: [&str; 2] = ["$recycle.bin", "system volume information"];
+pub(crate) const SYSTEM_DIRS: [&str; 2] = ["$recycle.bin", "system volume information"];
 
 /// What kind of file it is, guessed from its extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

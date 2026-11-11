@@ -17,8 +17,8 @@ use crate::exclusions::ExclusionList;
 use crate::executor::Executor;
 use crate::journal::{BatchId, EntryId, EntryState, Journal, JournalEntry, NewEntry};
 use crate::ports::{
-    Availability, DirEntry, EntryInfo, EntryKind, FileStat, FileSystem, Memory, MemoryArea,
-    MemoryLists, MemoryStatus, Ports, ProcessInfo, Processes, PurgeOutcome, Services,
+    Availability, DirEntry, EntryInfo, EntryKind, FileIdentity, FileStat, FileSystem, Memory,
+    MemoryArea, MemoryLists, MemoryStatus, Ports, ProcessInfo, Processes, PurgeOutcome, Services,
 };
 use crate::registry::{
     NamedValue, Registry, RegistryHive, RegistryKeyRef, RegistryValue, RegistryValueRef,
@@ -395,6 +395,11 @@ struct FileSystemState {
     read_dirs: Vec<PathBuf>,
     trash_failures: HashMap<PathBuf, PortError>,
     read_dir_failures: HashMap<PathBuf, PortError>,
+    contents: HashMap<PathBuf, Vec<u8>>,
+    identities: HashMap<PathBuf, FileIdentity>,
+    placeholders: HashSet<PathBuf>,
+    bytes_read: HashMap<PathBuf, u64>,
+    placeholder_reads: Vec<PathBuf>,
 }
 
 /// In-memory [`FileSystem`].
@@ -549,6 +554,58 @@ impl FakeFileSystem {
     pub fn exists(&self, path: &Path) -> bool {
         lock(&self.state).entries.contains_key(path)
     }
+
+    /// Adds (or replaces) a file whose data is `content`; its size is the length of `content`.
+    pub fn add_file_with_content(&self, path: impl Into<PathBuf>, content: &[u8]) {
+        let path = path.into();
+        self.add_file(path.clone(), content.len() as u64);
+        lock(&self.state).contents.insert(path, content.to_vec());
+    }
+
+    /// Replaces the data a file reads back, leaving its listed size and time as they are, so a
+    /// test can change a file behind an unchanged listing.
+    pub fn set_content(&self, path: impl Into<PathBuf>, content: &[u8]) {
+        lock(&self.state)
+            .contents
+            .insert(path.into(), content.to_vec());
+    }
+
+    /// Adds a file that is a cloud placeholder: its data is not on disk, so it must never be
+    /// read.
+    pub fn add_placeholder(&self, path: impl Into<PathBuf>, size_bytes: u64) {
+        let path = path.into();
+        self.add_file(path.clone(), size_bytes);
+        lock(&self.state).placeholders.insert(path);
+    }
+
+    /// Makes `path` another name of the file `(volume, file_id)`, like a hard link.
+    pub fn set_identity(&self, path: impl Into<PathBuf>, volume: u64, file_id: u64, links: u32) {
+        lock(&self.state).identities.insert(
+            path.into(),
+            FileIdentity {
+                volume,
+                file_id,
+                links,
+                on_disk: true,
+            },
+        );
+    }
+
+    /// How many bytes `read_at` returned for `path` so far.
+    #[must_use]
+    pub fn bytes_read_of(&self, path: &Path) -> u64 {
+        lock(&self.state)
+            .bytes_read
+            .get(path)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// How many times a placeholder was asked to be read (always refused). Must stay 0.
+    #[must_use]
+    pub fn placeholder_reads(&self) -> usize {
+        lock(&self.state).placeholder_reads.len()
+    }
 }
 
 impl FileSystem for FakeFileSystem {
@@ -644,6 +701,65 @@ impl FileSystem for FakeFileSystem {
         drop(state);
         self.log.push(Event::FileTrashed(path.to_path_buf()));
         Ok(())
+    }
+
+    fn identity(&self, path: &Path) -> Result<FileIdentity, PortError> {
+        let state = lock(&self.state);
+        match state.entries.get(path) {
+            None => Err(PortError::NotFound(path.display().to_string())),
+            Some(entry) if entry.kind != EntryKind::File => Err(PortError::InvalidInput(format!(
+                "{} is not a plain file",
+                path.display()
+            ))),
+            Some(_) => {
+                let on_disk = !state.placeholders.contains(path);
+                Ok(state.identities.get(path).map_or_else(
+                    || {
+                        use std::hash::{Hash as _, Hasher as _};
+                        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                        path.hash(&mut hasher);
+                        FileIdentity {
+                            volume: 1,
+                            file_id: hasher.finish(),
+                            links: 1,
+                            on_disk,
+                        }
+                    },
+                    |identity| FileIdentity {
+                        on_disk,
+                        ..*identity
+                    },
+                ))
+            }
+        }
+    }
+
+    fn read_at(&self, path: &Path, offset: u64, buf: &mut [u8]) -> Result<usize, PortError> {
+        let mut state = lock(&self.state);
+        if state.placeholders.contains(path) {
+            state.placeholder_reads.push(path.to_path_buf());
+            return Err(PortError::Unsupported("the file is not on disk".to_owned()));
+        }
+        match state.entries.get(path).map(|entry| entry.kind) {
+            None => return Err(PortError::NotFound(path.display().to_string())),
+            Some(EntryKind::File) => {}
+            Some(_) => {
+                return Err(PortError::InvalidInput(format!(
+                    "{} is not a plain file",
+                    path.display()
+                )));
+            }
+        }
+        let Some(content) = state.contents.get(path) else {
+            return Err(PortError::NotFound(format!("data of {}", path.display())));
+        };
+        let start = usize::try_from(offset)
+            .unwrap_or(usize::MAX)
+            .min(content.len());
+        let count = buf.len().min(content.len() - start);
+        buf[..count].copy_from_slice(&content[start..start + count]);
+        *state.bytes_read.entry(path.to_path_buf()).or_default() += count as u64;
+        Ok(count)
     }
 }
 

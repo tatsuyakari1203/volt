@@ -18,6 +18,7 @@ import {
 } from '../../shared/ipc';
 import { formatSize } from '../../shared/text/size';
 import { Button, Card, Dialog, ListGroup, PageHeader, SegmentedControl } from '../../shared/ui';
+import { DuplicatesView } from './DuplicatesView';
 import { LargeFilesView } from './LargeFilesView';
 import {
   categoryName,
@@ -526,7 +527,7 @@ function JunkClean({ movedElsewhere }: { movedElsewhere: number }) {
   );
 }
 
-type View = 'junk' | 'large';
+type View = 'junk' | 'large' | 'tidy';
 
 /**
  * The Clean screen: a switch between the junk scan and the large files finder. Both stay mounted
@@ -547,6 +548,7 @@ export function CleanScreen() {
           options={[
             { value: 'junk', label: t('clean.view.junk') },
             { value: 'large', label: t('clean.view.large') },
+            { value: 'tidy', label: t('clean.view.tidy') },
           ]}
         />
       </div>
@@ -555,6 +557,9 @@ export function CleanScreen() {
       </div>
       <div hidden={view !== 'large'}>
         <LargeFilesView onMoved={() => setMoves((count) => count + 1)} />
+      </div>
+      <div hidden={view !== 'tidy'}>
+        <DuplicatesView onMoved={() => setMoves((count) => count + 1)} />
       </div>
     </>
   );

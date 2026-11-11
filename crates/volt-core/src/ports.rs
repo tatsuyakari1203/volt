@@ -63,6 +63,23 @@ pub struct EntryInfo {
     pub system: bool,
 }
 
+/// Who a file is on its volume, and whether its data is on disk.
+///
+/// Two paths with the same `volume` and `file_id` are two names of one file (hard links): they
+/// share their data and are not duplicates of each other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FileIdentity {
+    /// The serial number of the volume the file is on.
+    pub volume: u64,
+    /// The file's index on that volume.
+    pub file_id: u64,
+    /// How many names (hard links) the file has.
+    pub links: u32,
+    /// `false` when the data is not on this disk (a cloud placeholder or an offline file):
+    /// reading it would make Windows download it, so it is never read.
+    pub on_disk: bool,
+}
+
 /// One entry of a directory listing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirEntry {
@@ -104,6 +121,24 @@ pub trait FileSystem: Send + Sync {
     /// into deleting outside the folder it was asked to clean. A missing path
     /// is [`PortError::NotFound`].
     fn move_to_trash(&self, root: &Path, path: &Path) -> Result<(), PortError>;
+
+    /// The identity of the plain file at `path`, read without reading its data and without
+    /// following a link. The default is unsupported: an adapter that cannot tell makes the
+    /// duplicate finder compare nothing.
+    fn identity(&self, _path: &Path) -> Result<FileIdentity, PortError> {
+        Err(PortError::Unsupported("file identity".to_owned()))
+    }
+
+    /// Reads up to `buf.len()` bytes of the plain file at `path` starting at `offset`, and
+    /// returns how many were read (0 at the end). Read-only and shared: it never locks the file.
+    ///
+    /// Implementations must refuse with [`PortError::InvalidInput`] a link or other reparse
+    /// point, and with [`PortError::Unsupported`] a file that is not on disk (see
+    /// [`FileIdentity::on_disk`]), so reading can never download a cloud file or leave the
+    /// folder through a link. The default is unsupported.
+    fn read_at(&self, _path: &Path, _offset: u64, _buf: &mut [u8]) -> Result<usize, PortError> {
+        Err(PortError::Unsupported("reading file data".to_owned()))
+    }
 }
 
 /// A running process.

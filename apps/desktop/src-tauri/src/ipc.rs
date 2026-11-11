@@ -406,6 +406,12 @@ pub fn bindings_builder() -> Builder<tauri::Wry> {
             crate::large_files::trash_large_files,
             crate::large_files::reveal_large_file,
             crate::large_files::pick_scan_folder,
+            crate::tidy::scan_tidy,
+            crate::tidy::cancel_tidy_scan,
+            crate::tidy::trash_duplicates,
+            crate::tidy::trash_empty_folders,
+            crate::tidy::trash_broken_shortcuts,
+            crate::tidy::reveal_tidy_item,
             crate::memory::memory_state,
             crate::memory::clean_memory,
             crate::trend::memory_history,
@@ -439,6 +445,7 @@ pub fn bindings_builder() -> Builder<tauri::Wry> {
             crate::MemoryTrendUpdated,
             crate::cleaner::CleanScanProgress,
             crate::large_files::LargeFilesProgress,
+            crate::tidy::TidyProgressEvent,
         ])
         .typ::<IpcError>()
 }

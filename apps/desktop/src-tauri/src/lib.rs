@@ -23,6 +23,7 @@ pub mod phrase;
 pub mod processes;
 mod sampler;
 pub mod transfer;
+pub mod tidy;
 mod tray;
 mod trend;
 pub mod tuning;

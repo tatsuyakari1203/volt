@@ -22,7 +22,7 @@ use volt_core::{
     Elevator, Executor, FilePublisher, Journal, KnownFolders, LargeFilesFinder, LogonTasks,
     MemoryCleaner, OwnInstall, PortError, Ports, ProcessMonitor, ProcessTuner, Processes,
     ReconcileReport, RecycleBinManager, Resolution, RulesError, Settings, ShortcutResolver,
-    StartupManager, StartupSources, SystemClock, TweakEngine,
+    StartupManager, StartupSources, SystemClock, TidyFinder, TweakEngine,
 };
 use volt_store::{CorruptionRecovery, OpenOutcome, Store, StoreError};
 use volt_win::{
@@ -35,6 +35,7 @@ use crate::IpcError;
 use crate::catalogue::{EMBEDDED_CATALOGUE, EMBEDDED_CLEANING_RULES, embedded_hashes};
 use crate::cleaner::CleanSession;
 use crate::large_files::LargeFilesSession;
+use crate::tidy::TidySession;
 
 /// File name of the database inside the app data directory.
 pub const STORE_FILE_NAME: &str = "volt.db";
@@ -115,6 +116,8 @@ pub struct AppCore {
     clean_session: CleanSession,
     large_files: Option<LargeFilesFinder>,
     large_files_session: LargeFilesSession,
+    tidy: Option<TidyFinder>,
+    tidy_session: TidySession,
     recycle_bin: Option<RecycleBinManager>,
     memory_cleaner: Option<MemoryCleaner>,
     process_monitor: Option<ProcessMonitor>,
@@ -157,6 +160,8 @@ impl AppCore {
             clean_session: CleanSession::default(),
             large_files: None,
             large_files_session: LargeFilesSession::default(),
+            tidy: None,
+            tidy_session: TidySession::default(),
             recycle_bin: None,
             memory_cleaner: None,
             process_monitor: None,
@@ -198,6 +203,26 @@ impl AppCore {
     #[must_use]
     pub fn large_files_session(&self) -> &LargeFilesSession {
         &self.large_files_session
+    }
+
+    /// Attaches the tidy-up finder (duplicates, empty folders, broken shortcuts). [`build_core`]
+    /// always does.
+    #[must_use]
+    pub fn with_tidy(mut self, finder: TidyFinder) -> Self {
+        self.tidy = Some(finder);
+        self
+    }
+
+    /// The tidy-up finder, or `None` for a core assembled by hand without one.
+    #[must_use]
+    pub fn tidy(&self) -> Option<&TidyFinder> {
+        self.tidy.as_ref()
+    }
+
+    /// What the tidy-up finder keeps between a scan and a move: the latest scan and its flags.
+    #[must_use]
+    pub fn tidy_session(&self) -> &TidySession {
+        &self.tidy_session
     }
 
     /// Attaches the Recycle Bin manager. The real app does in [`init`]; [`build_core`] never
@@ -446,6 +471,22 @@ pub fn build_core_with(
     )
 }
 
+/// The finders that walk folders the user chooses (large files; duplicates, empty folders and
+/// broken shortcuts), over the real ports.
+fn folder_finders(
+    ports: &Ports,
+    folders: &Arc<dyn KnownFolders>,
+    clock: &Arc<dyn Clock>,
+    activity: &Arc<dyn ActivityLog>,
+) -> (LargeFilesFinder, TidyFinder) {
+    (
+        LargeFilesFinder::new(ports.file_system.clone(), folders.clone(), clock.clone())
+            .with_activity_log(activity.clone()),
+        TidyFinder::new(ports.file_system.clone(), folders.clone(), clock.clone())
+            .with_activity_log(activity.clone()),
+    )
+}
+
 fn build_core_inner(
     ports: Ports,
     store_path: &Path,
@@ -482,12 +523,7 @@ fn build_core_inner(
         log::warn!("could not prune the activity log: {error}");
     }
 
-    let large_files = LargeFilesFinder::new(
-        ports.file_system.clone(),
-        cleaning.folders.clone(),
-        clock.clone(),
-    )
-    .with_activity_log(activity.clone());
+    let (large_files, tidy) = folder_finders(&ports, &cleaning.folders, &clock, &activity);
     let clean = CleanEngine::new(
         rules,
         cleaning.folders,
@@ -560,6 +596,7 @@ fn build_core_inner(
     )
     .with_clean_engine(clean)
     .with_large_files(large_files)
+    .with_tidy(tidy)
     .with_memory_cleaner(memory_cleaner)
     .with_process_monitor(process_monitor)
     .with_process_tuner(process_tuner);

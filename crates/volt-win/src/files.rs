@@ -2,12 +2,16 @@
 
 use std::fs;
 use std::os::windows::ffi::OsStrExt;
-use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+use std::os::windows::fs::{FileExt as _, MetadataExt, OpenOptionsExt};
+use std::os::windows::io::AsRawHandle as _;
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use volt_core::{DirEntry, EntryInfo, EntryKind, FileStat, FileSystem, PortError, Timestamp};
-use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
+use volt_core::{
+    DirEntry, EntryInfo, EntryKind, FileIdentity, FileStat, FileSystem, PortError, Timestamp,
+};
+use windows::Win32::Foundation::{HANDLE, RPC_E_CHANGED_MODE};
+use windows::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle};
 use windows::Win32::System::Com::{
     CLSCTX_ALL, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
 };
@@ -21,6 +25,11 @@ use crate::error::{from_hresult, from_io};
 
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 const FILE_ATTRIBUTE_SYSTEM: u32 = 0x4;
+/// Attributes of a file whose data is not on this disk: offline storage, or a cloud placeholder
+/// that Windows downloads when its data is read (or when it is opened, for the second one).
+const FILE_ATTRIBUTE_NOT_ON_DISK: u32 = 0x1000 | 0x4_0000 | 0x40_0000;
+const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+const FILE_READ_ATTRIBUTES: u32 = 0x80;
 const ERROR_ACCESS_DENIED: u32 = 5;
 const ERROR_SHARING_VIOLATION: u32 = 32;
 const ERROR_LOCK_VIOLATION: u32 = 33;
@@ -125,6 +134,59 @@ impl FileSystem for WinFileSystem {
         let checked = check_inside_root(root, path)?;
         recycle(&checked)
     }
+
+    fn identity(&self, path: &Path) -> Result<FileIdentity, PortError> {
+        let context = path.display().to_string();
+        let attributes = plain_file_attributes(path)?;
+        // Only the attributes are asked for, and a link is not followed: this never reads data.
+        let file = fs::OpenOptions::new()
+            .access_mode(FILE_READ_ATTRIBUTES)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+            .map_err(|e| from_io(&e, &context))?;
+        let mut info = BY_HANDLE_FILE_INFORMATION::default();
+        // SAFETY: the handle belongs to `file`, which is open for the whole call, and `info` is a
+        // valid out parameter.
+        unsafe { GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &raw mut info) }
+            .map_err(|e| from_hresult(e.code().0, &context))?;
+        Ok(FileIdentity {
+            volume: u64::from(info.dwVolumeSerialNumber),
+            file_id: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+            links: info.nNumberOfLinks,
+            on_disk: attributes & FILE_ATTRIBUTE_NOT_ON_DISK == 0,
+        })
+    }
+
+    fn read_at(&self, path: &Path, offset: u64, buf: &mut [u8]) -> Result<usize, PortError> {
+        let context = path.display().to_string();
+        // Checked before opening: opening a placeholder is harmless, but its data is only
+        // downloaded by a read, which must never happen.
+        let attributes = plain_file_attributes(path)?;
+        if attributes & FILE_ATTRIBUTE_NOT_ON_DISK != 0 {
+            return Err(PortError::Unsupported(format!(
+                "{context} is not on this disk, so it is not read"
+            )));
+        }
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+            .map_err(|e| from_io(&e, &context))?;
+        file.seek_read(buf, offset)
+            .map_err(|e| from_io(&e, &context))
+    }
+}
+
+/// The attributes of a plain file; a link, another reparse point or a directory is refused.
+fn plain_file_attributes(path: &Path) -> Result<u32, PortError> {
+    let context = path.display().to_string();
+    let meta = fs::symlink_metadata(path).map_err(|e| from_io(&e, &context))?;
+    if is_reparse_point(&meta) || meta.is_dir() {
+        return Err(PortError::InvalidInput(format!(
+            "{context} is not a plain file (a link is never followed)"
+        )));
+    }
+    Ok(meta.file_attributes())
 }
 
 /// Verifies that `path` is strictly inside `root` and reaches its target

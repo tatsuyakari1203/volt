@@ -497,6 +497,76 @@ async pickScanFolder() : Promise<Result<string | null, IpcError>> {
 }
 },
 /**
+ * Tauri command: scans the chosen folders for duplicate files, empty folders and shortcuts with
+ * a missing target. Read-only and off the main thread; emits `tidyProgressEvent`;
+ * `cancelTidyScan` stops it.
+ */
+async scanTidy(roots: string[]) : Promise<Result<TidyResult, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("scan_tidy", { roots }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: asks the running tidy-up scan to stop. Does nothing when none runs.
+ */
+async cancelTidyScan() : Promise<Result<null, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("cancel_tidy_scan") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: moves the chosen copies of duplicate groups to the Recycle Bin. At least one
+ * copy of every group stays, and one of them is checked again first. Never a permanent delete.
+ */
+async trashDuplicates(scanId: string, picks: DuplicatePickInput[]) : Promise<Result<TidyTrashResult, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("trash_duplicates", { scanId, picks }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: moves the chosen empty folders to the Recycle Bin. Never a permanent delete.
+ */
+async trashEmptyFolders(scanId: string, indices: number[]) : Promise<Result<TidyTrashResult, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("trash_empty_folders", { scanId, indices }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: moves the chosen shortcuts with a missing target to the Recycle Bin. Never a
+ * permanent delete.
+ */
+async trashBrokenShortcuts(scanId: string, indices: number[]) : Promise<Result<TidyTrashResult, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("trash_broken_shortcuts", { scanId, indices }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: opens the folder of a listed item in Explorer with the item selected.
+ */
+async revealTidyItem(scanId: string, kind: TidyItemKind, index: number, file: number | null) : Promise<Result<null, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("reveal_tidy_item", { scanId, kind, index, file }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Tauri command: memory by list now and which operations can run. Reads the system only.
  */
 async memoryState() : Promise<Result<MemoryState, IpcError>> {
@@ -799,14 +869,16 @@ boostFinished: BoostFinished,
 cleanScanProgress: CleanScanProgress,
 largeFilesProgress: LargeFilesProgress,
 memoryTrendUpdated: MemoryTrendUpdated,
-metricsUpdated: MetricsUpdated
+metricsUpdated: MetricsUpdated,
+tidyProgressEvent: TidyProgressEvent
 }>({
 appReady: "app-ready",
 boostFinished: "boost-finished",
 cleanScanProgress: "clean-scan-progress",
 largeFilesProgress: "large-files-progress",
 memoryTrendUpdated: "memory-trend-updated",
-metricsUpdated: "metrics-updated"
+metricsUpdated: "metrics-updated",
+tidyProgressEvent: "tidy-progress-event"
 })
 
 /** user-defined constants **/
@@ -1264,6 +1336,26 @@ movedToBin: MovedToBinView | null;
  */
 recorded: boolean }
 /**
+ * A shortcut whose target does not exist.
+ */
+export type BrokenShortcutView = { 
+/**
+ * Row number, sent back to move it.
+ */
+index: number; 
+/**
+ * Full path of the shortcut.
+ */
+path: string; 
+/**
+ * The path it points to.
+ */
+target: string; 
+/**
+ * Size of the shortcut file in bytes.
+ */
+sizeBytes: number }
+/**
  * Where an activity line stands with respect to undo. The Undo page shows it on every row.
  */
 export type ChangeState = 
@@ -1554,6 +1646,55 @@ state: TweakStateView;
  */
 steps: TweakStepView[] }
 /**
+ * One copy of a duplicated file.
+ */
+export type DuplicateFileView = { 
+/**
+ * Full path.
+ */
+path: string; 
+/**
+ * Last modified, in milliseconds since the Unix epoch, or `null` when unknown.
+ */
+modifiedMs: number | null }
+/**
+ * Files with the same content.
+ */
+export type DuplicateGroupView = { 
+/**
+ * Row number, sent back to move copies.
+ */
+index: number; 
+/**
+ * Size of each copy in bytes.
+ */
+sizeBytes: number; 
+/**
+ * Space the extra copies take, in bytes.
+ */
+wastedBytes: number; 
+/**
+ * Other names of copies in this group (hard links) that were folded away: they share data
+ * with a listed copy, so removing one frees nothing.
+ */
+hardLinks: number; 
+/**
+ * The copies, oldest first. A copy's position is its number in a move.
+ */
+files: DuplicateFileView[] }
+/**
+ * The copies of one group the user chose to remove.
+ */
+export type DuplicatePickInput = { 
+/**
+ * Row number of the group.
+ */
+group: number; 
+/**
+ * Numbers of the copies to remove (at least one copy of the group must stay).
+ */
+files: number[] }
+/**
  * What an elevated purge did.
  */
 export type ElevatedCleanResult = 
@@ -1621,6 +1762,22 @@ sizeBytes: number;
  * Whether the activity record could not be written.
  */
 historyIncomplete: boolean }
+/**
+ * A folder that holds nothing, or only other empty folders.
+ */
+export type EmptyFolderView = { 
+/**
+ * Row number, sent back to move it.
+ */
+index: number; 
+/**
+ * Full path.
+ */
+path: string; 
+/**
+ * How many empty folders are inside it (they go with it).
+ */
+nested: number }
 /**
  * What ending an app did.
  */
@@ -3073,6 +3230,175 @@ export type StartupSource =
  * A source this version of the UI does not know.
  */
 "other"
+/**
+ * Which list an item is in.
+ */
+export type TidyItemKind = 
+/**
+ * A copy in a duplicate group (`file` is its number).
+ */
+"duplicate" | 
+/**
+ * An empty folder.
+ */
+"emptyFolder" | 
+/**
+ * A shortcut with a missing target.
+ */
+"shortcut"
+/**
+ * The lists a scan found (and what is left of them after a move).
+ */
+export type TidyLists = { 
+/**
+ * Duplicate groups, the ones that waste the most space first.
+ */
+duplicates: DuplicateGroupView[]; 
+/**
+ * Empty folders.
+ */
+emptyFolders: EmptyFolderView[]; 
+/**
+ * Shortcuts with a missing target.
+ */
+brokenShortcuts: BrokenShortcutView[] }
+/**
+ * How far a scan is.
+ */
+export type TidyProgressEvent = { 
+/**
+ * The part that is running.
+ */
+stage: TidyStageView; 
+/**
+ * Files looked at so far.
+ */
+filesSeen: number; 
+/**
+ * Folders read so far.
+ */
+foldersSeen: number; 
+/**
+ * Files compared so far.
+ */
+compared: number; 
+/**
+ * Files that share a size with another, to be compared in all (0 until walking is done).
+ */
+toCompare: number; 
+/**
+ * Bytes read for hashing so far.
+ */
+bytesHashed: number }
+/**
+ * The result of a scan.
+ */
+export type TidyResult = { 
+/**
+ * Names this scan when moving items; empty when the scan was cancelled.
+ */
+scanId: string; 
+/**
+ * Whether the scan was cancelled (nothing is listed then).
+ */
+cancelled: boolean; 
+/**
+ * The folders that were scanned.
+ */
+roots: string[]; 
+/**
+ * What was found.
+ */
+lists: TidyLists; 
+/**
+ * Duplicate groups found beyond the ones listed.
+ */
+groupsOmitted: number; 
+/**
+ * Files looked at in all.
+ */
+filesSeen: number; 
+/**
+ * Entries that could not be read or compared and were skipped.
+ */
+unreadable: number; 
+/**
+ * Links and junctions left alone.
+ */
+links: number; 
+/**
+ * System folders and files left out on purpose.
+ */
+excluded: number; 
+/**
+ * Files left out of the comparison because their data is not on disk (cloud files).
+ */
+cloudSkipped: number; 
+/**
+ * Names of the same file (hard links) folded into one.
+ */
+hardLinksFolded: number; 
+/**
+ * Shortcuts looked at.
+ */
+shortcutsSeen: number; 
+/**
+ * Shortcuts that could not be judged (a share, a drive that is not connected, no local
+ * target); they are not listed.
+ */
+shortcutsUnchecked: number; 
+/**
+ * Whether a limit was reached and part of what was asked for was not looked at.
+ */
+truncated: boolean; 
+/**
+ * Files smaller than this many bytes are not compared for duplicates.
+ */
+minDuplicateBytes: number }
+/**
+ * Which part of a scan is running. Mirrors [`volt_core::TidyStage`].
+ */
+export type TidyStageView = 
+/**
+ * Reading folders.
+ */
+"walking" | 
+/**
+ * Checking shortcuts.
+ */
+"shortcuts" | 
+/**
+ * Comparing files of the same size.
+ */
+"comparing"
+/**
+ * What moving items to the Recycle Bin did.
+ */
+export type TidyTrashResult = { 
+/**
+ * Items moved to the Recycle Bin.
+ */
+moved: number; 
+/**
+ * Their size in bytes (still used until the Recycle Bin is emptied).
+ */
+movedBytes: number; 
+/**
+ * Items left in place.
+ */
+skippedTotal: number; 
+/**
+ * Items left in place, by reason.
+ */
+skipped: SkipGroup[]; 
+/**
+ * The lists that are left, renumbered.
+ */
+lists: TidyLists; 
+/**
+ * Whether the activity record could not be written (the move itself is unaffected).
+ */
+historyIncomplete: boolean }
 /**
  * What the user chose for an app. A field left out (`null`) is left alone.
  */

@@ -39,6 +39,10 @@ pub enum CleanSkipReason {
     Link,
     /// A folder planned for removal has content again.
     NotEmpty,
+    /// Every copy of a duplicated file was chosen for removal; one must stay.
+    NoCopyKept,
+    /// The copy that was to stay is gone or no longer matches, so the others are left.
+    KeptCopyLost,
     /// It is locked, in use by another program, or Windows denied access.
     LockedOrDenied,
     /// The file system adapter refused the request (path outside the root or
@@ -62,6 +66,8 @@ impl CleanSkipReason {
             Self::Changed => Phrase::new("skip.changed"),
             Self::Link => Phrase::new("skip.link"),
             Self::NotEmpty => Phrase::new("skip.notEmpty"),
+            Self::NoCopyKept => Phrase::new("skip.noCopyKept"),
+            Self::KeptCopyLost => Phrase::new("skip.keptCopyLost"),
             Self::LockedOrDenied => Phrase::new("skip.locked"),
             Self::Refused => Phrase::new("skip.refused"),
             Self::Failed(class) => Phrase::new("skip.failed").phrase("class", class_phrase(class)),

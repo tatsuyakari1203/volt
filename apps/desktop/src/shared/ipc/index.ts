@@ -23,6 +23,7 @@ import {
   type ConfigExportResult,
   commands,
   type DriftView,
+  type DuplicatePickInput,
   type ElevatedCleanResult,
   type ElevationStatusView,
   type EmptyBinResult,
@@ -56,6 +57,10 @@ import {
   type RuleView,
   type StartupChangeResult,
   type StartupList,
+  type TidyItemKind,
+  type TidyProgressEvent,
+  type TidyResult,
+  type TidyTrashResult,
   type TuneRequestView,
   type TuneResult,
   type TweakInfo,
@@ -85,6 +90,7 @@ export type {
   ArgView,
   BoostConfigView,
   BoostResult,
+  BrokenShortcutView,
   ChangeState,
   CleanCategoryView,
   CleaningRuleInfo,
@@ -96,10 +102,14 @@ export type {
   DeductionView,
   DiskView,
   DriftView,
+  DuplicateFileView,
+  DuplicateGroupView,
+  DuplicatePickInput,
   ElevatedCleanResult,
   ElevationReasonView,
   ElevationStatusView,
   EmptyBinResult,
+  EmptyFolderView,
   EndAppResult,
   EndabilityView,
   EndStatusView,
@@ -169,6 +179,12 @@ export type {
   StartupList,
   StartupProblemView,
   StartupSource,
+  TidyItemKind,
+  TidyLists,
+  TidyProgressEvent,
+  TidyResult,
+  TidyStageView,
+  TidyTrashResult,
   TuneRequestView,
   TuneResult,
   TweakCategory,
@@ -642,6 +658,65 @@ export async function revealLargeFile(scanId: string, index: number): Promise<vo
 /** Shows the native folder dialog. The chosen folder, or `null` when it was closed. */
 export async function pickScanFolder(): Promise<string | null> {
   return call(() => commands.pickScanFolder());
+}
+
+/**
+ * Scans the chosen folders read-only for duplicate files, empty folders and shortcuts with a
+ * missing target. Runs in the background: listen with `onTidyProgress` and call `cancelTidyScan`
+ * to stop it. A cancelled scan comes back with `cancelled` set and nothing listed.
+ */
+export async function scanTidy(roots: string[]): Promise<TidyResult> {
+  return call(() => commands.scanTidy(roots));
+}
+
+/** Asks the running tidy-up scan to stop. Does nothing when none runs. */
+export async function cancelTidyScan(): Promise<void> {
+  await call(() => commands.cancelTidyScan());
+}
+
+/** Calls `handler` every so often while a tidy-up scan runs. Returns the unlisten function. */
+export function onTidyProgress(
+  handler: (progress: TidyProgressEvent) => void,
+): Promise<() => void> {
+  return events.tidyProgressEvent.listen((event) => handler(event.payload));
+}
+
+/**
+ * Moves the chosen copies of duplicate groups of scan `scanId` to the Recycle Bin (never a
+ * permanent delete). At least one copy of every group stays; the result says what moved, what was
+ * left and why, and the lists that remain.
+ */
+export async function trashDuplicates(
+  scanId: string,
+  picks: DuplicatePickInput[],
+): Promise<TidyTrashResult> {
+  return call(() => commands.trashDuplicates(scanId, picks));
+}
+
+/** Moves the empty folders at the given rows of scan `scanId` to the Recycle Bin. */
+export async function trashEmptyFolders(
+  scanId: string,
+  indices: number[],
+): Promise<TidyTrashResult> {
+  return call(() => commands.trashEmptyFolders(scanId, indices));
+}
+
+/** Moves the shortcuts with a missing target at the given rows of scan `scanId` to the Recycle Bin. */
+export async function trashBrokenShortcuts(
+  scanId: string,
+  indices: number[],
+): Promise<TidyTrashResult> {
+  return call(() => commands.trashBrokenShortcuts(scanId, indices));
+}
+
+/** Opens the folder of a listed item of scan `scanId` in Explorer, the item selected. */
+export async function revealTidyItem(
+  scanId: string,
+  kind: TidyItemKind,
+  index: number,
+  file?: number,
+): Promise<void> {
+  await call(() => commands.revealTidyItem(scanId, kind, index, file ?? null));
 }
 
 /**
