@@ -520,9 +520,10 @@ mod tests {
 
         window.store(false, Ordering::SeqCst);
         sampler.set_window_open(|| false);
-        sampler.stop_and_wait();
+        // The stop above detaches the thread, so a second stop has nothing to join: wait for the
+        // thread to drop its source, which clears the history.
         assert!(
-            trend.points().is_empty(),
+            wait_until(|| trend.points().is_empty()),
             "a closed window keeps no readings"
         );
     }

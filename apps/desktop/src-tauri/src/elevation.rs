@@ -145,7 +145,7 @@ pub fn clean_memory_elevated_of(
     // exclusion list: it would trim a protected program. The page never sends it here.
     if areas.contains(&MemoryAreaView::WorkingSets) {
         return Err(IpcError::InvalidInput {
-            message: "trimming working sets does not need administrator rights: run it without                       them so the exclusion list applies"
+            message: "trimming working sets does not need administrator rights: run it without them so the exclusion list applies"
                 .to_owned(),
         });
     }
