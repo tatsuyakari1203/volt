@@ -843,6 +843,74 @@ async removeLeftovers(id: string, ids: string[]) : Promise<Result<LeftoverRemova
 }
 },
 /**
+ * Tauri command: the profiles, which one is active and what the last switch did.
+ */
+async listProfiles() : Promise<Result<ProfilesView, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_profiles") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: saves a profile (an empty id makes a new one) and returns the list. A tweak that
+ * needs administrator rights, an unknown tweak or a bad app name is refused with `invalidInput`.
+ */
+async saveProfile(profile: ProfileView) : Promise<Result<ProfilesView, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("save_profile", { profile }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: removes a profile. What it applied stays applied.
+ */
+async deleteProfile(id: string) : Promise<Result<ProfilesView, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_profile", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: what switching to a profile (or, with no id, turning the active one off) would
+ * change right now. Reads the system and the journal only.
+ */
+async previewProfileSwitch(id: string | null) : Promise<Result<SwitchPreviewView, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("preview_profile_switch", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: switches profile. Each change goes through the undo journal.
+ */
+async switchProfile(id: string | null) : Promise<Result<SwitchResultView, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("switch_profile", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: puts the last profile switch back as one action.
+ */
+async undoProfileSwitch() : Promise<Result<SwitchResultView, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("undo_profile_switch") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Tauri command: runs Boost as saved and returns the before and after report.
  */
 async boost() : Promise<Result<BoostResult, IpcError>> {
@@ -946,6 +1014,7 @@ cleanScanProgress: CleanScanProgress,
 largeFilesProgress: LargeFilesProgress,
 memoryTrendUpdated: MemoryTrendUpdated,
 metricsUpdated: MetricsUpdated,
+profilesUpdated: ProfilesUpdated,
 tidyProgressEvent: TidyProgressEvent
 }>({
 appReady: "app-ready",
@@ -955,6 +1024,7 @@ cleanScanProgress: "clean-scan-progress",
 largeFilesProgress: "large-files-progress",
 memoryTrendUpdated: "memory-trend-updated",
 metricsUpdated: "metrics-updated",
+profilesUpdated: "profiles-updated",
 tidyProgressEvent: "tidy-progress-event"
 })
 
@@ -1191,6 +1261,18 @@ export type AppSourceView =
  */
 "packaged"
 /**
+ * The app that activates a profile.
+ */
+export type AppTriggerView = { 
+/**
+ * Executable name, such as `game.exe`.
+ */
+exe: string; 
+/**
+ * Whether the earlier profile returns when the app exits.
+ */
+returnOnExit: boolean }
+/**
  * One installed app.
  */
 export type AppView = { 
@@ -1388,6 +1470,18 @@ sep: string;
  */
 items: PhraseView[] } }
 /**
+ * An automatic switch that a pause skipped.
+ */
+export type AutoSkipView = { 
+/**
+ * When, in milliseconds since the Unix epoch.
+ */
+at: number; 
+/**
+ * Why.
+ */
+reason: PauseView }
+/**
  * What the user may enter, so the form never offers a value the core refuses.
  */
 export type AutomationBoundsView = { 
@@ -1404,6 +1498,18 @@ freeBelowMb: [number, number];
  */
 cooldownMinutes: [number, number] }
 /**
+ * The automation settings before and after a switch.
+ */
+export type AutomationChangeView = { 
+/**
+ * What is saved now.
+ */
+before: AutomationConfigView; 
+/**
+ * What the switch saves.
+ */
+after: AutomationConfigView }
+/**
  * Everything the user sets for automation.
  */
 export type AutomationConfigView = { 
@@ -1419,6 +1525,26 @@ cleaning: ScheduleView;
  * Whether an automatic run shows a notification when no window is open.
  */
 notify: boolean }
+/**
+ * How the automation part of a switch ended.
+ */
+export type AutomationStatusKind = 
+/**
+ * The profile sets none, or it was already so.
+ */
+"notChanged" | 
+/**
+ * Saved.
+ */
+"set" | 
+/**
+ * Could not be saved.
+ */
+"failed" | 
+/**
+ * The switch stopped before it got here.
+ */
+"notAttempted"
 /**
  * The configuration and what happened last.
  */
@@ -2628,6 +2754,26 @@ files: LargeFileView[];
  */
 historyIncomplete: boolean }
 /**
+ * Why a tweak of a profile is left alone.
+ */
+export type LeftOutView = 
+/**
+ * This version of Volt has no such tweak.
+ */
+"unknown" | 
+/**
+ * It needs administrator rights, which a profile does not use.
+ */
+"needsAdministrator" | 
+/**
+ * It cannot be applied here, or its state cannot be read.
+ */
+"unavailable" | 
+/**
+ * It is on because Windows or the user set it: Volt has no earlier value to put back.
+ */
+"notAppliedByVolt"
+/**
  * What a leftover is. Mirrors [`volt_core::LeftoverKind`].
  */
 export type LeftoverKindView = 
@@ -2965,6 +3111,26 @@ bytes: number;
  */
 skipped: number }
 /**
+ * A tweak of a profile that a switch leaves alone.
+ */
+export type NotIncludedView = { 
+/**
+ * The tweak id.
+ */
+tweak: string; 
+/**
+ * Its name, when this version knows it.
+ */
+title: string | null; 
+/**
+ * Why.
+ */
+reason: LeftOutView; 
+/**
+ * More words for `unavailable`, in English.
+ */
+detail: string | null }
+/**
  * Whether an operation can run now.
  */
 export type OperationState = 
@@ -3110,6 +3276,98 @@ processCount: number;
  * Logical processors the CPU share is measured against.
  */
 logicalCpus: number }
+/**
+ * The automation settings a profile sets; a part that is `null` is left as it is.
+ */
+export type ProfileAutomationView = { 
+/**
+ * The memory rule.
+ */
+memory: MemoryRuleView | null; 
+/**
+ * The cleaning schedule.
+ */
+cleaning: ScheduleView | null }
+/**
+ * A tweak of a profile and the state the profile wants it in.
+ */
+export type ProfileTweakView = { 
+/**
+ * The tweak id.
+ */
+id: string; 
+/**
+ * `true`: applied. `false`: turned off when Volt applied it.
+ */
+enabled: boolean }
+/**
+ * A profile. Also what the UI sends to save one (an empty `id` is a new profile).
+ */
+export type ProfileView = { 
+/**
+ * Stable id; empty for a profile that is not saved yet.
+ */
+id: string; 
+/**
+ * The name shown to the user.
+ */
+name: string; 
+/**
+ * The tweaks, in the order they are applied.
+ */
+tweaks: ProfileTweakView[]; 
+/**
+ * The automation settings it sets.
+ */
+automation: ProfileAutomationView; 
+/**
+ * The app that activates it.
+ */
+trigger: AppTriggerView | null }
+/**
+ * Sent to every window after an automatic switch, with the new state.
+ */
+export type ProfilesUpdated = ProfilesView
+/**
+ * The profiles and which one is active.
+ */
+export type ProfilesView = { 
+/**
+ * The profiles, in the order the user keeps them.
+ */
+profiles: ProfileView[]; 
+/**
+ * Whether the user has not saved a list yet, so these are the built-in suggestions.
+ */
+suggested: boolean; 
+/**
+ * The active profile (`null` until the user chooses one).
+ */
+active: string | null; 
+/**
+ * The last switch, when it can still be undone.
+ */
+lastSwitch: SwitchRecordView | null; 
+/**
+ * The last automatic switch that a pause skipped.
+ */
+lastSkip: AutoSkipView | null; 
+/**
+ * Whether Volt is looking at running apps for a profile right now.
+ */
+watching: boolean; 
+/**
+ * Seconds between two looks at the running apps while a profile names an app.
+ */
+pollSeconds: number; 
+/**
+ * The most profiles that are kept.
+ */
+maxProfiles: number; 
+/**
+ * The longest profile name, in characters.
+ */
+maxNameChars: number }
 /**
  * What the Recycle Bin holds.
  */
@@ -3798,6 +4056,195 @@ export type StartupSource =
  */
 "other"
 /**
+ * How one tweak of a switch ended.
+ */
+export type StepStatusView = 
+/**
+ * Changed.
+ */
+"done" | 
+/**
+ * Nothing was left to change.
+ */
+"nothing" | 
+/**
+ * The change failed and the tweak is as it was.
+ */
+"rolledBack" | 
+/**
+ * The change failed and the tweak may differ from before.
+ */
+"needsAttention" | 
+/**
+ * The tweak could not be read or changed.
+ */
+"failed" | 
+/**
+ * The switch stopped before it got here.
+ */
+"notAttempted"
+/**
+ * What a switch does to one tweak.
+ */
+export type SwitchActionView = 
+/**
+ * Applied: the steps say what changes.
+ */
+"turnOn" | 
+/**
+ * Reverted from the undo journal: the restores say what is put back.
+ */
+"turnOff"
+/**
+ * One tweak a switch changes.
+ */
+export type SwitchItemView = { 
+/**
+ * The tweak id.
+ */
+tweak: string; 
+/**
+ * Its name.
+ */
+title: string; 
+/**
+ * How risky it is. Caution and Advanced tweaks are named in the preview.
+ */
+risk: RiskLevel; 
+/**
+ * What happens to it.
+ */
+action: SwitchActionView; 
+/**
+ * For a tweak that is turned on: every change, with the value now and after.
+ */
+steps: TweakStepView[]; 
+/**
+ * For a tweak that is turned off: what is put back.
+ */
+restores: UndoPreviewItem[] }
+/**
+ * Exactly what a switch would change right now.
+ */
+export type SwitchPreviewView = { 
+/**
+ * The active profile now.
+ */
+from: string | null; 
+/**
+ * The profile to switch to (`null`: turn the active profile off).
+ */
+to: string | null; 
+/**
+ * The tweaks that change: turned off first, then on.
+ */
+items: SwitchItemView[]; 
+/**
+ * Tweaks left alone, with the reason.
+ */
+leftOut: NotIncludedView[]; 
+/**
+ * How many tweaks the profile wants that are in place already.
+ */
+inPlace: number; 
+/**
+ * The automation change, when there is one.
+ */
+automation: AutomationChangeView | null; 
+/**
+ * Whether the pause rules would skip an automatic switch right now (a manual one is never
+ * skipped).
+ */
+paused: PauseView | null }
+/**
+ * The last switch, which the Undo page can put back as one.
+ */
+export type SwitchRecordView = { 
+/**
+ * When, in milliseconds since the Unix epoch.
+ */
+at: number; 
+/**
+ * Who started it.
+ */
+source: ActivitySource; 
+/**
+ * The profile that was active before.
+ */
+from: string | null; 
+/**
+ * The profile it switched to.
+ */
+to: string | null; 
+/**
+ * The tweaks it turned on.
+ */
+applied: TweakRefView[]; 
+/**
+ * The tweaks it turned off.
+ */
+reverted: TweakRefView[]; 
+/**
+ * Whether it also changed the automation settings.
+ */
+automationChanged: boolean; 
+/**
+ * Whether it finished. A switch that stopped part-way can still be undone.
+ */
+complete: boolean }
+/**
+ * What a switch (or its undo) did.
+ */
+export type SwitchResultView = { 
+/**
+ * The active profile before.
+ */
+from: string | null; 
+/**
+ * The profile the switch aimed at.
+ */
+to: string | null; 
+/**
+ * Every tweak, in the order it was handled.
+ */
+steps: SwitchStepView[]; 
+/**
+ * The automation settings.
+ */
+automation: AutomationStatusKind; 
+/**
+ * Whether everything was done. When it is not, the active profile did not change.
+ */
+complete: boolean }
+/**
+ * One tweak of a switch.
+ */
+export type SwitchStepView = { 
+/**
+ * The tweak id.
+ */
+tweak: string; 
+/**
+ * Its name.
+ */
+title: string; 
+/**
+ * `true` when the step turned the tweak on, `false` when it turned it off.
+ */
+turnedOn: boolean; 
+/**
+ * How it ended.
+ */
+status: StepStatusView; 
+/**
+ * Why it failed, in English.
+ */
+detail: string | null; 
+/**
+ * `detail` as a code and parameters.
+ */
+detailPhrase: PhraseView | null }
+/**
  * Whether System Protection looks on, which decides whether Windows can make the restore point a
  * Caution or Advanced administrator tweak needs.
  */
@@ -4173,6 +4620,18 @@ steps: TweakStepView[];
  * off that way (it has a service or a command).
  */
 reset: TweakStepView[] | null }
+/**
+ * A tweak by id and name.
+ */
+export type TweakRefView = { 
+/**
+ * The tweak id.
+ */
+id: string; 
+/**
+ * Its name.
+ */
+title: string }
 /**
  * Whether a tweak is in effect right now, read live from the system.
  */

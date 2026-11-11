@@ -34,6 +34,7 @@ import {
   describeUndoFailure,
   type Notice,
 } from './messages';
+import { ProfileSwitchCard } from './ProfileSwitchCard';
 
 /** Records read per page. */
 const PAGE_SIZE = 50;
@@ -342,6 +343,7 @@ export function UndoScreen() {
       <div className="flex flex-col gap-3">
         {incomplete ? <IncompleteNotice /> : null}
         {notice ? <NoticeBar notice={notice} onDismiss={() => setNotice(null)} /> : null}
+        <ProfileSwitchCard onUndone={() => void refresh()} />
 
         {hasRecords ? (
           <div className="flex items-center justify-between gap-2">

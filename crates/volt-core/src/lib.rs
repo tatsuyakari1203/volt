@@ -87,6 +87,7 @@ pub mod phrase;
 pub mod plan;
 pub mod ports;
 pub mod process;
+pub mod profile;
 pub mod registry;
 pub mod service;
 pub mod settings;
@@ -178,6 +179,12 @@ pub use ports::{
 pub use process::{
     EndError, EndReport, EndStatus, Endability, PROCESS_END_LABEL, ProcessEnd, ProcessGroup,
     ProcessMonitor, ProcessSample, Protection, is_windows_critical,
+};
+pub use profile::{
+    AppTrigger, AutoEvent, AutoReturn, AutoSkip, AutomationChange, AutomationOutcome, LeftOut,
+    NotIncluded, Profile, ProfileAutomation, ProfileError, ProfileState, ProfileTweak, Profiles,
+    StepOutcome, SwitchAction, SwitchItem, SwitchPlan, SwitchRecord, SwitchReport, SwitchStep,
+    builtin_profiles,
 };
 pub use registry::{
     NamedValue, Registry, RegistryHive, RegistryKeyContents, RegistryKeyRef, RegistryValue,

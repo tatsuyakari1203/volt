@@ -21,9 +21,9 @@ use volt_core::{
     ActivityLog, AppManager, AutoStartServices, Automation, Catalogue, CatalogueError, CleanEngine,
     CleaningRules, Clock, Elevator, Executor, FilePublisher, Journal, KnownFolders,
     LargeFilesFinder, LeftoverCleaner, LogonTasks, MemoryCleaner, OwnInstall, PortError, Ports,
-    ProcessMonitor, ProcessTuner, Processes, ReconcileReport, RecycleBinManager, Resolution,
-    RulesError, Settings, ShortcutResolver, StartupManager, StartupSources, SystemClock,
-    TidyFinder, TweakEngine,
+    ProcessMonitor, ProcessTuner, Processes, Profiles, ReconcileReport, RecycleBinManager,
+    Resolution, RulesError, Settings, ShortcutResolver, StartupManager, StartupSources,
+    SystemClock, TidyFinder, TweakEngine,
 };
 use volt_store::{CorruptionRecovery, OpenOutcome, Store, StoreError};
 use volt_win::{
@@ -127,6 +127,7 @@ pub struct AppCore {
     elevator: Option<Arc<dyn Elevator>>,
     apps: Option<AppManager>,
     automation: Option<Automation>,
+    profiles: Option<Profiles>,
 }
 
 impl fmt::Debug for AppCore {
@@ -173,6 +174,7 @@ impl AppCore {
             elevator: None,
             apps: None,
             automation: None,
+            profiles: None,
         }
     }
 
@@ -346,6 +348,21 @@ impl AppCore {
     pub fn automation(&self) -> Result<&Automation, IpcError> {
         self.automation.as_ref().ok_or_else(|| {
             IpcError::unsupported(&volt_core::Phrase::new("err.automationUnavailable"))
+        })
+    }
+
+    /// The same core with profiles attached. The real app does in [`init`]; [`build_core`] never
+    /// does, so a test builds them over its own fakes.
+    #[must_use]
+    pub fn with_profiles(mut self, profiles: Profiles) -> Self {
+        self.profiles = Some(profiles);
+        self
+    }
+
+    /// Profiles, or the error their commands return without them.
+    pub fn profiles(&self) -> Result<&Profiles, IpcError> {
+        self.profiles.as_ref().ok_or_else(|| {
+            IpcError::unsupported(&volt_core::Phrase::new("err.profilesUnavailable"))
         })
     }
 
@@ -766,6 +783,7 @@ fn build_real_core(app: &AppHandle) -> Result<AppCore, InitError> {
     std::fs::create_dir_all(&dir).map_err(|error| InitError::DataDir(error.to_string()))?;
     let ports = windows_ports();
     let (registry, file_system) = (ports.registry.clone(), ports.file_system.clone());
+    let process_list = ports.processes.clone();
     let core = build_core_with(
         ports,
         &dir.join(STORE_FILE_NAME),
@@ -810,9 +828,19 @@ fn build_real_core(app: &AppHandle) -> Result<AppCore, InitError> {
         Arc::new(SystemClock),
         Arc::new(WinEnvironment::new()),
     );
+    // Profiles switch tweaks only through the engine, so each change is journaled; the process
+    // list is read only while a profile names an app.
+    let profiles = Profiles::new(
+        core.settings.clone(),
+        core.activity.clone(),
+        Arc::new(SystemClock),
+        core.engine.clone(),
+        process_list,
+    );
     Ok(core
         .with_recycle_bin(bin)
         .with_elevator(elevator)
         .with_apps(apps)
-        .with_automation(automation))
+        .with_automation(automation)
+        .with_profiles(profiles))
 }

@@ -24,6 +24,7 @@ pub mod metrics;
 pub mod panel;
 pub mod phrase;
 pub mod processes;
+pub mod profiles;
 mod sampler;
 pub mod tidy;
 pub mod transfer;
@@ -45,6 +46,7 @@ pub use automation::AutomationUpdated;
 pub use boost::BoostFinished;
 pub use ipc::{AppReady, IpcError, bindings_builder, export_bindings};
 pub use metrics::MetricsUpdated;
+pub use profiles::ProfilesUpdated;
 pub use trend::{MemoryPointView, MemoryTrendUpdated};
 
 /// Product name shown in the UI.

@@ -2,6 +2,7 @@ import {
   AppWindow,
   Cpu,
   House,
+  Layers,
   type LucideIcon,
   MemoryStick,
   Power,
@@ -18,6 +19,7 @@ export type SectionId =
   | 'clean'
   | 'memory'
   | 'tweaks'
+  | 'profiles'
   | 'startup'
   | 'apps'
   | 'processes'
@@ -37,6 +39,7 @@ export const mainSections: readonly Section[] = [
   { id: 'clean', label: 'nav.clean', icon: Sparkles },
   { id: 'memory', label: 'nav.memory', icon: MemoryStick },
   { id: 'tweaks', label: 'nav.tweaks', icon: SlidersHorizontal },
+  { id: 'profiles', label: 'nav.profiles', icon: Layers },
   { id: 'startup', label: 'nav.startup', icon: Power },
   { id: 'apps', label: 'nav.apps', icon: AppWindow },
   { id: 'processes', label: 'nav.processes', icon: Cpu },

@@ -1,24 +1,33 @@
 //! The automation timer: the one thing that wakes Volt up while no window exists.
 //!
 //! It is a single thread inside the tray process (no service, no scheduled task, no second
-//! process). While both automation features are off it sleeps until a setting changes, with no
-//! wake-up at all. While one is on it wakes once a minute ([`volt_core::automation::TICK_SECS`]),
-//! never at the one-second pace of the live sampler, asks [`crate::automation::tick_of`] whether
-//! anything is due and goes back to sleep. A run's result reaches the user the way a tray Boost
-//! does: the tooltip, a desktop notification when no window is open (unless the user turned
-//! notifications off) and an event for a window that is open.
+//! process). While both automation features are off and no profile names an app, it sleeps until
+//! a setting changes, with no wake-up at all. While a feature is on it wakes once a minute
+//! ([`volt_core::automation::TICK_SECS`]), never at the one-second pace of the live sampler, asks
+//! [`crate::automation::tick_of`] whether anything is due and goes back to sleep. A run's result
+//! reaches the user the way a tray Boost does: the tooltip, a desktop notification when no window
+//! is open (unless the user turned notifications off) and an event for a window that is open.
+//!
+//! While a profile names an app to watch, the same thread also wakes every
+//! [`volt_core::profile::TRIGGER_POLL_SECS`] seconds and reads the process list once (the same
+//! read the process rules use; nothing is read when no profile watches an app) to see whether
+//! that app started or exited. The sampler of the live metrics runs only while a window is open,
+//! so it cannot serve a tray that sits without one: this is the one look that does. An app that
+//! starts and ends between two looks is missed.
 
 use std::sync::Mutex;
 use std::thread::{self, Thread};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_notification::NotificationExt;
 use tauri_specta::Event as _;
 use volt_core::automation::TICK_SECS;
+use volt_core::profile::TRIGGER_POLL_SECS;
 
 use crate::automation::{self, AutomationUpdated};
 use crate::language;
+use crate::profiles;
 use crate::tray;
 use crate::window;
 use crate::wiring::AppState;
@@ -62,19 +71,42 @@ pub(crate) fn wake<R: Runtime>(app: &AppHandle<R>) {
 }
 
 fn run<R: Runtime>(app: &AppHandle<R>) {
+    let mut last_tick: Option<Instant> = None;
     loop {
-        let on = app
-            .state::<AppState>()
-            .core()
-            .ok()
-            .and_then(|core| core.automation().ok().map(|a| a.config().any_enabled()))
-            .unwrap_or(false);
-        if on {
-            tick(app);
-            thread::park_timeout(Duration::from_secs(TICK_SECS));
-        } else {
+        let (automation_on, watching) = {
+            let state = app.state::<AppState>();
+            state.core().map_or((false, false), |core| {
+                (
+                    core.automation()
+                        .is_ok_and(|automation| automation.config().any_enabled()),
+                    profiles::watching(&core),
+                )
+            })
+        };
+        if !automation_on && !watching {
             // Off: no wake-up until the settings change (`wake`).
+            last_tick = None;
             thread::park();
+            continue;
+        }
+        let minute = Duration::from_secs(TICK_SECS);
+        if automation_on && last_tick.is_none_or(|at| at.elapsed() >= minute) {
+            tick(app);
+            last_tick = Some(Instant::now());
+        }
+        if watching {
+            profiles::tick(app);
+        }
+        let wait = if watching {
+            Duration::from_secs(TRIGGER_POLL_SECS)
+        } else {
+            minute
+        };
+        let parked = Instant::now();
+        thread::park_timeout(wait);
+        if parked.elapsed() + Duration::from_secs(1) < wait {
+            // Woken before the time was up: a setting changed, so look at it at once.
+            last_tick = None;
         }
     }
 }

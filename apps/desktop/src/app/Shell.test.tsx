@@ -59,6 +59,7 @@ it('lists every section in the primary navigation, with Home current', () => {
     'Clean',
     'Memory',
     'Tweaks',
+    'Profiles',
     'Startup',
     'Apps',
     'Processes',

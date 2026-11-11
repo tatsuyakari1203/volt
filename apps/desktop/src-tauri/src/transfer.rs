@@ -11,6 +11,12 @@
 //! change is journaled and can be undone. A setting value is parsed into its typed form and
 //! normalised before it is stored, and a value that does not parse is refused.
 //!
+//! **Profiles** (`profiles.list`) travel as data: each names tweaks by id, and the import keeps only
+//! the tweaks this machine's catalogue has and that need no administrator rights, plain executable
+//! names for the apps that activate a profile, automation numbers within their bounds and cleaning
+//! rules that can run on their own. A profile of the file replaces the profile with the same id
+//! and is added otherwise; none is made active (the active profile is not exported).
+//!
 //! **Left out of the file**, because they only make sense on the machine they were made on: the
 //! folders added for cleaning rules (`clean.chosen_folders`, machine paths), the saved process rules
 //! (`process.rules`, their cores and priorities fit this CPU and this set of programs) and the
@@ -30,8 +36,8 @@ use tauri::{AppHandle, Manager as _, State};
 use tauri_plugin_dialog::DialogExt as _;
 use volt_core::{
     ApplyOutcome, BOOST_SETTINGS_KEY, BoostConfig, Clock, ConfigFile, EXCLUSIONS_SETTINGS_KEY,
-    ExclusionList, ImportAction, ImportSkip, MAX_CONFIG_BYTES, Phrase, Source, SystemClock,
-    TweakImport,
+    ExclusionList, ImportAction, ImportSkip, MAX_CONFIG_BYTES, Phrase, Profile, Profiles, Source,
+    SystemClock, TweakImport, is_automatic_rule, profile,
 };
 
 use crate::IpcError;
@@ -112,15 +118,17 @@ pub fn accept_tweak_state_of(core: &AppCore, id: &str) -> Result<AcceptResult, I
 enum Portable {
     Boost,
     Exclusions,
+    Profiles,
 }
 
 impl Portable {
-    const ALL: [Self; 2] = [Self::Boost, Self::Exclusions];
+    const ALL: [Self; 3] = [Self::Boost, Self::Exclusions, Self::Profiles];
 
     const fn key(self) -> &'static str {
         match self {
             Self::Boost => BOOST_SETTINGS_KEY,
             Self::Exclusions => EXCLUSIONS_SETTINGS_KEY,
+            Self::Profiles => profile::LIST_KEY,
         }
     }
 
@@ -202,7 +210,25 @@ fn current_settings(core: &AppCore) -> Result<BTreeMap<String, serde_json::Value
             to_value(&exclusions)?,
         );
     }
+    // Only a list the user saved: the built-in suggestions are on every machine already.
+    if let Some(saved) = core.profiles().ok().and_then(Profiles::saved)
+        && !saved.is_empty()
+    {
+        settings.insert(Portable::Profiles.key().to_owned(), to_value(&saved)?);
+    }
     Ok(settings)
+}
+
+/// The cleaning rules of a profile's schedule that can run on their own.
+fn keep_automatic_rules(core: &AppCore, profile: &mut Profile) {
+    if let Some(schedule) = &mut profile.automation.cleaning {
+        match core.clean_engine() {
+            Some(engine) => schedule
+                .rule_ids
+                .retain(|id| engine.rules().get(id).is_some_and(is_automatic_rule)),
+            None => schedule.rule_ids.clear(),
+        }
+    }
 }
 
 fn to_value<T: Serialize>(value: &T) -> Result<serde_json::Value, IpcError> {
@@ -285,6 +311,71 @@ fn plan_setting(
                 write: Some(to_value(&merged)?),
             })
         }
+        Portable::Profiles => Ok(plan_profiles(core, key, value, invalid())),
+    }
+}
+
+/// The profiles of a file merged into this machine's list: a profile replaces the one with its
+/// id and is added otherwise (up to the limit). Everything in it is checked against this build.
+fn plan_profiles(
+    core: &AppCore,
+    key: Portable,
+    value: &serde_json::Value,
+    invalid: SettingPlan,
+) -> SettingPlan {
+    let (Ok(incoming), Ok(profiles)) = (
+        serde_json::from_value::<Vec<Profile>>(value.clone()),
+        core.profiles(),
+    ) else {
+        return invalid;
+    };
+    let usable: Vec<Profile> = incoming
+        .into_iter()
+        .take(profile::MAX_PROFILES)
+        .filter_map(|found| profiles.sanitized(found))
+        .map(|(mut clean, _dropped)| {
+            keep_automatic_rules(core, &mut clean);
+            clean
+        })
+        .collect();
+    if usable.is_empty() {
+        return invalid;
+    }
+    let mut merged = profiles.list();
+    let mut changed = Vec::new();
+    for found in usable {
+        match merged.iter().position(|have| have.id == found.id) {
+            Some(at) if merged[at] == found => {}
+            Some(at) => {
+                changed.push(found.name.clone());
+                merged[at] = found;
+            }
+            None if merged.len() < profile::MAX_PROFILES => {
+                changed.push(found.name.clone());
+                merged.push(found);
+            }
+            None => {}
+        }
+    }
+    if changed.is_empty() {
+        return SettingPlan {
+            status: SettingStatus::Same,
+            ..invalid
+        };
+    }
+    let Ok(write) = to_value(&merged) else {
+        return invalid;
+    };
+    SettingPlan {
+        key,
+        status: SettingStatus::Change,
+        current: None,
+        new: Some(
+            Phrase::new("transfer.profiles")
+                .count("count", changed.len())
+                .text("names", changed.join(", ")),
+        ),
+        write: Some(write),
     }
 }
 

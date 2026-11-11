@@ -4,6 +4,7 @@ import { CleanScreen } from '../features/clean/CleanScreen';
 import { HomeScreen } from '../features/home/HomeScreen';
 import { MemoryScreen } from '../features/memory/MemoryScreen';
 import { ProcessesScreen } from '../features/processes/ProcessesScreen';
+import { ProfilesScreen } from '../features/profiles/ProfilesScreen';
 import { StartupScreen } from '../features/startup/StartupScreen';
 import { TweaksScreen } from '../features/tweaks/TweaksScreen';
 import { UndoScreen } from '../features/undo/UndoScreen';
@@ -33,6 +34,8 @@ function Screen({
       return <MemoryScreen />;
     case 'tweaks':
       return <TweaksScreen />;
+    case 'profiles':
+      return <ProfilesScreen />;
     case 'startup':
       return <StartupScreen />;
     case 'apps':

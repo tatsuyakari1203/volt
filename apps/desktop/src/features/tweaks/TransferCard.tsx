@@ -34,6 +34,7 @@ function nameOf(item: { id: string; title: string | null }): string {
 const SETTING_LABELS = {
   'boost.config': 'tweaks.transfer.setting.boost.config',
   'memory.exclusions': 'tweaks.transfer.setting.memory.exclusions',
+  'profiles.list': 'tweaks.transfer.setting.profiles.list',
 } as const;
 
 function settingName(key: string): string {
