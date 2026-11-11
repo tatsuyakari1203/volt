@@ -178,7 +178,9 @@ pub use tuning::{
     TUNE_LABEL, TuneError, TuneReport, TuneRequest,
 };
 pub use tweak::{
-    ApplyOutcome, BatchRevert, Catalogue, CatalogueError, CatalogueIssue, Category, IssueKind,
-    RESET_LABEL_SUFFIX, RestartRequirement, StepPreview, Tweak, TweakApplyReport, TweakEngine,
-    TweakError, TweakRevertReport, TweakState, TweakStep,
+    ApplyOutcome, BatchRevert, CONFIG_FORMAT, CONFIG_VERSION, Catalogue, CatalogueError,
+    CatalogueIssue, Category, ConfigError, ConfigFile, ConfigTweak, Drift, ImportAction,
+    ImportSkip, IssueKind, MAX_CONFIG_BYTES, MAX_CONFIG_TWEAKS, RESET_LABEL_SUFFIX,
+    RestartRequirement, StepPreview, Tweak, TweakApplyReport, TweakEngine, TweakError, TweakImport,
+    TweakRevertReport, TweakState, TweakStep,
 };

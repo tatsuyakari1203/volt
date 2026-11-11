@@ -3,6 +3,7 @@ import { t } from '../../shared/i18n';
 import type { BoostResult } from '../../shared/ipc';
 import { Button, PageHeader } from '../../shared/ui';
 import { BoostReport } from './BoostReport';
+import { DriftNotice } from './DriftNotice';
 import { Deductions, HealthScore } from './HealthSection';
 import { useHealthReport, useLiveMetrics } from './hooks';
 import { MetricCards } from './MetricCards';
@@ -61,6 +62,7 @@ export function HomeScreen({
         {boost.report ? (
           <BoostReport report={boost.report} onOpenCleaner={() => onNavigate('clean')} />
         ) : null}
+        <DriftNotice onReview={() => onNavigate('tweaks')} />
         <HealthScore state={health} />
         <MetricCards
           state={metrics}

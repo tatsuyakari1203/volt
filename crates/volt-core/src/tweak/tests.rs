@@ -1857,3 +1857,307 @@ fn the_serialized_form_of_key_steps_and_off_values_loads_back_unchanged() {
         assert_eq!(reloaded, *original, "{id}");
     }
 }
+
+// ---- drift, accept, export and import -----------------------------------------------------
+
+const ADMIN_TWEAK: &str = r#"
+[[tweak]]
+id = "admin-tweak"
+title = "Admin tweak"
+description = "Needs administrator rights."
+category = "security"
+risk = "advanced"
+evidence = "anecdotal"
+evidence_note = "A test."
+requires_admin = true
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKLM"
+subkey = 'Software\VoltTest\Tweaks'
+name = "Machine"
+value = { dword = 1 }
+"#;
+
+/// The registry tweak and the admin tweak in one catalogue.
+fn two_tweaks() -> String {
+    format!("{REGISTRY_ONLY}{ADMIN_TWEAK}")
+}
+
+fn drift_of(engine: &TweakEngine) -> Vec<(String, TweakState)> {
+    engine
+        .drifted()
+        .into_iter()
+        .map(|drift| (drift.tweak, drift.state))
+        .collect()
+}
+
+#[test]
+fn a_tweak_changed_after_volt_applied_it_is_drift_and_one_never_applied_is_not() {
+    let system = FakeSystem::new();
+    let catalogue = catalogue(REGISTRY_ONLY);
+    let engine = engine(&system, &catalogue);
+    // On before Volt ran, then changed: Volt never applied it, so it is not drift.
+    system
+        .registry
+        .set(&registry_ref("Flag"), RegistryValue::Dword(0));
+    system
+        .registry
+        .set(&registry_ref("Other"), RegistryValue::Dword(5));
+    system
+        .registry
+        .set(&registry_ref("Other"), RegistryValue::Dword(6));
+    assert!(engine.drifted().is_empty());
+
+    let system = FakeSystem::new();
+    let engine = self::engine(&system, &catalogue);
+    engine.apply("reg-tweak", Source::Manual).expect("apply");
+    assert!(engine.drifted().is_empty());
+
+    // Windows resets one value: the tweak is partly in place.
+    system
+        .registry
+        .set(&registry_ref("Flag"), RegistryValue::Dword(1));
+    assert_eq!(
+        drift_of(&engine),
+        [("reg-tweak".to_owned(), TweakState::Partial)]
+    );
+    system
+        .registry
+        .set(&registry_ref("Other"), RegistryValue::Dword(1));
+    assert_eq!(
+        drift_of(&engine),
+        [("reg-tweak".to_owned(), TweakState::NotApplied)]
+    );
+}
+
+#[test]
+fn reapplying_a_drifted_tweak_goes_through_the_journal_and_clears_the_drift() {
+    let system = FakeSystem::new();
+    let catalogue = catalogue(REGISTRY_ONLY);
+    let engine = engine(&system, &catalogue);
+    engine.apply("reg-tweak", Source::Manual).expect("apply");
+    system
+        .registry
+        .set(&registry_ref("Flag"), RegistryValue::Dword(9));
+    assert_eq!(engine.drifted().len(), 1);
+
+    let report = engine.apply("reg-tweak", Source::Manual).expect("reapply");
+    assert_eq!(report.outcome, ApplyOutcome::Applied);
+    assert!(engine.drifted().is_empty());
+    // Undo walks back through both batches to the state before Volt first touched the machine.
+    assert!(engine.revert("reg-tweak").expect("revert").is_complete());
+    assert_eq!(system.registry.get(&registry_ref("Flag")), None);
+    assert_eq!(system.registry.get(&registry_ref("Other")), None);
+}
+
+#[test]
+fn accepting_the_new_state_changes_nothing_but_the_journal() {
+    let system = FakeSystem::new();
+    let catalogue = catalogue(REGISTRY_ONLY);
+    let engine = engine(&system, &catalogue);
+    engine.apply("reg-tweak", Source::Manual).expect("apply");
+    system
+        .registry
+        .set(&registry_ref("Flag"), RegistryValue::Dword(9));
+    let events_before = system.log.events().len();
+
+    assert_eq!(engine.accept("reg-tweak"), Ok(2));
+    // The system was only read; the value the user kept is still there.
+    assert_eq!(
+        system.registry.get(&registry_ref("Flag")),
+        Some(RegistryValue::Dword(9))
+    );
+    assert!(
+        system.log.events()[events_before..]
+            .iter()
+            .all(|event| matches!(event, Event::JournalState(_, EntryState::Accepted)))
+    );
+    assert_eq!(engine.applied_by_volt("reg-tweak"), Ok(false));
+    assert!(engine.drifted().is_empty());
+    // The undo record stays but is no longer revertible.
+    let batch = system.journal.batches_with_label("reg-tweak").unwrap()[0];
+    for entry in system.journal.batch_entries(batch).unwrap() {
+        assert_eq!(entry.state, EntryState::Accepted);
+    }
+    assert_eq!(
+        engine.revert("reg-tweak"),
+        Err(TweakError::NothingToRevert("reg-tweak".to_owned()))
+    );
+    // Accepting again has nothing left to accept.
+    assert_eq!(
+        engine.accept("reg-tweak"),
+        Err(TweakError::NotDrifted("reg-tweak".to_owned()))
+    );
+}
+
+#[test]
+fn accept_refuses_a_tweak_that_is_in_place_or_that_volt_did_not_apply() {
+    let system = FakeSystem::new();
+    let catalogue = catalogue(REGISTRY_ONLY);
+    let engine = engine(&system, &catalogue);
+    assert_eq!(
+        engine.accept("reg-tweak"),
+        Err(TweakError::NotDrifted("reg-tweak".to_owned()))
+    );
+    engine.apply("reg-tweak", Source::Manual).expect("apply");
+    assert_eq!(
+        engine.accept("reg-tweak"),
+        Err(TweakError::NotDrifted("reg-tweak".to_owned()))
+    );
+    assert_eq!(
+        engine.accept("nope"),
+        Err(TweakError::UnknownTweak("nope".to_owned()))
+    );
+}
+
+#[test]
+fn export_lists_only_what_volt_applied_and_is_still_in_place() {
+    let system = FakeSystem::new();
+    let catalogue = catalogue(&two_tweaks());
+    let engine = engine(&system, &catalogue).with_administrator(true);
+    // On because the user set it, not Volt: never exported.
+    system.registry.set(
+        &RegistryValueRef::new(
+            RegistryHive::LocalMachine,
+            r"Software\VoltTest\Tweaks",
+            "Machine",
+        ),
+        RegistryValue::Dword(1),
+    );
+    assert!(engine.export_tweaks().is_empty());
+    engine.apply("reg-tweak", Source::Manual).expect("apply");
+    let ids: Vec<_> = engine.export_tweaks().into_iter().map(|t| t.id).collect();
+    assert_eq!(ids, ["reg-tweak"]);
+    // Changed since: not in effect, so not exported.
+    system
+        .registry
+        .set(&registry_ref("Flag"), RegistryValue::Dword(9));
+    assert!(engine.export_tweaks().is_empty());
+}
+
+#[test]
+fn a_configuration_file_round_trips_and_refuses_what_it_does_not_know() {
+    let file = ConfigFile::new(
+        vec![ConfigTweak {
+            id: "reg-tweak".to_owned(),
+            title: Some("Registry tweak".to_owned()),
+        }],
+        std::collections::BTreeMap::from([("boost.config".to_owned(), serde_json::json!({}))]),
+    );
+    let text = file.to_text().expect("text");
+    assert!(text.contains("\"format\": \"volt-configuration\""));
+    assert!(!text.contains('\r'));
+    assert_eq!(ConfigFile::parse(&text), Ok(file));
+
+    assert_eq!(
+        ConfigFile::parse("not json"),
+        Err(ConfigError::NotAConfiguration)
+    );
+    assert_eq!(
+        ConfigFile::parse(r#"{"format":"other","version":1}"#),
+        Err(ConfigError::NotAConfiguration)
+    );
+    assert_eq!(
+        ConfigFile::parse(r#"{"format":"volt-configuration","version":99}"#),
+        Err(ConfigError::NewerVersion(99))
+    );
+    let huge = format!(
+        r#"{{"format":"volt-configuration","version":1,"pad":"{}"}}"#,
+        "x".repeat(MAX_CONFIG_BYTES)
+    );
+    assert_eq!(ConfigFile::parse(&huge), Err(ConfigError::TooLarge));
+    let many = (0..501)
+        .map(|n| format!(r#"{{"id":"t{n}"}}"#))
+        .collect::<Vec<_>>()
+        .join(",");
+    assert_eq!(
+        ConfigFile::parse(&format!(
+            r#"{{"format":"volt-configuration","version":1,"tweaks":[{many}]}}"#
+        )),
+        Err(ConfigError::TooManyTweaks)
+    );
+}
+
+#[test]
+fn a_file_cannot_smuggle_steps_values_or_commands_into_an_import() {
+    // Extra fields on a tweak are ignored: only the id is read.
+    let file = ConfigFile::parse(
+        r#"{"format":"volt-configuration","version":1,"tweaks":[
+            {"id":"reg-tweak","steps":[{"kind":"command","apply":{"program":"evil"}}],
+             "value":{"dword":666}}]}"#,
+    )
+    .expect("parses");
+    let system = FakeSystem::new();
+    let catalogue = catalogue(REGISTRY_ONLY);
+    let engine = engine(&system, &catalogue);
+    let plan = engine.plan_import(&file.tweaks);
+    let ImportAction::Apply(previews) = &plan[0].action else {
+        panic!("expected apply, got {plan:?}");
+    };
+    // The catalogue's own two steps, with the catalogue's values.
+    assert_eq!(previews.len(), 2);
+    assert!(previews.iter().all(|p| !p.target.contains("666")));
+    engine.apply("reg-tweak", Source::Manual).expect("apply");
+    assert_eq!(
+        system.registry.get(&registry_ref("Flag")),
+        Some(RegistryValue::Dword(0))
+    );
+    assert_eq!(system.commands.is_on(&detect()), None);
+}
+
+#[test]
+fn an_import_plan_says_what_each_tweak_would_do_and_changes_nothing() {
+    let system = FakeSystem::new();
+    let catalogue = catalogue(&two_tweaks());
+    let engine = engine(&system, &catalogue);
+    let tweaks: Vec<_> = ["reg-tweak", "nope", "admin-tweak", "reg-tweak"]
+        .iter()
+        .map(|id| ConfigTweak {
+            id: (*id).to_owned(),
+            title: None,
+        })
+        .collect();
+    let plan = engine.plan_import(&tweaks);
+    assert_eq!(plan.len(), 3, "a repeated id is planned once");
+    assert!(matches!(&plan[0].action, ImportAction::Apply(steps) if steps.len() == 2));
+    assert_eq!(plan[1].action, ImportAction::Skip(ImportSkip::Unknown));
+    assert_eq!(
+        plan[2].action,
+        ImportAction::Skip(ImportSkip::NeedsAdministrator)
+    );
+    assert!(system.log.events().is_empty(), "planning only reads");
+    assert_eq!(system.registry.get(&registry_ref("Flag")), None);
+
+    // With the rights the admin tweak is planned; once applied a tweak is already in place.
+    let admin = self::engine(&system, &catalogue).with_administrator(true);
+    assert!(matches!(
+        admin.plan_import(&tweaks[2..3])[0].action,
+        ImportAction::Apply(_)
+    ));
+    engine.apply("reg-tweak", Source::Manual).expect("apply");
+    assert_eq!(
+        engine.plan_import(&tweaks[..1])[0].action,
+        ImportAction::AlreadyApplied
+    );
+}
+
+#[test]
+fn a_tweak_this_machine_cannot_read_is_skipped_with_the_reason() {
+    let catalogue = catalogue(SAMPLE);
+    let tweaks = [ConfigTweak {
+        id: "sample-tweak".to_owned(),
+        title: None,
+    }];
+    let machine = machine();
+    assert!(matches!(
+        engine(&machine, &catalogue).plan_import(&tweaks)[0].action,
+        ImportAction::Apply(_)
+    ));
+    // The service the tweak changes does not exist here.
+    let bare = FakeSystem::new();
+    assert!(matches!(
+        &engine(&bare, &catalogue).plan_import(&tweaks)[0].action,
+        ImportAction::Skip(ImportSkip::Unavailable(reason)) if !reason.is_empty()
+    ));
+}

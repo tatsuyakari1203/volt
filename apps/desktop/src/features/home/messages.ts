@@ -10,7 +10,7 @@ import type {
 export { describeError } from '../../shared/text/errors';
 
 /** The sections Home can send the user to. A subset of the shell's sections. */
-export type HomeTarget = 'clean' | 'memory' | 'startup';
+export type HomeTarget = 'clean' | 'memory' | 'startup' | 'tweaks';
 
 /** Where a fix leads and what its button says. */
 export interface FixLink {

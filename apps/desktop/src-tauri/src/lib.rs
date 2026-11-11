@@ -22,6 +22,7 @@ pub mod panel;
 pub mod phrase;
 pub mod processes;
 mod sampler;
+pub mod transfer;
 mod tray;
 mod trend;
 pub mod tuning;

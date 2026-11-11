@@ -2,8 +2,11 @@ import { Loader2, SearchX, SlidersHorizontal, TriangleAlert } from 'lucide-react
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { t, tn } from '../../shared/i18n';
 import {
+  acceptTweakState,
   applyTweak,
+  type DriftView,
   getTweakPlan,
+  listTweakDrift,
   listTweaks,
   resetTweak,
   revertTweak,
@@ -22,6 +25,7 @@ import {
   SegmentedControl,
   useToast,
 } from '../../shared/ui';
+import { DriftCard } from './DriftCard';
 import {
   CATEGORY_ORDER,
   categoryLabel,
@@ -34,6 +38,7 @@ import {
   tweakDescription,
   tweakTitle,
 } from './messages';
+import { TransferCard } from './TransferCard';
 import { type Busy, type PlanLoad, StepList, TweakRow } from './TweakRow';
 
 type Load =
@@ -80,6 +85,7 @@ interface Confirmation {
 export function TweaksScreen() {
   const toast = useToast();
   const [load, setLoad] = useState<Load>({ status: 'loading' });
+  const [drift, setDrift] = useState<readonly DriftView[]>([]);
   const [mode, setMode] = useState<Mode>(readMode);
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState<CategoryFilter>('all');
@@ -106,6 +112,15 @@ export function TweaksScreen() {
       .catch((error: unknown) => {
         if (alive.current) setLoad({ status: 'error', message: describeError(error) });
       });
+    // The check for tweaks that were changed behind Volt's back only reads, and is advisory: when
+    // it fails the list above is still right, so nothing is shown.
+    listTweakDrift()
+      .then((found) => {
+        if (alive.current) setDrift(found);
+      })
+      .catch(() => {
+        if (alive.current) setDrift([]);
+      });
   }, []);
 
   useEffect(read, [read]);
@@ -126,6 +141,10 @@ export function TweaksScreen() {
   /** Records a new state; a change Volt made is Volt's to undo, one it reset is not. */
   const patchState = (id: string, state: TweakStateView, appliedByVolt: boolean) => {
     patch(id, { state, appliedByVolt });
+    // A tweak is drifted only while Volt holds a change for it and it is not fully in place.
+    if (!appliedByVolt || state.kind === 'applied') {
+      setDrift((current) => current.filter((item) => item.id !== id));
+    }
     setPlans((current) => {
       if (!(id in current)) return current;
       const next = { ...current };
@@ -195,6 +214,25 @@ export function TweaksScreen() {
       report(describeReset(tweak, result), tweak);
     } catch (error) {
       if (alive.current) setNotice(describeFailure('undo', tweak, error));
+    } finally {
+      setBusyFor(tweak.id, undefined);
+    }
+  };
+
+  /** Keeps the state a changed tweak is in: Volt stops treating it as turned on. */
+  const keep = async (tweak: TweakInfo) => {
+    setBusyFor(tweak.id, 'undoing');
+    setNotice(null);
+    try {
+      const result = await acceptTweakState(tweak.id);
+      if (alive.current) patchState(tweak.id, result.state, false);
+      toast.show({ message: t('tweaks.drift.kept', { title: tweakTitle(tweak) }) });
+    } catch (error) {
+      if (alive.current) {
+        setNotice(
+          t('tweaks.drift.fail', { title: tweakTitle(tweak), error: describeError(error) }),
+        );
+      }
     } finally {
       setBusyFor(tweak.id, undefined);
     }
@@ -339,6 +377,13 @@ export function TweaksScreen() {
 
         {load.status === 'ready' && tweaks.length > 0 ? (
           <>
+            <DriftCard
+              drift={drift}
+              tweaks={tweaks}
+              busy={busy}
+              onReapply={(tweak) => toggle(tweak, true)}
+              onKeep={(tweak) => void keep(tweak)}
+            />
             <div className="flex flex-col gap-2">
               <SegmentedControl<Mode>
                 label={t('tweaks.mode.label')}
@@ -405,6 +450,12 @@ export function TweaksScreen() {
             {!detailed && hidden > 0 ? (
               <p className="px-1 text-caption text-muted">{tn('tweaks.hidden', hidden)}</p>
             ) : null}
+            <TransferCard
+              onProblem={(message) => {
+                if (alive.current) setNotice(message);
+              }}
+              onImported={read}
+            />
           </>
         ) : null}
       </div>

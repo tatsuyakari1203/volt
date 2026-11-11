@@ -90,6 +90,10 @@ pub enum TweakError {
     /// way to turn it off, a reset would guess.
     #[error("tweak `{0}` was applied by Volt: undo it instead of resetting it")]
     AppliedByVolt(String),
+    /// Nothing changed behind Volt's back for this tweak: it is still applied, or Volt did not
+    /// apply it. There is no new state to accept.
+    #[error("tweak `{0}` has not changed since Volt applied it")]
+    NotDrifted(String),
     /// A journal batch could not be read for revert.
     #[error("tweak `{tweak}`: {error}")]
     Revert {
@@ -167,6 +171,17 @@ pub struct StepPreview {
     pub at_target: bool,
 }
 
+/// A tweak that Volt applied and that is no longer in place: Windows or another program changed
+/// it since.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Drift {
+    /// The tweak id.
+    pub tweak: String,
+    /// What the system holds now: [`TweakState::NotApplied`] or [`TweakState::Partial`], never
+    /// [`TweakState::Applied`].
+    pub state: TweakState,
+}
+
 /// Suffix of the journal label of a reset (`<tweak id>:reset`). It differs from the tweak id on
 /// purpose: [`TweakEngine::revert`] undoes the batches labelled with the plain id, and must never
 /// find a reset and switch the tweak back on.
@@ -220,6 +235,13 @@ impl TweakEngine {
     pub fn with_administrator(mut self, administrator: bool) -> Self {
         self.administrator = administrator;
         self
+    }
+
+    /// Whether the engine was told it has administrator rights, see
+    /// [`TweakEngine::with_administrator`].
+    #[must_use]
+    pub fn has_administrator(&self) -> bool {
+        self.administrator
     }
 
     /// Attaches an activity log, see [`Executor::with_activity_log`]. Applies
@@ -326,6 +348,67 @@ impl TweakEngine {
             }
         }
         Ok(false)
+    }
+
+    /// The tweaks Volt applied (the undo journal holds a change that is still applied) whose live
+    /// state no longer matches: Windows or another program changed them since. Read-only. A tweak
+    /// whose state or journal cannot be read is left out: Volt does not guess.
+    #[must_use]
+    pub fn drifted(&self) -> Vec<Drift> {
+        self.catalogue
+            .tweaks()
+            .iter()
+            .filter_map(|tweak| {
+                if !self.applied_by_volt(&tweak.id).ok()? {
+                    return None;
+                }
+                match self.state(&tweak.id).ok()? {
+                    TweakState::Applied => None,
+                    state => Some(Drift {
+                        tweak: tweak.id.clone(),
+                        state,
+                    }),
+                }
+            })
+            .collect()
+    }
+
+    /// Accepts the state a drifted tweak is in now: marks every change Volt still holds for it as
+    /// [`EntryState::Accepted`], so [`TweakEngine::applied_by_volt`] turns `false` and the tweak
+    /// is no longer treated as applied. Nothing on the system is changed. The undo records stay
+    /// in the journal and the history, but cannot be undone any more: restoring them would
+    /// replace the state the user kept. Returns how many entries were marked.
+    ///
+    /// Refused with [`TweakError::NotDrifted`] when the tweak is still fully applied or Volt did
+    /// not apply it.
+    pub fn accept(&self, id: &str) -> Result<usize, TweakError> {
+        let tweak = self.tweak(id)?;
+        let journal_error = |error| TweakError::Journal {
+            tweak: tweak.id.clone(),
+            error,
+        };
+        if self.state(id)? == TweakState::Applied {
+            return Err(TweakError::NotDrifted(tweak.id.clone()));
+        }
+        let mut marked = 0;
+        for batch in self
+            .journal
+            .batches_with_label(&tweak.id)
+            .map_err(journal_error)?
+        {
+            for entry in self.journal.batch_entries(batch).map_err(journal_error)? {
+                if entry.state == EntryState::Applied {
+                    self.journal
+                        .set_state(entry.id, EntryState::Accepted, None)
+                        .map_err(journal_error)?;
+                    marked += 1;
+                }
+            }
+        }
+        if marked == 0 {
+            return Err(TweakError::NotDrifted(tweak.id.clone()));
+        }
+        Ok(marked)
     }
 
     /// What [`TweakEngine::reset`] would do right now: put every step that is in place back to

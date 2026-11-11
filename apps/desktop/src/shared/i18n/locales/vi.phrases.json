@@ -143,6 +143,15 @@
   "undo.recordGone": "Bản ghi hoàn tác của thao tác này không còn trong nhật ký nên Volt không thể khôi phục.",
   "undo.unreadable": "Chưa đọc được nhật ký hoàn tác. Hãy tải lại danh sách để thử lại.",
   "undo.unconfirmed": "Volt chưa xác nhận thay đổi này đã diễn ra.",
+  "undo.accepted": "Sau đó có thứ khác đổi thiết lập này và bạn chọn giữ nguyên, nên Volt sẽ không khôi phục nó.",
+
+  "transfer.boost": "Boost chạy {areas}. Chuyển tệp tạm vào Thùng rác: {bin}.",
+  "transfer.list": "{items}",
+  "transfer.on": "bật",
+  "transfer.off": "tắt",
+  "transfer.nothing": "không có gì",
+  "transfer.exclusions.other": "Thêm {count} chương trình vào danh sách mà việc thu hồi bộ nhớ bỏ qua: {names}",
+
   "preview.text": "{text}",
   "preview.command": "lệnh {command}",
   "preview.keyExists": "khóa tồn tại",
@@ -232,6 +241,7 @@
   "err.tweak.nothingToRevert": "tinh chỉnh `{tweak}`: nhật ký hoàn tác không có thay đổi nào để hoàn tác",
   "err.tweak.nothingToReset": "không thể đặt tinh chỉnh `{tweak}` về mặc định của Windows",
   "err.tweak.appliedByVolt": "tinh chỉnh `{tweak}` do Volt áp dụng: hãy hoàn tác thay vì đặt lại",
+  "err.tweak.notDrifted": "tinh chỉnh `{tweak}` chưa thay đổi kể từ khi Volt áp dụng",
   "err.uninstall.notFound": "ứng dụng này không còn được cài",
   "err.uninstall.notUninstallable": "Volt không gỡ được ứng dụng này",
   "err.uninstall.busy": "một ứng dụng khác đang được gỡ; hãy chờ nó xong",

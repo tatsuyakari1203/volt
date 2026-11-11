@@ -62,6 +62,10 @@ pub enum EntryState {
     Reverted,
     /// The change was attempted and failed.
     Failed,
+    /// The change was made, then something outside Volt changed the same setting again and the
+    /// user chose to keep that new state. Volt no longer offers to undo it: restoring the
+    /// recorded earlier value would replace what the user kept.
+    Accepted,
 }
 
 /// What the executor hands to the journal before mutating anything.

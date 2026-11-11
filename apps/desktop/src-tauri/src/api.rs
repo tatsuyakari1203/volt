@@ -740,7 +740,7 @@ pub fn reset_tweak(core: &AppCore, id: &str) -> Result<RevertResult, IpcError> {
     })
 }
 
-fn step_view(step: StepPreview) -> TweakStepView {
+pub(crate) fn step_view(step: StepPreview) -> TweakStepView {
     TweakStepView {
         subject: step.preview.subject,
         current: step.preview.current,
@@ -1146,7 +1146,7 @@ fn category_view(category: Category) -> TweakCategory {
     }
 }
 
-fn state_view(state: Result<TweakState, TweakError>) -> TweakStateView {
+pub(crate) fn state_view(state: Result<TweakState, TweakError>) -> TweakStateView {
     match state {
         Ok(TweakState::Applied) => TweakStateView::Applied,
         Ok(TweakState::NotApplied) => TweakStateView::NotApplied,
@@ -1178,6 +1178,7 @@ const REASON_NO_RECORD: &str = "undo.noRecord";
 const REASON_RECORD_GONE: &str = "undo.recordGone";
 const REASON_UNREADABLE: &str = "undo.unreadable";
 const REASON_UNCONFIRMED: &str = "undo.unconfirmed";
+const REASON_ACCEPTED: &str = "undo.accepted";
 
 fn lookup_entry(core: &AppCore, record: &ActivityRecord) -> EntryLookup {
     let Some(id) = record.entry else {
@@ -1217,6 +1218,8 @@ fn change_state(
                 EntryState::Failed => (ChangeState::Failed, None),
                 // Not something Volt will offer to undo until startup has resolved it.
                 EntryState::Pending => (ChangeState::CannotUndo, Some(REASON_UNCONFIRMED)),
+                // The user kept the state something else set; restoring would replace it.
+                EntryState::Accepted => (ChangeState::CannotUndo, Some(REASON_ACCEPTED)),
             },
         },
     }
@@ -1363,7 +1366,7 @@ fn undo_result(core: &AppCore, report: &RevertReport) -> UndoResult {
 
 /// Why an apply failed, in words (first failed step), and how many applied steps could not be
 /// put back. Built from the core's redacted reasons: no port message, no data.
-fn apply_failure_detail(report: &TweakApplyReport) -> Option<Phrase> {
+pub(crate) fn apply_failure_detail(report: &TweakApplyReport) -> Option<Phrase> {
     let report = report.report.as_ref()?;
     let mut parts = Vec::new();
     if let Some(reason) = report.failed().find_map(|item| match &item.status {
@@ -1414,7 +1417,7 @@ fn revert_failure_detail(report: &TweakRevertReport) -> Option<Phrase> {
 
 /// Logs a warning when the executor could not write activity records during a call: the change
 /// and its journal entry are safe, but the history the Undo page shows is incomplete.
-fn warn_if_history_incomplete(core: &AppCore, failures_before: u64, action: &str) {
+pub(crate) fn warn_if_history_incomplete(core: &AppCore, failures_before: u64, action: &str) {
     let failures = core
         .engine
         .activity_write_failures()

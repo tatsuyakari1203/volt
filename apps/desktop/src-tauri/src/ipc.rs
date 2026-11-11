@@ -310,6 +310,9 @@ impl From<TweakError> for IpcError {
             TweakError::AppliedByVolt(tweak) => {
                 Self::invalid(&Phrase::new("err.tweak.appliedByVolt").text("tweak", tweak))
             }
+            TweakError::NotDrifted(tweak) => {
+                Self::invalid(&Phrase::new("err.tweak.notDrifted").text("tweak", tweak))
+            }
             // Both enums are non-exhaustive: anything new degrades to `Other`.
             _ => Self::plain(ErrorClass::Other, error.to_string()),
         }
@@ -371,6 +374,11 @@ pub fn bindings_builder() -> Builder<tauri::Wry> {
             crate::commands::revert_tweak,
             crate::commands::get_tweak_plan,
             crate::commands::reset_tweak,
+            crate::transfer::list_tweak_drift,
+            crate::transfer::accept_tweak_state,
+            crate::transfer::export_configuration,
+            crate::transfer::preview_configuration_import,
+            crate::transfer::apply_configuration_import,
             crate::commands::list_activity,
             crate::metrics::latest_metrics,
             crate::health::health_report,

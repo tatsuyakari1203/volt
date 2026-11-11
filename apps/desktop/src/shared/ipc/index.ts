@@ -6,6 +6,7 @@
 import { sayCapitalised } from '../i18n/say';
 import { t } from '../i18n/translate';
 import {
+  type AcceptResult,
   type ActivityExport,
   type ActivityPage,
   type AppInfo,
@@ -19,7 +20,9 @@ import {
   type CleanScanProgress,
   type CleanScanResult,
   type ClearResult,
+  type ConfigExportResult,
   commands,
+  type DriftView,
   type ElevatedCleanResult,
   type ElevationStatusView,
   type EmptyBinResult,
@@ -29,6 +32,8 @@ import {
   type FolderRefusal,
   type HealthView,
   type HistoryStatus,
+  type ImportPreviewResult,
+  type ImportResult,
   type InspectionView,
   type IpcError,
   type ItemPick,
@@ -61,6 +66,7 @@ import {
 } from './bindings';
 
 export type {
+  AcceptResult,
   ActivityExport,
   ActivityItem,
   ActivityPage,
@@ -86,8 +92,10 @@ export type {
   CleanScanProgress,
   CleanScanResult,
   ClearResult,
+  ConfigExportResult,
   DeductionView,
   DiskView,
+  DriftView,
   ElevatedCleanResult,
   ElevationReasonView,
   ElevationStatusView,
@@ -106,6 +114,11 @@ export type {
   HealthLevelView,
   HealthView,
   HiddenReasonView,
+  ImportActionView,
+  ImportPreview,
+  ImportPreviewResult,
+  ImportResult,
+  ImportStatus,
   InspectionView,
   IpcError,
   ItemPick,
@@ -145,8 +158,11 @@ export type {
   RuleView,
   ScanItemView,
   ScheduledTaskView,
+  SettingImportView,
+  SettingStatus,
   SkipGroup,
   SkippedOperationView,
+  SkipView,
   StartupChangeResult,
   StartupChangeStatus,
   StartupEntryView,
@@ -156,6 +172,8 @@ export type {
   TuneRequestView,
   TuneResult,
   TweakCategory,
+  TweakImportResult,
+  TweakImportView,
   TweakInfo,
   TweakPlanView,
   TweakStateView,
@@ -345,6 +363,41 @@ export async function getTweakPlan(id: string): Promise<TweakPlanView> {
  */
 export async function resetTweak(id: string): Promise<RevertResult> {
   return call(() => commands.resetTweak(id));
+}
+
+/** The tweaks Volt turned on that something else has changed since. Reads the system only. */
+export async function listTweakDrift(): Promise<DriftView[]> {
+  return call(() => commands.listTweakDrift());
+}
+
+/**
+ * Keeps the state a changed tweak is in: Volt stops treating it as turned on and its undo records
+ * can no longer be used (they stay in the history). Changes nothing on the system.
+ */
+export async function acceptTweakState(id: string): Promise<AcceptResult> {
+  return call(() => commands.acceptTweakState(id));
+}
+
+/**
+ * Asks where to save the configuration (a native dialog opened by the Rust side) and writes the
+ * tweaks Volt turned on and the settings that make sense on another PC. `cancelled` when the
+ * dialog was closed.
+ */
+export async function exportConfiguration(): Promise<ConfigExportResult> {
+  return call(() => commands.exportConfiguration());
+}
+
+/**
+ * Asks for a configuration file (a native dialog) and resolves with exactly what importing it
+ * would change here. Changes nothing; `applyConfigurationImport` applies what was shown.
+ */
+export async function previewConfigurationImport(): Promise<ImportPreviewResult> {
+  return call(() => commands.previewConfigurationImport());
+}
+
+/** Applies the import that was previewed last, each tweak through the undo journal. */
+export async function applyConfigurationImport(): Promise<ImportResult> {
+  return call(() => commands.applyConfigurationImport());
 }
 
 /**
