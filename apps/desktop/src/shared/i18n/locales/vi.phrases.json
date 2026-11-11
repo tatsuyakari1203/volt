@@ -113,7 +113,12 @@
   "scan.problem.denied": "Windows từ chối truy cập vị trí này.",
   "scan.problem.unreadable": "Không đọc được vị trí này ({class}).",
   "scan.problem.minAge": "Không dùng được cài đặt tuổi tối thiểu nên quy tắc này chưa được quét.",
+  "scan.problem.notInstall": "Thư mục này không giống bản cài của công cụ ({names} không có), nên chưa quét.",
   "scan.problem.generic": "Không quét được quy tắc này.",
+  "folder.refused.notInstall": "Thư mục này không giống bản cài của công cụ: không thấy {names} trong đó.",
+  "folder.refused.output": "Đây là thư mục kết quả đầu ra nên không bao giờ bị dọn.",
+  "folder.refused.broad": "Thư mục này quá rộng hoặc là thư mục được bảo vệ.",
+  "folder.refused.notFolder": "Đây không phải thư mục thường đang tồn tại.",
 
   "area.workingSets": "working set",
   "area.standbyList": "danh sách standby",

@@ -438,6 +438,9 @@ pub fn list_cleaning_rules(core: &AppCore) -> Result<Vec<CleaningRuleInfo>, IpcE
 fn problem_phrase(failure: &ScanFailure) -> Phrase {
     match failure {
         ScanFailure::Root(RootError::OutputFolder) => Phrase::new("scan.problem.output"),
+        ScanFailure::Root(RootError::NotInstall(missing)) => {
+            Phrase::new("scan.problem.notInstall").text("names", missing.join(", "))
+        }
         ScanFailure::Root(_) => Phrase::new("scan.problem.root"),
         ScanFailure::RootIsLink => Phrase::new("scan.problem.link"),
         ScanFailure::RootNotDirectory => Phrase::new("scan.problem.notFolder"),
@@ -574,7 +577,7 @@ pub fn scan_cleaning(
         .iter()
         .map(|rule| rule.id.clone())
         .collect();
-    scan_rules(core, &ids, on_progress)
+    scan_rules(core, &ids, None, on_progress)
 }
 
 /// Like [`scan_cleaning`] for the chosen rules only: how the page continues with the rest of a
@@ -587,6 +590,7 @@ pub fn scan_cleaning(
 pub fn scan_cleaning_rules(
     core: &AppCore,
     rule_ids: &[String],
+    continue_plan: Option<&str>,
     on_progress: &dyn Fn(CleanScanProgress),
 ) -> Result<CleanScanResult, IpcError> {
     clean_engine(core)?;
@@ -595,12 +599,13 @@ pub fn scan_cleaning_rules(
             message: "no rule is chosen".to_owned(),
         });
     }
-    scan_rules(core, rule_ids, on_progress)
+    scan_rules(core, rule_ids, continue_plan, on_progress)
 }
 
 fn scan_rules(
     core: &AppCore,
     ids: &[String],
+    continue_plan: Option<&str>,
     on_progress: &dyn Fn(CleanScanProgress),
 ) -> Result<CleanScanResult, IpcError> {
     let engine = clean_engine(core)?;
@@ -631,6 +636,22 @@ fn scan_rules(
         });
     }
     let cancelled = plan.cancelled;
+    let mut plan = plan;
+    // Continuing a scan that was cancelled: what it already looked at stays, the new scans are
+    // added (or replace the rule's earlier, partial scan), in rule order.
+    if let Some(earlier) = continue_plan {
+        let mut stored = session.plan();
+        if let Some(stored) = stored.as_mut().filter(|stored| stored.id == earlier) {
+            let mut kept: Vec<_> = std::mem::take(&mut stored.plan.rules)
+                .into_iter()
+                .filter(|old| plan.rules.iter().all(|new| new.rule_id != old.rule_id))
+                .collect();
+            kept.append(&mut plan.rules);
+            let position = |id: &str| engine.rules().rules().iter().position(|r| r.id == id);
+            kept.sort_by_key(|scan| position(&scan.rule_id));
+            plan.rules = kept;
+        }
+    }
     let rules = plan
         .rules
         .iter()
@@ -797,29 +818,61 @@ fn folder_error(error: &FolderError) -> IpcError {
             "this rule does not work in a folder you add".to_owned()
         }
         FolderError::NoSettings => "the choice cannot be saved in this build".to_owned(),
-        FolderError::Refused(RootError::OutputFolder) => {
-            "this is an output folder, which is never cleaned".to_owned()
-        }
-        FolderError::Refused(_) => {
-            "this folder cannot be used: it is too broad or a protected folder".to_owned()
-        }
-        FolderError::NotAFolder => "this is not an existing, plain folder".to_owned(),
         FolderError::Settings(class) => format!("the choice could not be saved ({class})"),
         _ => "this folder cannot be used".to_owned(),
     };
     IpcError::InvalidInput { message }
 }
 
+/// Why a folder is not a place the rule may work in, or `None` when the error is not about the
+/// folder itself.
+fn folder_refusal(error: &FolderError) -> Option<Phrase> {
+    match error {
+        FolderError::Refused(RootError::OutputFolder) => Some(Phrase::new("folder.refused.output")),
+        FolderError::Refused(RootError::NotInstall(missing)) => {
+            Some(Phrase::new("folder.refused.notInstall").text("names", missing.join(", ")))
+        }
+        FolderError::Refused(_) => Some(Phrase::new("folder.refused.broad")),
+        FolderError::NotAFolder => Some(Phrase::new("folder.refused.notFolder")),
+        _ => None,
+    }
+}
+
+/// A folder that was not added, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderRefusal {
+    /// Why, in English and in words that name no folder.
+    pub reason: String,
+    /// `reason` as a code and parameters, for the UI to write in its own language.
+    pub reason_phrase: PhraseView,
+}
+
 /// Adds `folder` for the rule that needs one (a `ComfyUI` install, for its temp folder) and keeps it
 /// in the settings. Nothing in the folder is read or changed. A new scan is needed afterwards.
 ///
+/// Returns `None` when the folder was added, and the reason when it was refused: not a plain
+/// folder, a drive root, a protected or an output folder, or a folder that does not look like an
+/// install of the tool the rule is for (the files it expects are named).
+///
 /// # Errors
-/// `invalidInput` when the rule needs no folder or the folder is refused (not a plain folder, a
-/// drive root, a protected or an output folder); `unsupported` without a clean engine.
-pub fn choose_cleaning_folder(core: &AppCore, rule_id: &str, folder: &str) -> Result<(), IpcError> {
-    clean_engine(core)?
-        .choose_folder(rule_id, std::path::Path::new(folder))
-        .map_err(|error| folder_error(&error))
+/// `invalidInput` when the rule needs no folder or the choice cannot be saved; `unsupported`
+/// without a clean engine.
+pub fn choose_cleaning_folder(
+    core: &AppCore,
+    rule_id: &str,
+    folder: &str,
+) -> Result<Option<FolderRefusal>, IpcError> {
+    match clean_engine(core)?.choose_folder(rule_id, std::path::Path::new(folder)) {
+        Ok(()) => Ok(None),
+        Err(error) => match folder_refusal(&error) {
+            Some(phrase) => Ok(Some(FolderRefusal {
+                reason: phrase.english(),
+                reason_phrase: PhraseView::from(&phrase),
+            })),
+            None => Err(folder_error(&error)),
+        },
+    }
 }
 
 /// Forgets the folder added for the rule. The folder itself is never touched.

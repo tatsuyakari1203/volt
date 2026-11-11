@@ -290,11 +290,13 @@ async scanCleaning() : Promise<Result<CleanScanResult, IpcError>> {
 },
 /**
  * Tauri command: like `scanCleaning` for the chosen rules only (read-only). The page uses it to
- * continue with the rest of a rule whose scan was truncated, after cleaning what was listed.
+ * continue with the rest of a rule whose scan was truncated, after cleaning what was listed. With
+ * `continuePlan` (the id of the scan on screen) the rules it already looked at stay in the new
+ * scan, which is how a cancelled scan is finished without starting over.
  */
-async scanCleaningRules(ruleIds: string[]) : Promise<Result<CleanScanResult, IpcError>> {
+async scanCleaningRules(ruleIds: string[], continuePlan: string | null) : Promise<Result<CleanScanResult, IpcError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("scan_cleaning_rules", { ruleIds }) };
+    return { status: "ok", data: await TAURI_INVOKE("scan_cleaning_rules", { ruleIds, continuePlan }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -327,9 +329,11 @@ async cleanSelectedRules(planId: string, ruleIds: string[], picks: ItemPick[]) :
 },
 /**
  * Tauri command: adds a folder for a cleaning rule that needs one (a `ComfyUI` install, for its
- * temp folder) and keeps it in the settings. Reads nothing in the folder. Scan again afterwards.
+ * temp folder) and keeps it in the settings. Resolves with `null` when the folder was added and
+ * with the reason when it was refused (not the tool's install, too broad, an output folder).
+ * Only looks for the files an install has. Scan again afterwards.
  */
-async chooseCleaningFolder(ruleId: string, folder: string) : Promise<Result<null, IpcError>> {
+async chooseCleaningFolder(ruleId: string, folder: string) : Promise<Result<FolderRefusal | null, IpcError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("choose_cleaning_folder", { ruleId, folder }) };
 } catch (e) {
@@ -1565,6 +1569,18 @@ export type FixActionView =
  * Restart Windows. A sentence for the user: Volt has no button that restarts the PC.
  */
 "restartWindows"
+/**
+ * A folder that was not added, and why.
+ */
+export type FolderRefusal = { 
+/**
+ * Why, in English and in words that name no folder.
+ */
+reason: string; 
+/**
+ * `reason` as a code and parameters, for the UI to write in its own language.
+ */
+reasonPhrase: PhraseView }
 /**
  * An environment variable a rule follows, with the documentation that names it.
  */

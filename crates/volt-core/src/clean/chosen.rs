@@ -69,6 +69,46 @@ impl CleanEngine {
         }
     }
 
+    /// Whether the chosen folder has every marker the rule declares. Read-only: only whether each
+    /// name exists directly in the folder is asked. A marker that is a link, or cannot be read,
+    /// counts as missing.
+    pub(super) fn check_install(
+        &self,
+        rule: &CleaningRule,
+        folder: &Path,
+    ) -> Result<(), RootError> {
+        let missing: Vec<String> = rule
+            .install_markers
+            .iter()
+            .filter(|name| {
+                !matches!(
+                    self.file_system.inspect(&folder.join(name)),
+                    Ok(Some(info)) if info.kind != EntryKind::ReparsePoint
+                )
+            })
+            .cloned()
+            .collect();
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(RootError::NotInstall(missing))
+        }
+    }
+
+    /// The root of a rule, judged now: [`resolve_root`] plus, for a rule in a chosen folder, the
+    /// check that the folder still looks like the tool's install.
+    pub(super) fn resolve_checked(
+        &self,
+        rule: &CleaningRule,
+        chosen: Option<&Path>,
+    ) -> Result<super::root::ResolvedRoot, RootError> {
+        let resolved = resolve_root(rule, self.folders.as_ref(), chosen)?;
+        if let Some(folder) = chosen.filter(|_| rule.needs_chosen_folder()) {
+            self.check_install(rule, folder)?;
+        }
+        Ok(resolved)
+    }
+
     fn choosable(&self, rule_id: &str) -> Result<&CleaningRule, FolderError> {
         let rule = self
             .rules
@@ -89,7 +129,8 @@ impl CleanEngine {
     /// Chooses `folder` for the rule and keeps the choice in the settings, replacing an earlier
     /// one. Refused: a rule that needs no folder, a path that is not absolute, a folder whose
     /// rule root would be refused (a drive root, the profile, a system folder, or in an output
-    /// folder) and a folder that does not exist as a plain folder. Nothing is scanned or
+    /// folder), a folder that does not exist as a plain folder and a folder that lacks the files or
+    /// folders the rule says an install of the tool has ([`RootError::NotInstall`]). Nothing is scanned or
     /// changed in the folder.
     pub fn choose_folder(&self, rule_id: &str, folder: &Path) -> Result<(), FolderError> {
         let rule = self.choosable(rule_id)?;
@@ -106,6 +147,8 @@ impl CleanEngine {
             Ok(_) => return Err(FolderError::NotAFolder),
             Err(error) => return Err(FolderError::Settings(error_class(&error))),
         }
+        self.check_install(rule, folder)
+            .map_err(FolderError::Refused)?;
         let mut map = self.read_chosen().map_err(FolderError::Settings)?;
         map.insert(rule.id.clone(), Value::String(text.to_owned()));
         settings

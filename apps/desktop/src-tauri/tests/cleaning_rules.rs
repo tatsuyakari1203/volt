@@ -1803,6 +1803,22 @@ fn comfyui_temp_needs_a_folder_the_user_adds_and_never_offers_output() {
     world
         .fs
         .add_file_at(comfy.join("custom_nodes/x/__init__.py"), 5, ago(5 * DAY));
+    // Without the files of an install the folder is refused, naming what is missing.
+    let refused = world
+        .engine
+        .choose_folder("comfyui-temp", &comfy)
+        .expect_err("not an install yet");
+    assert!(
+        matches!(&refused, volt_core::clean::FolderError::Refused(
+            volt_core::clean::RootError::NotInstall(missing)) if missing.contains(&"main.py".to_owned())),
+        "{refused:?}"
+    );
+    for file in ["main.py", "nodes.py"] {
+        world.fs.add_file_at(comfy.join(file), 5, ago(5 * DAY));
+    }
+    world
+        .fs
+        .add_file_at(comfy.join("comfy/model_base.py"), 5, ago(5 * DAY));
     world
         .engine
         .choose_folder("comfyui-temp", &comfy)
