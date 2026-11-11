@@ -633,7 +633,12 @@ mod tests {
             .created_at_100ns;
 
         let before = processes.settings(pid, created).expect("read");
-        assert_eq!(before.priority, PriorityClass::Normal);
+        // A child inherits its priority from the runner, which is not always Normal; the test
+        // only needs a starting class that differs from the ones it sets below.
+        assert!(!matches!(
+            before.priority,
+            PriorityClass::Idle | PriorityClass::AboveNormal | PriorityClass::High
+        ));
         assert_ne!(before.affinity_mask, 0);
         assert_eq!(before.affinity_mask & !before.system_affinity_mask, 0);
         assert_eq!(before.throttling, PowerThrottling::Default);
