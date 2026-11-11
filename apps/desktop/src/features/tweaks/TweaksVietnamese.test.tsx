@@ -68,6 +68,7 @@ it('writes the result of turning a tweak on in Vietnamese, with its restart note
     tweak: fileExtensions.id,
     status: 'applied',
     detail: null,
+    detailPhrase: null,
     state: { kind: 'applied' },
   });
   render(
@@ -90,4 +91,71 @@ it('falls back to the core English for a tweak with no Vietnamese text', async (
   );
   expect(await screen.findByText('A tweak added later')).toBeTruthy();
   expect(screen.getByText('The core wrote this in English.')).toBeTruthy();
+});
+
+it('writes why an apply was rolled back in Vietnamese from the phrase of the shell', async () => {
+  const user = userEvent.setup();
+  ipc.listTweaks.mockResolvedValue([fileExtensions]);
+  ipc.applyTweak.mockResolvedValue({
+    tweak: fileExtensions.id,
+    status: 'rolledBack',
+    detail: 'the change failed (access denied)',
+    detailPhrase: {
+      code: 'err.detail',
+      args: {
+        parts: {
+          kind: 'list',
+          value: {
+            sep: '; ',
+            items: [
+              {
+                code: 'reason.applyFailed',
+                args: {
+                  class: { kind: 'phrase', value: { code: 'class.accessDenied', args: {} } },
+                },
+              },
+            ],
+          },
+        },
+      },
+    },
+    state: { kind: 'notApplied' },
+  });
+  render(
+    <ToastProvider>
+      <TweaksScreen />
+    </ToastProvider>,
+  );
+  await user.click(await screen.findByRole('switch', { name: 'Hiện đuôi tệp' }));
+  const alert = await screen.findByRole('alert');
+  expect(alert.textContent).toContain('thay đổi không thực hiện được (bị từ chối truy cập)');
+  expect(alert.textContent).not.toContain('access denied');
+});
+
+it('writes why a tweak cannot be read in Vietnamese', async () => {
+  ipc.listTweaks.mockResolvedValue([
+    {
+      ...fileExtensions,
+      state: {
+        kind: 'unreadable',
+        message: 'tweak `show-file-extensions`: cannot read the current state (access denied)',
+        phrase: {
+          code: 'err.tweak.detect',
+          args: {
+            tweak: { kind: 'text', value: 'show-file-extensions' },
+            class: { kind: 'phrase', value: { code: 'class.accessDenied', args: {} } },
+          },
+        },
+      },
+    } satisfies TweakInfo,
+  ]);
+  render(
+    <ToastProvider>
+      <TweaksScreen />
+    </ToastProvider>,
+  );
+  expect(
+    await screen.findByText(/không đọc được trạng thái hiện tại \(bị từ chối truy cập\)/),
+  ).toBeTruthy();
+  expect(screen.queryByText(/cannot read the current state/)).toBeNull();
 });

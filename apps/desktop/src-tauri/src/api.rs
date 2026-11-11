@@ -13,7 +13,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use volt_core::activity::{
-    exec_reason, restore_phrase_for, restore_words_for, revert_phrase, revert_reason, subject,
+    exec_phrase, restore_phrase_for, restore_words_for, revert_phrase, revert_reason, subject,
     subject_phrase,
 };
 use volt_core::startup::STARTUP_LABEL;
@@ -27,6 +27,7 @@ use volt_core::{
 };
 
 use crate::IpcError;
+use crate::ipc::ErrorClass;
 use crate::phrase::PhraseView;
 use crate::wiring::AppCore;
 
@@ -104,8 +105,10 @@ pub enum TweakStateView {
     Partial,
     /// The state could not be read. Nothing was guessed.
     Unreadable {
-        /// Why, in words.
+        /// Why, in words (English).
         message: String,
+        /// Why, as a code and parameters, for the window to write in its language.
+        phrase: Option<PhraseView>,
     },
 }
 
@@ -197,6 +200,8 @@ pub struct ApplyResult {
     pub status: ApplyStatus,
     /// Why it failed, in words, when it did. Never contains command output or data.
     pub detail: Option<String>,
+    /// `detail` as a code and parameters, for the window to write in its language.
+    pub detail_phrase: Option<PhraseView>,
     /// The state read again after the apply.
     pub state: TweakStateView,
 }
@@ -228,6 +233,8 @@ pub struct RevertResult {
     pub failed: u32,
     /// Why something could not be restored, in words.
     pub detail: Option<String>,
+    /// `detail` as a code and parameters, for the window to write in its language.
+    pub detail_phrase: Option<PhraseView>,
     /// The state read again after the revert.
     pub state: TweakStateView,
 }
@@ -639,7 +646,8 @@ pub fn apply_tweak(core: &AppCore, id: &str) -> Result<ApplyResult, IpcError> {
     Ok(ApplyResult {
         tweak: report.tweak,
         status,
-        detail,
+        detail: detail.as_ref().map(Phrase::english),
+        detail_phrase: detail.as_ref().map(PhraseView::from),
         state: state_view(core.engine.state(id)),
     })
 }
@@ -670,7 +678,8 @@ pub fn revert_tweak(core: &AppCore, id: &str) -> Result<RevertResult, IpcError> 
         status,
         restored,
         failed,
-        detail,
+        detail: detail.as_ref().map(Phrase::english),
+        detail_phrase: detail.as_ref().map(PhraseView::from),
         state: state_view(core.engine.state(id)),
     })
 }
@@ -725,7 +734,8 @@ pub fn reset_tweak(core: &AppCore, id: &str) -> Result<RevertResult, IpcError> {
         status,
         restored,
         failed,
-        detail,
+        detail: detail.as_ref().map(Phrase::english),
+        detail_phrase: detail.as_ref().map(PhraseView::from),
         state: state_view(core.engine.state(id)),
     })
 }
@@ -754,9 +764,7 @@ pub fn list_activity(
         .map(|text| {
             text.parse::<u64>()
                 .map(ActivityId)
-                .map_err(|_| IpcError::InvalidInput {
-                    message: format!("`{text}` is not an activity cursor"),
-                })
+                .map_err(|_| IpcError::invalid(&Phrase::new("err.cursor").text("text", text)))
         })
         .transpose()?;
     let page_len = usize::try_from(limit).unwrap_or(usize::MAX);
@@ -792,14 +800,14 @@ pub fn undo_entry(
     entry: &str,
     acknowledged: &[String],
 ) -> Result<UndoResult, IpcError> {
-    let id = EntryId(parse_id(entry, "journal entry")?);
+    let id = EntryId(parse_id(entry)?);
     let _exclusive = core.exclusive();
     let found = core
         .journal
         .entry(id)
         .map_err(IpcError::from)?
-        .ok_or_else(|| IpcError::NotFound {
-            message: format!("there is no journal entry {id}"),
+        .ok_or_else(|| {
+            IpcError::not_found(&Phrase::new("err.noEntry").text("id", id.0.to_string()))
         })?;
     if found.state != EntryState::Applied {
         return Ok(undo_result(core, &RevertReport::default()));
@@ -828,7 +836,7 @@ pub fn undo_batch(
     batch: &str,
     acknowledged: &[String],
 ) -> Result<UndoResult, IpcError> {
-    let batch = BatchId(parse_id(batch, "batch")?);
+    let batch = BatchId(parse_id(batch)?);
     let _exclusive = core.exclusive();
     let entries = core.journal.batch_entries(batch).map_err(IpcError::from)?;
     if !entries
@@ -856,7 +864,7 @@ pub fn undo_batch(
 /// What [`undo_batch`] would restore right now, newest first. Reads the journal only, so the
 /// confirmation dialog can say exactly what will be put back.
 pub fn preview_undo_batch(core: &AppCore, batch: &str) -> Result<UndoPreview, IpcError> {
-    let batch = BatchId(parse_id(batch, "batch")?);
+    let batch = BatchId(parse_id(batch)?);
     let entries = core.journal.batch_entries(batch).map_err(IpcError::from)?;
     let mut applied: Vec<JournalEntry> = entries
         .into_iter()
@@ -869,7 +877,7 @@ pub fn preview_undo_batch(core: &AppCore, batch: &str) -> Result<UndoPreview, Ip
 /// What [`undo_entry`] would do right now: the one change, and the later change it would
 /// overwrite, if any. An entry that is not applied previews as nothing. Reads the journal only.
 pub fn preview_undo_entry(core: &AppCore, entry: &str) -> Result<UndoPreview, IpcError> {
-    let id = EntryId(parse_id(entry, "journal entry")?);
+    let id = EntryId(parse_id(entry)?);
     let found = core.journal.entry(id).map_err(IpcError::from)?;
     let applied: Vec<JournalEntry> = found
         .filter(|entry| entry.state == EntryState::Applied)
@@ -1007,9 +1015,11 @@ pub fn write_export(path: &Path, text: &str) -> Result<(), IpcError> {
     std::fs::write(path, text).map_err(|error| {
         let message = format!("could not write {}: {error}", path.display());
         match error.kind() {
-            std::io::ErrorKind::PermissionDenied => IpcError::AccessDenied { message },
-            std::io::ErrorKind::NotFound => IpcError::NotFound { message },
-            _ => IpcError::Other { message },
+            std::io::ErrorKind::PermissionDenied => {
+                IpcError::plain(ErrorClass::AccessDenied, message)
+            }
+            std::io::ErrorKind::NotFound => IpcError::plain(ErrorClass::NotFound, message),
+            _ => IpcError::plain(ErrorClass::Other, message),
         }
     })
 }
@@ -1141,9 +1151,13 @@ fn state_view(state: Result<TweakState, TweakError>) -> TweakStateView {
         Ok(TweakState::Applied) => TweakStateView::Applied,
         Ok(TweakState::NotApplied) => TweakStateView::NotApplied,
         Ok(TweakState::Partial) => TweakStateView::Partial,
-        Err(error) => TweakStateView::Unreadable {
-            message: error.to_string(),
-        },
+        Err(error) => {
+            let error = IpcError::from(error);
+            TweakStateView::Unreadable {
+                message: error.message().to_owned(),
+                phrase: error.phrase().cloned(),
+            }
+        }
     }
 }
 
@@ -1281,10 +1295,9 @@ fn activity_item(core: &AppCore, record: &ActivityRecord) -> ActivityItem {
 }
 
 /// Parses the decimal-string id the UI sends back.
-fn parse_id(text: &str, what: &str) -> Result<u64, IpcError> {
-    text.parse::<u64>().map_err(|_| IpcError::InvalidInput {
-        message: format!("`{text}` is not a {what} id"),
-    })
+fn parse_id(text: &str) -> Result<u64, IpcError> {
+    text.parse::<u64>()
+        .map_err(|_| IpcError::invalid(&Phrase::new("err.badId").text("text", text)))
 }
 
 /// `registry value X` becomes `Registry value X`.
@@ -1301,9 +1314,7 @@ fn revert_ipc_error(error: RevertError) -> IpcError {
         RevertError::Journal(port) | RevertError::Port(port) | RevertError::MarkReverted(port) => {
             IpcError::from(port)
         }
-        other => IpcError::Other {
-            message: revert_reason(&other),
-        },
+        other => IpcError::other(&revert_phrase(&other)),
     }
 }
 
@@ -1352,11 +1363,11 @@ fn undo_result(core: &AppCore, report: &RevertReport) -> UndoResult {
 
 /// Why an apply failed, in words (first failed step), and how many applied steps could not be
 /// put back. Built from the core's redacted reasons: no port message, no data.
-fn apply_failure_detail(report: &TweakApplyReport) -> Option<String> {
+fn apply_failure_detail(report: &TweakApplyReport) -> Option<Phrase> {
     let report = report.report.as_ref()?;
     let mut parts = Vec::new();
     if let Some(reason) = report.failed().find_map(|item| match &item.status {
-        ItemStatus::Failed { error, .. } => Some(exec_reason(error)),
+        ItemStatus::Failed { error, .. } => Some(exec_phrase(error)),
         _ => None,
     }) {
         parts.push(reason);
@@ -1369,11 +1380,9 @@ fn apply_failure_detail(report: &TweakApplyReport) -> Option<String> {
             .count()
     });
     if not_restored > 0 {
-        parts.push(format!(
-            "{not_restored} change(s) could not be put back automatically"
-        ));
+        parts.push(Phrase::new("err.detail.notRestored").count("count", not_restored));
     }
-    (!parts.is_empty()).then(|| parts.join("; "))
+    (!parts.is_empty()).then(|| Phrase::new("err.detail").list("parts", "; ", parts))
 }
 
 fn count_outcomes(report: &TweakRevertReport) -> (u32, u32) {
@@ -1395,12 +1404,12 @@ fn count_outcomes(report: &TweakRevertReport) -> (u32, u32) {
     )
 }
 
-fn revert_failure_detail(report: &TweakRevertReport) -> Option<String> {
+fn revert_failure_detail(report: &TweakRevertReport) -> Option<Phrase> {
     report
         .batches
         .iter()
         .flat_map(|batch| &batch.report.outcomes)
-        .find_map(|outcome| outcome.result.as_ref().err().map(revert_reason))
+        .find_map(|outcome| outcome.result.as_ref().err().map(revert_phrase))
 }
 
 /// Logs a warning when the executor could not write activity records during a call: the change
@@ -1493,9 +1502,9 @@ mod tests {
 
     #[test]
     fn ids_must_be_decimal_strings_and_text_starts_with_a_capital() {
-        assert_eq!(parse_id("42", "batch").ok(), Some(42));
-        assert!(parse_id("-1", "batch").is_err());
-        assert!(parse_id("0x2a", "batch").is_err());
+        assert_eq!(parse_id("42").ok(), Some(42));
+        assert!(parse_id("-1").is_err());
+        assert!(parse_id("0x2a").is_err());
         assert_eq!(capitalised("registry value X"), "Registry value X");
         assert_eq!(capitalised(""), "");
     }

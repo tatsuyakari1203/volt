@@ -95,6 +95,7 @@ const reverted: RevertResult = {
   restored: 1,
   failed: 0,
   detail: null,
+  detailPhrase: null,
   state: { kind: 'notApplied' },
 };
 
@@ -240,6 +241,7 @@ describe('confirming a Caution tweak', () => {
       tweak: 'cautious',
       status: 'applied',
       detail: null,
+      detailPhrase: null,
       state: { kind: 'applied' },
     });
     renderScreen();

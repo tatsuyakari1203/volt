@@ -98,6 +98,14 @@ function problemReason(reason: string): string {
       return t('startup.problem.accessDenied');
     case 'not found':
       return t('startup.problem.notFound');
+    case 'unsupported':
+      return t('startup.problem.unsupported');
+    case 'invalid input':
+      return t('startup.problem.invalidInput');
+    case 'timed out':
+      return t('startup.problem.timedOut');
+    case 'error':
+      return t('startup.problem.error');
     default:
       return reason;
   }
@@ -130,5 +138,5 @@ export function shortenCommand(command: string, max = 56): string {
 
 /** One sentence when the scheduled tasks could not be read. */
 export function describeTasksProblem(reason: string | null): string | null {
-  return reason ? t('startup.tasks.problem', { reason }) : null;
+  return reason ? t('startup.tasks.problem', { reason: problemReason(reason) }) : null;
 }

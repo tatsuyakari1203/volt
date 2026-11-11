@@ -182,16 +182,30 @@ fn end_result(report: &EndReport) -> EndAppResult {
     }
 }
 
+/// Why a group is never ended, as a phrase.
+pub(crate) fn protection_phrase(protection: volt_core::Protection) -> volt_core::Phrase {
+    volt_core::Phrase::new(match protection {
+        volt_core::Protection::Windows => "err.protection.windows",
+        volt_core::Protection::Volt => "err.protection.volt",
+    })
+}
+
 impl From<EndError> for IpcError {
     fn from(error: EndError) -> Self {
         match error {
-            EndError::Protected { .. } => Self::InvalidInput {
-                message: error.to_string(),
-            },
-            EndError::NotRunning(_) => Self::NotFound {
-                message: error.to_string(),
-            },
-            EndError::List(port) => port.into(),
+            EndError::Protected { name, protection } => Self::invalid(
+                &volt_core::Phrase::new("err.process.protected")
+                    .text("name", name)
+                    .phrase("protection", protection_phrase(protection)),
+            ),
+            EndError::NotRunning(name) => Self::not_found(
+                &volt_core::Phrase::new("err.process.notRunning").text("name", name),
+            ),
+            EndError::List(port) => crate::ipc::kinded(
+                &port,
+                &volt_core::Phrase::new("err.process.list")
+                    .phrase("class", volt_core::activity::error_class_phrase(&port)),
+            ),
         }
     }
 }

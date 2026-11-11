@@ -385,8 +385,10 @@ pub(crate) async fn panel_boost(app: AppHandle) -> Result<Option<PanelBoostLine>
     let worker = app.clone();
     let outcome = tauri::async_runtime::spawn_blocking(move || tray::boost_now(&worker))
         .await
-        .map_err(|error| IpcError::Other {
-            message: error.to_string(),
+        .map_err(|error| {
+            IpcError::other(
+                &volt_core::Phrase::new("err.backgroundTask").text("detail", error.to_string()),
+            )
         })?;
     Ok(outcome.map(|outcome| {
         let lang = language::current(&app.state::<AppState>());

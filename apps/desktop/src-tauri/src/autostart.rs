@@ -44,9 +44,7 @@ impl std::error::Error for AutostartError {}
 
 impl From<AutostartError> for IpcError {
     fn from(error: AutostartError) -> Self {
-        Self::Other {
-            message: error.to_string(),
-        }
+        Self::other(&volt_core::Phrase::new("err.autostart").text("detail", error.0))
     }
 }
 
@@ -222,9 +220,9 @@ mod tests {
         assert!(fake.calls.borrow().is_empty());
         assert_eq!(
             IpcError::from(error),
-            IpcError::Other {
-                message: "start with Windows: registry unavailable".into()
-            }
+            IpcError::other(
+                &volt_core::Phrase::new("err.autostart").text("detail", "registry unavailable")
+            )
         );
     }
 }

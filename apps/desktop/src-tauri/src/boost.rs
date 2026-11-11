@@ -340,6 +340,7 @@ mod tests {
         assert_eq!(tooltip_line(&Ok(unread), Lang::English), "Volt: Boost done");
         let error = IpcError::Other {
             message: "x".into(),
+            phrase: None,
         };
         assert_eq!(
             tooltip_line(&Err(error), Lang::English),
@@ -376,6 +377,7 @@ mod tests {
         assert!(!body.contains("freed"));
         let error = IpcError::Other {
             message: "x".into(),
+            phrase: None,
         };
         assert_eq!(
             notification_body(&Err(error), Lang::English),
@@ -414,6 +416,7 @@ mod tests {
         );
         let error = IpcError::Other {
             message: "x".into(),
+            phrase: None,
         };
         assert_eq!(
             tooltip_line(&Err(error), Lang::Vietnamese),

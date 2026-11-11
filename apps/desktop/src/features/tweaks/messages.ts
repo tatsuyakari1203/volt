@@ -1,6 +1,7 @@
-import { type MessageKey, t, tx } from '../../shared/i18n';
+import { type MessageKey, say, t, tx } from '../../shared/i18n';
 import type {
   ApplyResult,
+  PhraseView,
   RestartKind,
   RevertResult,
   TweakCategory,
@@ -54,8 +55,8 @@ function assertNever(value: never): never {
 }
 
 /** The reason a step failed, as the end of a sentence, with a space in front. */
-function reason(detail: string | null): string {
-  return detail ? ` ${t('tweaks.reason', { detail })}` : '';
+function reason(detail: string | null, phrase: PhraseView | null): string {
+  return detail ? ` ${t('tweaks.reason', { detail: say(phrase, detail) })}` : '';
 }
 
 /** Explains how an apply ended, in words a person can act on. */
@@ -72,13 +73,19 @@ export function describeApply(tweak: TweakInfo, result: ApplyResult): Outcome {
       return { message: t('tweaks.apply.alreadyOn', { title }), tone: 'done', undoable: false };
     case 'rolledBack':
       return {
-        message: t('tweaks.apply.rolledBack', { title, reason: reason(result.detail) }),
+        message: t('tweaks.apply.rolledBack', {
+          title,
+          reason: reason(result.detail, result.detailPhrase),
+        }),
         tone: 'problem',
         undoable: false,
       };
     case 'needsAttention':
       return {
-        message: t('tweaks.apply.needsAttention', { title, reason: reason(result.detail) }),
+        message: t('tweaks.apply.needsAttention', {
+          title,
+          reason: reason(result.detail, result.detailPhrase),
+        }),
         tone: 'problem',
         undoable: false,
       };
@@ -107,7 +114,7 @@ export function describeRevert(
           title,
           restored: result.restored,
           failed: result.failed,
-          reason: reason(result.detail),
+          reason: reason(result.detail, result.detailPhrase),
         }),
         tone: 'problem',
         undoable: false,
@@ -166,7 +173,10 @@ export function describeReset(tweak: TweakInfo, result: RevertResult): Outcome {
     return { message: t('tweaks.reset.off', { title }), tone: 'done', undoable: false };
   }
   return {
-    message: t('tweaks.reset.failed', { title, reason: reason(result.detail) }),
+    message: t('tweaks.reset.failed', {
+      title,
+      reason: reason(result.detail, result.detailPhrase),
+    }),
     tone: 'problem',
     undoable: false,
   };

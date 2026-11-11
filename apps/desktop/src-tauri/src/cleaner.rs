@@ -372,9 +372,7 @@ impl CleanSession {
 
     fn begin_scan(&self) -> Result<ScanGuard<'_>, IpcError> {
         if self.scanning.swap(true, Ordering::SeqCst) {
-            return Err(IpcError::InvalidInput {
-                message: "a scan is already running".to_owned(),
-            });
+            return Err(IpcError::invalid(&Phrase::new("err.scanRunning")));
         }
         self.cancel.store(false, Ordering::SeqCst);
         Ok(ScanGuard(self))
@@ -412,15 +410,13 @@ impl ScanObserver for Observer<'_> {
 }
 
 fn clean_engine(core: &AppCore) -> Result<&volt_core::CleanEngine, IpcError> {
-    core.clean_engine().ok_or_else(|| IpcError::Unsupported {
-        message: "the cleaner is not available in this build".to_owned(),
-    })
+    core.clean_engine()
+        .ok_or_else(|| IpcError::unsupported(&Phrase::new("err.cleanerUnavailable")))
 }
 
 fn recycle_bin(core: &AppCore) -> Result<&RecycleBinManager, IpcError> {
-    core.recycle_bin().ok_or_else(|| IpcError::Unsupported {
-        message: "the Recycle Bin is not available in this build".to_owned(),
-    })
+    core.recycle_bin()
+        .ok_or_else(|| IpcError::unsupported(&Phrase::new("err.binUnavailable")))
 }
 
 /// Lists the cleaning rules. Reads nothing from the file system.
@@ -595,9 +591,7 @@ pub fn scan_cleaning_rules(
 ) -> Result<CleanScanResult, IpcError> {
     clean_engine(core)?;
     if rule_ids.is_empty() {
-        return Err(IpcError::InvalidInput {
-            message: "no rule is chosen".to_owned(),
-        });
+        return Err(IpcError::invalid(&Phrase::new("err.noRule")));
     }
     scan_rules(core, rule_ids, continue_plan, on_progress)
 }
@@ -618,14 +612,12 @@ fn scan_rules(
     let plan = match engine.scan_observed(ids, &observer) {
         Ok(plan) => plan,
         Err(ScanError::UnknownRule(unknown)) => {
-            return Err(IpcError::InvalidInput {
-                message: unknown.to_string(),
-            });
+            return Err(IpcError::invalid(
+                &Phrase::new("err.unknownRule").text("id", unknown.0),
+            ));
         }
-        Err(error) => {
-            return Err(IpcError::Other {
-                message: error.to_string(),
-            });
+        Err(_) => {
+            return Err(IpcError::other(&Phrase::new("err.scanFailed")));
         }
     };
     if plan.cancelled && plan.rules.is_empty() {
@@ -744,41 +736,35 @@ pub fn clean_plan(
     let engine = clean_engine(core)?;
     let session = core.clean_session();
     if session.scanning.load(Ordering::SeqCst) {
-        return Err(IpcError::InvalidInput {
-            message: "a scan is running; wait for it to finish or cancel it".to_owned(),
-        });
+        return Err(IpcError::invalid(&Phrase::new("err.scanBusy")));
     }
     let confirmed = {
         let mut stored = session.plan();
         let plan = match stored.as_ref() {
             Some(stored) if stored.id == plan_id => &stored.plan,
             _ => {
-                return Err(IpcError::NotFound {
-                    message: "that scan is out of date; scan again before cleaning".to_owned(),
-                });
+                return Err(IpcError::not_found(&Phrase::new("err.scanStale")));
             }
         };
         if rule_ids.is_empty() {
-            return Err(IpcError::InvalidInput {
-                message: "no rule is chosen".to_owned(),
-            });
+            return Err(IpcError::invalid(&Phrase::new("err.noRule")));
         }
         for id in rule_ids {
             let Some(scan) = plan.rules.iter().find(|scan| &scan.rule_id == id) else {
-                return Err(IpcError::InvalidInput {
-                    message: format!("\"{id}\" is not part of this scan"),
-                });
+                return Err(IpcError::invalid(
+                    &Phrase::new("err.ruleNotInScan").text("id", id),
+                ));
             };
             if scan.requires_admin {
-                return Err(IpcError::AccessDenied {
-                    message: format!("\"{}\" needs administrator rights.", scan.title),
-                });
+                return Err(IpcError::access_denied(
+                    &Phrase::new("err.ruleNeedsAdmin").text("name", scan.title.clone()),
+                ));
             }
         }
         if let Some(pick) = picks.iter().find(|pick| !rule_ids.contains(&pick.rule_id)) {
-            return Err(IpcError::InvalidInput {
-                message: format!("\"{}\" has picked items but is not chosen", pick.rule_id),
-            });
+            return Err(IpcError::invalid(
+                &Phrase::new("err.itemsNotChosen").text("id", pick.rule_id.clone()),
+            ));
         }
         let selections: Vec<RuleSelection> = rule_ids
             .iter()
@@ -792,11 +778,9 @@ pub fn clean_plan(
                 }),
             })
             .collect();
-        let confirmed =
-            plan.confirm_selection(&selections)
-                .map_err(|error| IpcError::InvalidInput {
-                    message: selection_text(&error),
-                })?;
+        let confirmed = plan
+            .confirm_selection(&selections)
+            .map_err(|error| IpcError::invalid(&selection_phrase(&error)))?;
         *stored = None;
         confirmed
     };
@@ -804,24 +788,31 @@ pub fn clean_plan(
     Ok(run_view(core, &report))
 }
 
-fn selection_text(error: &SelectionError) -> String {
+fn selection_phrase(error: &SelectionError) -> Phrase {
     match error {
-        SelectionError::NothingPicked(_) => "choose at least one item to clean".to_owned(),
-        other => other.to_string(),
+        SelectionError::NotInPlan(id) => Phrase::new("err.ruleNotInScan").text("id", id),
+        SelectionError::NothingPicked(_) => Phrase::new("err.noItem"),
+        SelectionError::NotPickable(id) => Phrase::new("err.notPickable").text("id", id),
+        SelectionError::NoSuchItem(id, index) => Phrase::new("err.noSuchItem")
+            .text("id", id)
+            .count("index", *index),
+        // Anything added later.
+        _ => Phrase::new("err.scanStale"),
     }
 }
 
 /// Why a folder was refused, in words that name no folder.
 fn folder_error(error: &FolderError) -> IpcError {
-    let message = match error {
+    let phrase = match error {
         FolderError::UnknownRule(_) | FolderError::NotChoosable(_) => {
-            "this rule does not work in a folder you add".to_owned()
+            Phrase::new("err.folder.rule")
         }
-        FolderError::NoSettings => "the choice cannot be saved in this build".to_owned(),
-        FolderError::Settings(class) => format!("the choice could not be saved ({class})"),
-        _ => "this folder cannot be used".to_owned(),
+        FolderError::NoSettings => Phrase::new("err.folder.noSettings"),
+        FolderError::Settings(class) => Phrase::new("err.folder.settings")
+            .phrase("class", volt_core::phrase::class_phrase(class)),
+        _ => Phrase::new("err.folder.unusable"),
     };
-    IpcError::InvalidInput { message }
+    IpcError::invalid(&phrase)
 }
 
 /// Why a folder is not a place the rule may work in, or `None` when the error is not about the

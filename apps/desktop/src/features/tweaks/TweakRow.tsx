@@ -1,5 +1,5 @@
 import { ChevronDown, ChevronRight } from 'lucide-react';
-import { say, t } from '../../shared/i18n';
+import { say, sayCapitalised, t } from '../../shared/i18n';
 import type { TweakInfo, TweakPlanView, TweakStepView } from '../../shared/ipc';
 import { Badge, Button, ListRow, Switch } from '../../shared/ui';
 import { restartNote, tweakDescription, tweakEvidence, tweakTitle } from './messages';
@@ -52,7 +52,7 @@ function stateLine(tweak: TweakInfo, busy: Busy | undefined): string | null {
     case 'partial':
       return t('tweaks.row.partial');
     case 'unreadable':
-      return t('tweaks.row.unreadable', { message: state.message });
+      return t('tweaks.row.unreadable', { message: sayCapitalised(state.phrase, state.message) });
     default:
       return null;
   }

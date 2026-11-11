@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { setLocale } from '../i18n';
 import { commands } from './bindings';
 import {
   applyTweak,
@@ -83,6 +84,28 @@ describe('describeIpcError', () => {
     [{ kind: 'other', message: 'e' }, 'e'],
   ])('describes %j', (error, text) => {
     expect(describeIpcError(error)).toBe(text);
+  });
+});
+
+describe('describeIpcError with a phrase of the shell', () => {
+  const phrase = { code: 'err.scanRunning', args: {} };
+  const error: IpcError = {
+    kind: 'invalidInput',
+    message: 'a scan is already running',
+    phrase,
+  };
+
+  afterEach(() => setLocale('en'));
+
+  it('shows the English sentence of the shell, capitalised and without a prefix, in English', () => {
+    setLocale('en');
+    expect(describeIpcError(error)).toBe('A scan is already running');
+  });
+
+  it('falls back to the English sentence for a code the window does not know', () => {
+    setLocale('vi');
+    const unknown: IpcError = { ...error, phrase: { code: 'err.noSuchCode', args: {} } };
+    expect(describeIpcError(unknown)).toBe('A scan is already running');
   });
 });
 

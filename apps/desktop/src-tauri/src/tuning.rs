@@ -95,9 +95,9 @@ fn mask_of(cores: &[u32]) -> Result<u64, IpcError> {
         if *core < 64 {
             Ok(mask | (1 << core))
         } else {
-            Err(IpcError::InvalidInput {
-                message: format!("core {core} is out of range"),
-            })
+            Err(IpcError::invalid(
+                &volt_core::Phrase::new("err.coreRange").text("core", core.to_string()),
+            ))
         }
     })
 }
@@ -255,24 +255,46 @@ impl From<&RuleStatus> for RuleView {
 
 impl From<TuneError> for IpcError {
     fn from(error: TuneError) -> Self {
-        let message = error.to_string();
+        use volt_core::Phrase;
+        use volt_core::activity::{error_class_phrase, exec_phrase};
         match error {
-            TuneError::NotRunning(_) => Self::NotFound { message },
-            TuneError::Protected { .. }
-            | TuneError::Nothing
-            | TuneError::EmptyAffinity
-            | TuneError::UnknownCore
-            | TuneError::TooManyRules => Self::InvalidInput { message },
-            TuneError::List(port)
-            | TuneError::Rules(port)
-            | TuneError::Read(port)
-            | TuneError::Exec(
-                ExecError::Detect(port)
-                | ExecError::Journal(port)
-                | ExecError::MarkApplied(port)
-                | ExecError::Apply { error: port, .. },
-            ) => port.into(),
-            TuneError::Exec(_) => Self::Other { message },
+            TuneError::NotRunning(name) => {
+                Self::not_found(&Phrase::new("err.process.notRunning").text("name", name))
+            }
+            TuneError::Protected { name, protection } => Self::invalid(
+                &Phrase::new("err.tune.protected").text("name", name).phrase(
+                    "protection",
+                    crate::processes::protection_phrase(protection),
+                ),
+            ),
+            TuneError::Nothing => Self::invalid(&Phrase::new("err.tune.nothing")),
+            TuneError::EmptyAffinity => Self::invalid(&Phrase::new("err.tune.emptyAffinity")),
+            TuneError::UnknownCore => Self::invalid(&Phrase::new("err.tune.unknownCore")),
+            TuneError::TooManyRules => {
+                Self::invalid(&Phrase::new("err.tune.tooMany").count("count", volt_core::MAX_RULES))
+            }
+            TuneError::List(port) => crate::ipc::kinded(
+                &port,
+                &Phrase::new("err.process.list").phrase("class", error_class_phrase(&port)),
+            ),
+            TuneError::Rules(port) => crate::ipc::kinded(
+                &port,
+                &Phrase::new("err.tune.rules").phrase("class", error_class_phrase(&port)),
+            ),
+            TuneError::Read(port) => crate::ipc::kinded(
+                &port,
+                &Phrase::new("err.tune.read").phrase("class", error_class_phrase(&port)),
+            ),
+            TuneError::Exec(exec) => {
+                let phrase = Phrase::new("err.tune.exec").phrase("reason", exec_phrase(&exec));
+                match &exec {
+                    ExecError::Detect(port)
+                    | ExecError::Journal(port)
+                    | ExecError::MarkApplied(port)
+                    | ExecError::Apply { error: port, .. } => crate::ipc::kinded(port, &phrase),
+                    _ => Self::other(&phrase),
+                }
+            }
         }
     }
 }

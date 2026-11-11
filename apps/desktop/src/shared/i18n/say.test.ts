@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { describeIpcError } from '../ipc';
 import type { ArgView, PhraseView } from '../ipc/bindings';
 import { say, sayCapitalised } from './say';
 import { setLocale } from './translate';
@@ -102,6 +103,33 @@ describe('say for the last sentences the core wrote in English only', () => {
     expect(say(phrase('preview.text', { text: text('REG_DWORD 1') }), 'x')).toBe('REG_DWORD 1');
     expect(say(phrase('preview.command', { command: text('sc stop X') }), 'x')).toBe(
       'lệnh sc stop X',
+    );
+  });
+});
+
+describe('an error of the shell', () => {
+  it('is written as a whole sentence in Vietnamese from its phrase', () => {
+    setLocale('vi');
+    const error = {
+      kind: 'invalidInput' as const,
+      message: 'a scan is already running',
+      phrase: phrase('err.scanRunning'),
+    };
+    expect(describeIpcError(error)).toBe('Một lượt quét đang chạy');
+  });
+
+  it('names the tweak and the class of the failure in Vietnamese', () => {
+    setLocale('vi');
+    const error = {
+      kind: 'accessDenied' as const,
+      message: 'tweak `x`: cannot read the current state (access denied)',
+      phrase: phrase('err.tweak.detect', {
+        tweak: text('x'),
+        class: { kind: 'phrase', value: phrase('class.accessDenied') },
+      }),
+    };
+    expect(describeIpcError(error)).toBe(
+      'Tinh chỉnh `x`: không đọc được trạng thái hiện tại (bị từ chối truy cập)',
     );
   });
 });

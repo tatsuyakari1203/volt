@@ -259,8 +259,10 @@ pub(crate) async fn health_report(state: State<'_, AppState>) -> Result<HealthVi
     let startup_load = startup_load_of(&state);
     tauri::async_runtime::spawn_blocking(move || collect_real_report(startup_load))
         .await
-        .map_err(|error| IpcError::Other {
-            message: format!("the background task failed: {error}"),
+        .map_err(|error| {
+            IpcError::other(
+                &volt_core::Phrase::new("err.backgroundTask").text("detail", error.to_string()),
+            )
         })
 }
 
