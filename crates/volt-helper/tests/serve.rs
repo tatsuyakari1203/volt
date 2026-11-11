@@ -22,6 +22,10 @@ use volt_win::helper::identity::{ProcessIdentity, inspect_current};
 use volt_win::helper::pipe::PipeClient;
 
 const WAIT: Option<Duration> = Some(Duration::from_secs(5));
+/// "Ends at once" means well before the 60 s limits these tests set. The bound only proves the
+/// helper ended by its own rule and not by the limit, so it is far above what a busy machine
+/// needs: a tight bound here measures the machine, not the helper.
+const PROMPT: Duration = Duration::from_secs(30);
 
 fn me() -> ProcessIdentity {
     inspect_current().expect("own process").identity
@@ -226,7 +230,7 @@ fn the_helper_ends_when_the_bound_client_disconnects() {
     drop(client);
     let (report, elapsed) = helper.finish();
     assert_eq!(report.exit, ExitReason::ClientDisconnected);
-    assert!(elapsed < Duration::from_secs(5));
+    assert!(elapsed < PROMPT);
 }
 
 #[test]
@@ -236,7 +240,7 @@ fn the_helper_ends_after_the_idle_limit() {
     let (report, elapsed) = helper.finish();
     assert_eq!(report.exit, ExitReason::Idle);
     assert!(elapsed >= Duration::from_millis(250), "{elapsed:?}");
-    assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+    assert!(elapsed < PROMPT, "{elapsed:?}");
 
     // A client connects, says hello and then goes quiet.
     let helper = Running::start(me(), limits(400, 60_000));
@@ -245,7 +249,7 @@ fn the_helper_ends_after_the_idle_limit() {
     let (report, elapsed) = helper.finish();
     assert_eq!(report.exit, ExitReason::Idle);
     assert_eq!(report.served_requests, 1);
-    assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+    assert!(elapsed < PROMPT, "{elapsed:?}");
     drop(client);
 }
 
@@ -257,18 +261,18 @@ fn the_helper_ends_at_the_hard_cap_even_when_the_client_is_active() {
     let (report, elapsed) = helper.finish();
     assert_eq!(report.exit, ExitReason::HardCap);
     assert!(elapsed >= Duration::from_millis(500), "{elapsed:?}");
-    assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+    assert!(elapsed < PROMPT, "{elapsed:?}");
     drop(client);
 }
 
 #[test]
 fn refused_requests_never_extend_the_idle_clock() {
-    let helper = Running::start(me(), limits(800, 60_000));
+    let helper = Running::start(me(), limits(2_000, 60_000));
     let mut client = helper.connect();
     client.hello();
     // Refused (no areas) but not fatal: the connection stays. If these counted as activity the
-    // helper would live until about 700 + 800 ms; it must end at about 800 ms.
-    for pause in [400, 300] {
+    // helper would live until about 1800 + 2000 ms; it must end at about 2000 ms.
+    for pause in [1_000, 800] {
         thread::sleep(Duration::from_millis(pause));
         let reply = client.send(Request::MemoryPurge { areas: Vec::new() });
         assert_eq!(error_code(&reply), ErrorCode::InvalidRequest);
@@ -276,7 +280,7 @@ fn refused_requests_never_extend_the_idle_clock() {
     let (report, elapsed) = helper.finish();
     assert_eq!(report.exit, ExitReason::Idle);
     assert_eq!(report.served_requests, 1);
-    assert!(elapsed < Duration::from_millis(1250), "{elapsed:?}");
+    assert!(elapsed < Duration::from_millis(3_500), "{elapsed:?}");
     drop(client);
 }
 
@@ -377,7 +381,9 @@ fn the_helper_ends_when_the_bound_ui_never_connects() {
     let helper = Running::start(
         me(),
         Limits {
-            connect_deadline: Duration::from_millis(700),
+            // The stranger's probe is a new process; on a busy machine it can take a while to
+            // start, and the deadline must not pass before it has been refused.
+            connect_deadline: Duration::from_secs(4),
             ..limits(60_000, 60_000)
         },
     );
@@ -390,8 +396,8 @@ fn the_helper_ends_when_the_bound_ui_never_connects() {
     assert_eq!(report.exit, ExitReason::NoConnection);
     assert_eq!(report.refused_clients, 1);
     assert_eq!(report.served_requests, 0);
-    assert!(elapsed >= Duration::from_millis(600), "{elapsed:?}");
-    assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+    assert!(elapsed >= Duration::from_millis(3_900), "{elapsed:?}");
+    assert!(elapsed < PROMPT, "{elapsed:?}");
 }
 
 #[test]
@@ -432,5 +438,5 @@ fn the_helper_ends_at_once_when_the_bound_ui_process_exits() {
     child.wait().expect("reaped");
     let (report, elapsed) = helper.finish();
     assert_eq!(report.exit, ExitReason::UiExited);
-    assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+    assert!(elapsed < PROMPT, "{elapsed:?}");
 }
