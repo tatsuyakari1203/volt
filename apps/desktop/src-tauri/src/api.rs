@@ -1073,7 +1073,10 @@ fn unacknowledged(
     }))
 }
 
-fn undo_preview(core: &AppCore, applied: &[JournalEntry]) -> Result<UndoPreview, IpcError> {
+pub(crate) fn undo_preview(
+    core: &AppCore,
+    applied: &[JournalEntry],
+) -> Result<UndoPreview, IpcError> {
     let overwrites = overwrite_items(core, applied)?;
     let items = applied
         .iter()
@@ -1606,7 +1609,7 @@ fn count_outcomes(report: &TweakRevertReport) -> (u32, u32) {
     )
 }
 
-fn revert_failure_detail(report: &TweakRevertReport) -> Option<Phrase> {
+pub(crate) fn revert_failure_detail(report: &TweakRevertReport) -> Option<Phrase> {
     report
         .batches
         .iter()

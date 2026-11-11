@@ -636,6 +636,18 @@ pub const ENGLISH: &[(&str, &str)] = &[
     ("err.startupUnavailable", "the startup apps manager is not available in this build"),
     ("err.automationUnavailable", "automation is not available in this build"),
     ("err.automation.notAutomatic", "\"{name}\" cannot run on its own: it needs administrator rights or a choice of items or folder"),
+    ("err.profilesUnavailable", "profiles are not available in this build"),
+    ("err.profile.unknown", "there is no such profile"),
+    ("err.profile.name", "a profile needs a name of 1 to {max} characters"),
+    ("err.profile.tooMany", "at most {max} profiles are kept"),
+    ("err.profile.tooManyTweaks", "a profile holds at most {max} tweaks"),
+    ("err.profile.tweakUnknown", "this version of Volt has no tweak \"{id}\""),
+    ("err.profile.tweakAdmin", "the tweak \"{id}\" needs administrator rights, so a profile cannot include it"),
+    ("err.profile.tweakDuplicate", "the tweak \"{id}\" is listed twice"),
+    ("err.profile.trigger", "the app to watch must be an executable name such as game.exe"),
+    ("err.profile.automation", "a number in the automation settings of the profile is out of range"),
+    ("err.profile.nothingToUndo", "there is no profile switch to undo"),
+    ("err.profile.store", "the profiles could not be saved"),
     ("err.protection.windows", "needed by Windows"),
     ("err.protection.volt", "Volt itself"),
     ("err.process.protected", "{name} cannot be ended: it is {protection}"),
@@ -670,6 +682,19 @@ pub const ENGLISH: &[(&str, &str)] = &[
     ("automation.tooltip.clean", "Volt: scheduled clean done"),
     ("automation.notice.memory", "Memory cleaned automatically: available {before} to {after}."),
     ("automation.notice.clean", "Scheduled clean: {files} moved to the Recycle Bin."),
+    // Profiles: the history lines of a switch, the tooltip and notification after an automatic
+    // one, and how an imported file's profiles are described.
+    ("profile.switched", "Switched to profile \"{name}\""),
+    ("profile.deactivated", "Turned off profile \"{name}\""),
+    ("profile.switch.stopped", "Switching to profile \"{name}\" stopped part-way"),
+    ("profile.switch.undone", "Undid the switch to profile \"{name}\""),
+    ("profile.switch.undoStopped", "Undoing the switch to profile \"{name}\" stopped part-way"),
+    ("profile.tooltip.activated", "Volt: profile {name} is on"),
+    ("profile.tooltip.returned", "Volt: profile {name} is off"),
+    ("profile.notice.activated", "Profile \"{name}\" was switched on because its app started."),
+    ("profile.notice.returned", "Profile \"{name}\" was switched off because its app exited."),
+    ("transfer.profiles.one", "Adds or replaces {count} profile: {names}"),
+    ("transfer.profiles.other", "Adds or replaces {count} profiles: {names}"),
 ];
 
 #[cfg(test)]

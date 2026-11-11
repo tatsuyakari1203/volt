@@ -15,7 +15,7 @@ use super::definition::{Tweak, TweakStep};
 use crate::activity::ActivityLog;
 use crate::error::{ExecError, PlanError, PortError, RevertError};
 use crate::executor::{ApplyReport, Executor, RevertReport};
-use crate::journal::{BatchId, EntryState, Journal, Source};
+use crate::journal::{BatchId, EntryState, Journal, JournalEntry, Source};
 use crate::operation::Operation;
 use crate::plan::{OperationRequest, Plan, Preview};
 use crate::ports::Ports;
@@ -348,6 +348,32 @@ impl TweakEngine {
             }
         }
         Ok(false)
+    }
+
+    /// The journal entries of this tweak that are still applied, newest first: what
+    /// [`TweakEngine::revert`] would put back. Read-only.
+    pub fn applied_entries(&self, id: &str) -> Result<Vec<JournalEntry>, TweakError> {
+        let tweak = self.tweak(id)?;
+        let journal_error = |error| TweakError::Journal {
+            tweak: tweak.id.clone(),
+            error,
+        };
+        let mut found = Vec::new();
+        for batch in self
+            .journal
+            .batches_with_label(&tweak.id)
+            .map_err(journal_error)?
+        {
+            found.extend(
+                self.journal
+                    .batch_entries(batch)
+                    .map_err(journal_error)?
+                    .into_iter()
+                    .filter(|entry| entry.state == EntryState::Applied),
+            );
+        }
+        found.reverse();
+        Ok(found)
     }
 
     /// The tweaks Volt applied (the undo journal holds a change that is still applied) whose live

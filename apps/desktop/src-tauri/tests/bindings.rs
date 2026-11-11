@@ -70,6 +70,28 @@ fn generated_bindings_describe_automation_its_bounds_and_the_run_event() {
 }
 
 #[test]
+fn generated_bindings_describe_profiles_their_preview_and_the_update_event() {
+    let text = generated_bindings();
+    for name in [
+        "listProfiles",
+        "saveProfile",
+        "deleteProfile",
+        "previewProfileSwitch",
+        "switchProfile",
+        "undoProfileSwitch",
+        "profilesUpdated",
+        "export type ProfileView",
+        "export type SwitchPreviewView",
+        "export type SwitchResultView",
+        "lastSwitch",
+        "returnOnExit",
+        "notAppliedByVolt",
+    ] {
+        assert!(text.contains(name), "{name} missing in {text}");
+    }
+}
+
+#[test]
 fn generated_bindings_describe_live_metrics_with_optional_gpu_values() {
     let text = generated_bindings();
     assert!(text.contains("latestMetrics"), "{text}");

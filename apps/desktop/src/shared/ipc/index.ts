@@ -55,12 +55,16 @@ import {
   type MetricsView,
   type PanelBoostLine,
   type ProcessListView,
+  type ProfilesView,
+  type ProfileView,
   type RecycleBinView,
   type Result,
   type RevertResult,
   type RuleView,
   type StartupChangeResult,
   type StartupList,
+  type SwitchPreviewView,
+  type SwitchResultView,
   type SystemProtectionView,
   type TidyItemKind,
   type TidyProgressEvent,
@@ -89,12 +93,16 @@ export type {
   AppProblemView,
   AppReady,
   AppSourceView,
+  AppTriggerView,
   AppView,
   AreaResult,
   AreaStatus,
   ArgView,
+  AutomationChangeView,
   AutomationConfigView,
+  AutomationStatusKind,
   AutomationStatusView,
+  AutoSkipView,
   BoostConfigView,
   BoostResult,
   BrokenShortcutView,
@@ -149,6 +157,7 @@ export type {
   LargeFilesResult,
   LargeFilesTrashResult,
   LargeFileView,
+  LeftOutView,
   LeftoverKindView,
   LeftoverRemovalView,
   LeftoverRemovedView,
@@ -164,6 +173,7 @@ export type {
   MemoryView,
   MetricsView,
   MovedToBinView,
+  NotIncludedView,
   OperationState,
   PanelBoostLine,
   PhraseView,
@@ -171,6 +181,10 @@ export type {
   ProcessEndView,
   ProcessGroupView,
   ProcessListView,
+  ProfileAutomationView,
+  ProfilesView,
+  ProfileTweakView,
+  ProfileView,
   RecycleBinView,
   RestartKind,
   RevertResult,
@@ -197,6 +211,13 @@ export type {
   StartupProblemView,
   StartupProtectionView,
   StartupSource,
+  StepStatusView,
+  SwitchActionView,
+  SwitchItemView,
+  SwitchPreviewView,
+  SwitchRecordView,
+  SwitchResultView,
+  SwitchStepView,
   SystemProtectionView,
   TidyItemKind,
   TidyLists,
@@ -211,6 +232,7 @@ export type {
   TweakImportView,
   TweakInfo,
   TweakPlanView,
+  TweakRefView,
   TweakStateView,
   TweakStepView,
   UndoFailure,
@@ -389,6 +411,41 @@ export function onAutomationUpdated(
   handler: (status: AutomationStatusView) => void,
 ): Promise<() => void> {
   return events.automationUpdated.listen((event) => handler(event.payload));
+}
+
+/** The profiles (the built-in suggestions until the user saves), which one is active and the last switch. */
+export async function listProfiles(): Promise<ProfilesView> {
+  return call(() => commands.listProfiles());
+}
+
+/** Saves a profile (an empty id makes a new one) and resolves with the list. Bad input rejects. */
+export async function saveProfile(profile: ProfileView): Promise<ProfilesView> {
+  return call(() => commands.saveProfile(profile));
+}
+
+/** Removes a profile. What it applied stays applied. */
+export async function deleteProfile(id: string): Promise<ProfilesView> {
+  return call(() => commands.deleteProfile(id));
+}
+
+/** Exactly what switching to a profile (`null`: turning the active one off) would change. Reads only. */
+export async function previewProfileSwitch(id: string | null): Promise<SwitchPreviewView> {
+  return call(() => commands.previewProfileSwitch(id));
+}
+
+/** Switches profile, each change through the undo journal. A switch that stops part-way is a result. */
+export async function switchProfile(id: string | null): Promise<SwitchResultView> {
+  return call(() => commands.switchProfile(id));
+}
+
+/** Puts the last profile switch back as one action. */
+export async function undoProfileSwitch(): Promise<SwitchResultView> {
+  return call(() => commands.undoProfileSwitch());
+}
+
+/** Calls `handler` with the new state after an automatic switch. Returns the unlisten function. */
+export function onProfilesUpdated(handler: (view: ProfilesView) => void): Promise<() => void> {
+  return events.profilesUpdated.listen((event) => handler(event.payload));
 }
 
 /** Every tweak of the catalogue with its state read live from the system. */

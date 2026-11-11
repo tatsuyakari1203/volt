@@ -142,7 +142,7 @@ fn millis(at: Timestamp) -> f64 {
 }
 
 impl PauseView {
-    fn from_core(reason: PauseReason) -> Self {
+    pub(crate) fn from_core(reason: PauseReason) -> Self {
         match reason {
             PauseReason::Fullscreen => Self::Fullscreen,
             PauseReason::BatterySaver => Self::BatterySaver,
@@ -151,50 +151,70 @@ impl PauseView {
     }
 }
 
-impl AutomationConfigView {
-    fn from_core(config: &AutomationConfig) -> Self {
+impl MemoryRuleView {
+    pub(crate) fn from_core(rule: &MemoryRule) -> Self {
         Self {
-            memory: MemoryRuleView {
-                enabled: config.memory.enabled,
-                standby_above_mb: config.memory.standby_above_mb,
-                free_below_mb: config.memory.free_below_mb,
-                cooldown_minutes: config.memory.cooldown_minutes,
+            enabled: rule.enabled,
+            standby_above_mb: rule.standby_above_mb,
+            free_below_mb: rule.free_below_mb,
+            cooldown_minutes: rule.cooldown_minutes,
+        }
+    }
+
+    pub(crate) fn to_core(&self) -> MemoryRule {
+        MemoryRule {
+            enabled: self.enabled,
+            standby_above_mb: self.standby_above_mb,
+            free_below_mb: self.free_below_mb,
+            cooldown_minutes: self.cooldown_minutes,
+        }
+    }
+}
+
+impl ScheduleView {
+    pub(crate) fn from_core(schedule: &Schedule) -> Self {
+        Self {
+            enabled: schedule.enabled,
+            frequency: match schedule.frequency {
+                Frequency::Daily => FrequencyView::Daily,
+                Frequency::Weekly => FrequencyView::Weekly,
             },
-            cleaning: ScheduleView {
-                enabled: config.cleaning.enabled,
-                frequency: match config.cleaning.frequency {
-                    Frequency::Daily => FrequencyView::Daily,
-                    Frequency::Weekly => FrequencyView::Weekly,
-                },
-                weekday: u32::from(config.cleaning.weekday),
-                minute_of_day: u32::from(config.cleaning.minute_of_day),
-                rule_ids: config.cleaning.rule_ids.clone(),
-            },
-            notify: config.notify,
+            weekday: u32::from(schedule.weekday),
+            minute_of_day: u32::from(schedule.minute_of_day),
+            rule_ids: schedule.rule_ids.clone(),
         }
     }
 
     /// The core form. A number that does not fit becomes the largest value, which the core's
     /// bounds then refuse.
-    fn to_core(&self) -> AutomationConfig {
+    pub(crate) fn to_core(&self) -> Schedule {
         let narrow = |value: u32| u16::try_from(value).unwrap_or(u16::MAX);
+        Schedule {
+            enabled: self.enabled,
+            frequency: match self.frequency {
+                FrequencyView::Daily => Frequency::Daily,
+                FrequencyView::Weekly => Frequency::Weekly,
+            },
+            weekday: u8::try_from(self.weekday).unwrap_or(u8::MAX),
+            minute_of_day: narrow(self.minute_of_day),
+            rule_ids: self.rule_ids.clone(),
+        }
+    }
+}
+
+impl AutomationConfigView {
+    pub(crate) fn from_core(config: &AutomationConfig) -> Self {
+        Self {
+            memory: MemoryRuleView::from_core(&config.memory),
+            cleaning: ScheduleView::from_core(&config.cleaning),
+            notify: config.notify,
+        }
+    }
+
+    fn to_core(&self) -> AutomationConfig {
         AutomationConfig {
-            memory: MemoryRule {
-                enabled: self.memory.enabled,
-                standby_above_mb: self.memory.standby_above_mb,
-                free_below_mb: self.memory.free_below_mb,
-                cooldown_minutes: self.memory.cooldown_minutes,
-            },
-            cleaning: Schedule {
-                enabled: self.cleaning.enabled,
-                frequency: match self.cleaning.frequency {
-                    FrequencyView::Daily => Frequency::Daily,
-                    FrequencyView::Weekly => Frequency::Weekly,
-                },
-                weekday: u8::try_from(self.cleaning.weekday).unwrap_or(u8::MAX),
-                minute_of_day: narrow(self.cleaning.minute_of_day),
-                rule_ids: self.cleaning.rule_ids.clone(),
-            },
+            memory: self.memory.to_core(),
+            cleaning: self.cleaning.to_core(),
             notify: self.notify,
         }
     }

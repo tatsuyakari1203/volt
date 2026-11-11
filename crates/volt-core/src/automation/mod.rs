@@ -651,6 +651,14 @@ impl Automation {
         }
     }
 
+    /// The pause that is on right now (a fullscreen app or a presentation, battery saver, or a
+    /// clean by hand a moment ago), if any. Profiles use the same rule before an automatic
+    /// switch.
+    #[must_use]
+    pub fn pause_now(&self, clean: Option<&CleanEngine>) -> Option<PauseReason> {
+        current_pause(self.clock.now(), MANUAL_PAUSE_MS, &self.probes(None, clean))
+    }
+
     fn probes<'a>(
         &'a self,
         memory: Option<&'a MemoryCleaner>,
