@@ -218,6 +218,7 @@ fn run(out: &Path) -> u8 {
             real_session(&mut report);
             bound_client_only(&mut report, &image, &me);
             negative_cases(&mut report, &image, &me);
+            abandoned_helper(&mut report, &image, &me);
         }
         Err(error) => report.check("identify the harness process", false, error),
     }
@@ -645,6 +646,29 @@ fn negative_cases(report: &mut Report, image: &Path, me: &ProcessFacts) {
     drop(wrong);
 
     writable_folder(report, image, &helper, &good);
+}
+
+/// A helper whose UI never connects ends by itself after its connection deadline (about 30 s)
+/// instead of waiting for the idle limit. The harness stays alive, so this is the deadline and not
+/// the end of the bound process.
+fn abandoned_helper(report: &mut Report, image: &Path, me: &ProcessFacts) {
+    let helper = image.with_file_name(HELPER_IMAGE_NAME);
+    let started = Instant::now();
+    let exit_code = exit_code_within(&helper, &valid_args(me), Duration::from_secs(60));
+    let elapsed = started.elapsed();
+    report.check(
+        "a helper whose UI never connects ends by itself near the connection deadline",
+        exit_code == Ok(Some(0))
+            && elapsed >= Duration::from_secs(25)
+            && elapsed < Duration::from_secs(50),
+        format!("exit {exit_code:?} after {}", millis(elapsed)),
+    );
+}
+
+/// Starts `image` with `args` and waits up to `limit` for its exit code.
+fn exit_code_within(image: &Path, args: &[String], limit: Duration) -> Result<Option<u32>, String> {
+    let process = ci::launch(image, args)?;
+    Ok(ci::wait_exit_code(&process, limit))
 }
 
 fn icacls(args: &[&str]) -> Result<(), String> {

@@ -8,6 +8,7 @@ pub mod boost;
 pub mod catalogue;
 pub mod cleaner;
 mod commands;
+pub mod elevated_start;
 pub mod elevation;
 pub mod health;
 mod ipc;
@@ -77,6 +78,11 @@ fn app_info() -> Result<AppInfo, IpcError> {
 /// If the Tauri runtime fails to start there is no UI to report to, so the error goes to
 /// stderr and the process exits with a non-zero code.
 pub fn run() {
+    // Before any window, WebView or plugin exists: an elevated UI is never started (see
+    // `elevated_start`).
+    if !elevated_start::allow_start() {
+        std::process::exit(1);
+    }
     let bindings = bindings_builder();
     let built = tauri::Builder::default()
         // Must come first: a second launch is handled before anything else starts.
