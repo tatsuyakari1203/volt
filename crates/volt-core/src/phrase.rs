@@ -398,7 +398,7 @@ pub const ENGLISH: &[(&str, &str)] = &[
     // Removing an installed app.
     ("summary.uninstall.removed", "Uninstalled {name} (cannot be undone by Volt)"),
     ("summary.uninstall.stillInstalled", "Ran the uninstaller for {name}; it is still installed"),
-    ("summary.uninstall.unknown", "Ran the uninstaller for {name}; Volt could not check whether it was removed"),
+    ("summary.uninstall.unknown", "Ran the uninstaller for {name}; Volt could not check whether it was removed (cannot be undone by Volt)"),
     ("summary.uninstall.failed", "Could not uninstall {name}: {reason}"),
     // Health reasons.
     ("health.disk", "{free} of {total} is free on {mount} ({share}%). Windows needs room to install updates and to move memory to disk."),

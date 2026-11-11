@@ -261,6 +261,7 @@ pub fn bindings_builder() -> Builder<tauri::Wry> {
             crate::processes::end_app,
             crate::apps::list_apps,
             crate::apps::uninstall_app,
+            crate::apps::stop_waiting_for_uninstaller,
             crate::boost::boost,
             crate::boost::boost_config,
             crate::boost::set_boost_config,

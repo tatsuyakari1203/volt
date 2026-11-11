@@ -3,7 +3,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use super::{PackagedApp, PackagedApps, UninstallCommand, Uninstaller};
+use super::{
+    PackagedApp, PackagedApps, StopWaiting, UninstallCommand, Uninstaller, UninstallerExit, Waited,
+};
 use crate::error::PortError;
 use crate::fakes::FakeRegistry;
 use crate::registry::{Registry, RegistryKeyRef};
@@ -22,6 +24,8 @@ pub struct FakeUninstaller {
     removes: Mutex<HashMap<String, (Arc<FakeRegistry>, RegistryKeyRef)>>,
     failures: Mutex<HashMap<String, PortError>>,
     exit_codes: Mutex<HashMap<String, i32>>,
+    waited: Mutex<HashMap<String, Waited>>,
+    until_stopped: Mutex<Vec<String>>,
 }
 
 impl FakeUninstaller {
@@ -51,6 +55,17 @@ impl FakeUninstaller {
         lock(&self.exit_codes).insert(program.to_lowercase(), code);
     }
 
+    /// Makes `program` report that the wait reached only as far as `waited`.
+    pub fn waited_as(&self, program: &str, waited: Waited) {
+        lock(&self.waited).insert(program.to_lowercase(), waited);
+    }
+
+    /// Makes `program` keep running until the wait is stopped, as an uninstaller the user gives up
+    /// on does.
+    pub fn runs_until_stopped(&self, program: &str) {
+        lock(&self.until_stopped).push(program.to_lowercase());
+    }
+
     /// Every command that was run, in order.
     #[must_use]
     pub fn runs(&self) -> Vec<UninstallCommand> {
@@ -59,7 +74,11 @@ impl FakeUninstaller {
 }
 
 impl Uninstaller for FakeUninstaller {
-    fn run(&self, command: &UninstallCommand) -> Result<Option<i32>, PortError> {
+    fn run(
+        &self,
+        command: &UninstallCommand,
+        stop: &StopWaiting,
+    ) -> Result<UninstallerExit, PortError> {
         let program = command.program().to_lowercase();
         if let Some(error) = lock(&self.failures).get(&program) {
             return Err(error.clone());
@@ -68,9 +87,22 @@ impl Uninstaller for FakeUninstaller {
         if let Some((registry, key)) = lock(&self.removes).get(&program) {
             let _ = registry.delete_key(key);
         }
-        Ok(Some(
-            lock(&self.exit_codes).get(&program).copied().unwrap_or(0),
-        ))
+        if lock(&self.until_stopped).contains(&program) {
+            while !stop.is_requested() {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            return Ok(UninstallerExit {
+                exit_code: None,
+                waited: Waited::Stopped,
+            });
+        }
+        Ok(UninstallerExit {
+            exit_code: Some(lock(&self.exit_codes).get(&program).copied().unwrap_or(0)),
+            waited: lock(&self.waited)
+                .get(&program)
+                .copied()
+                .unwrap_or(Waited::Everything),
+        })
     }
 }
 

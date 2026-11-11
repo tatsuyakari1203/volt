@@ -43,15 +43,18 @@ function statusText(item: QueueItem): string {
 export interface QueuePanelProps {
   queue: Queue;
   onStop: () => void;
+  onStopWaiting: () => void;
   onDone: () => void;
 }
 
 /**
  * The uninstall queue while it runs and after it ended: each app with what is happening to it or
- * how it ended, and Stop (which ends the queue after the app that is running) or Done.
+ * how it ended, and while it runs two ways out: stop waiting for the uninstaller that is running
+ * (the queue goes on with the next app) or stop after it (the rest is skipped); then Done.
  */
-export function QueuePanel({ queue, onStop, onDone }: QueuePanelProps) {
+export function QueuePanel({ queue, onStop, onStopWaiting, onDone }: QueuePanelProps) {
   const counts = tally(queue.items);
+  const waiting = queue.items.some((item) => item.status === 'running');
   return (
     <Card
       as="section"
@@ -85,8 +88,14 @@ export function QueuePanel({ queue, onStop, onDone }: QueuePanelProps) {
           </li>
         ))}
       </ul>
+      <p className="text-caption text-muted">{t('apps.noUndo')}</p>
       {queue.running ? (
-        <div className="flex justify-end">
+        <div className="flex flex-wrap justify-end gap-2">
+          {waiting ? (
+            <Button size="sm" disabled={queue.waitStopped} onClick={onStopWaiting}>
+              {queue.waitStopped ? t('apps.queue.waitStopped') : t('apps.queue.stopWaiting')}
+            </Button>
+          ) : null}
           <Button size="sm" disabled={queue.stopping} onClick={onStop}>
             {queue.stopping ? t('apps.queue.stopping') : t('apps.queue.stop')}
           </Button>

@@ -5,7 +5,9 @@
 //! the work off the main thread. The UI sends back only an app id from the list, never a command:
 //! the core looks the id up in a fresh reading and starts what the registry holds. The queue
 //! (one app after another, with a Cancel) is the UI's: each `uninstall_app` call waits for its
-//! uninstaller, so the UI can run them in turn.
+//! uninstaller and every process it started, so the UI can run them in turn, and
+//! `stop_waiting_for_uninstaller` ends that wait by hand. The queue lives in the window: closing
+//! the window ends it after the removal that is running (see the page for what it tells the user).
 //!
 //! Byte counts cross as `f64` (see [`crate::metrics`]) and dates as `YYYY-MM-DD` text.
 
@@ -253,6 +255,13 @@ pub fn uninstall_app_of(
     Ok(result_view(&report))
 }
 
+/// Ends the wait for the uninstaller that is running, if any. The uninstaller itself keeps
+/// running; the running `uninstall_app` call returns with what the list shows.
+pub fn stop_waiting_of(core: &AppCore) -> Result<(), IpcError> {
+    core.apps()?.stop_waiting();
+    Ok(())
+}
+
 /// Tauri command: the installed apps with size, publisher and install date. Reads the system
 /// only.
 #[tauri::command]
@@ -262,7 +271,7 @@ pub(crate) async fn list_apps(state: tauri::State<'_, AppState>) -> Result<AppLi
 }
 
 /// Tauri command: removes one app by running the vendor's own registered uninstaller (or asking
-/// Windows to remove a packaged app) and waits for it. This cannot be undone by Volt, so it is
+/// Windows to remove a packaged app) and waits for it and every process it started. This cannot be undone by Volt, so it is
 /// recorded in the activity log but not in the undo journal. The UI asks first.
 #[tauri::command]
 #[specta::specta]
@@ -275,4 +284,14 @@ pub(crate) async fn uninstall_app(
         uninstall_app_of(core, &id, include_system)
     })
     .await
+}
+
+/// Tauri command: stops waiting for the uninstaller that `uninstall_app` is waiting for. Nothing
+/// is closed or killed; the uninstaller keeps running and the app is reported from the list.
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn stop_waiting_for_uninstaller(
+    state: tauri::State<'_, AppState>,
+) -> Result<(), IpcError> {
+    blocking(&state, stop_waiting_of).await
 }

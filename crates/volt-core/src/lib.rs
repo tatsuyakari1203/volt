@@ -97,8 +97,9 @@ pub use activity::{
 };
 pub use apps::{
     AppDate, AppListing, AppLocation, AppManager, AppProblem, AppSource, CommandRefusal,
-    HiddenReason, InstalledApp, OwnInstall, PackagedApp, PackagedApps, UNINSTALL_LABEL,
-    UninstallCommand, UninstallError, UninstallOutcome, UninstallReport, Uninstaller,
+    HiddenReason, InstalledApp, OwnInstall, PackagedApp, PackagedApps, StopWaiting,
+    UNINSTALL_LABEL, UninstallCommand, UninstallError, UninstallOutcome, UninstallReport,
+    Uninstaller, UninstallerExit, Waited,
 };
 pub use boost::{
     BOOST_SETTINGS_KEY, BOOST_TEMP_RULE_ID, BoostConfig, BoostReport, JunkFound, SkippedOperation,

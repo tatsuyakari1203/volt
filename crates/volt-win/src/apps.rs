@@ -4,17 +4,35 @@
 //! [`WinPackagedApps`] lists the current user's packages through the `WinRT` package manager (no
 //! `PowerShell`) and removes one for the current user only. [`WinUninstaller`] starts the command an
 //! app registered, exactly as registered, through `ShellExecuteExW` (so a program that asks for
-//! administrator rights shows Windows' own prompt) and waits for the process to exit. Neither
-//! runs a shell, and neither builds a command from anything but what the core passes in.
+//! administrator rights shows Windows' own prompt) and waits for the process, and everything it
+//! started, to exit. Neither runs a shell, and neither builds a command from anything but what
+//! the core passes in.
+//!
+//! Many uninstallers (Inno Setup, NSIS) copy themselves to a temporary folder, start the copy and
+//! exit. `ShellExecuteExW` cannot start a process suspended, so the process is put into a job
+//! object right after it is created, and the wait ends when the job has no active process left.
+//! The job never kills anything. A process that asks for elevation is started by Windows' own
+//! elevation service, and an unelevated Volt may not add it to a job: the wait then covers only
+//! that process and says so ([`Waited::FirstProcess`]), and the core waits for the app's registry
+//! entry to disappear instead.
 
 use std::path::{Component, Path, PathBuf};
 
-use volt_core::{PackagedApp, PackagedApps, PortError, UninstallCommand, Uninstaller};
+use std::time::Duration;
+
+use volt_core::{
+    PackagedApp, PackagedApps, PortError, StopWaiting, UninstallCommand, Uninstaller,
+    UninstallerExit, Waited,
+};
 use windows::ApplicationModel::{Package, PackageSignatureKind};
 use windows::Management::Deployment::PackageManager;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, RPC_E_CHANGED_MODE, WAIT_OBJECT_0};
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
-use windows::Win32::System::Threading::{GetExitCodeProcess, INFINITE, WaitForSingleObject};
+use windows::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+    JobObjectBasicAccountingInformation, QueryInformationJobObject,
+};
+use windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
 use windows::Win32::UI::Shell::{
     SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
     ShellExecuteExW,
@@ -201,7 +219,11 @@ fn resolve_program(
 }
 
 impl Uninstaller for WinUninstaller {
-    fn run(&self, command: &UninstallCommand) -> Result<Option<i32>, PortError> {
+    fn run(
+        &self,
+        command: &UninstallCommand,
+        stop: &StopWaiting,
+    ) -> Result<UninstallerExit, PortError> {
         let system_folder = std::env::var_os("SystemRoot")
             .map(|root| Path::new(&root).join("System32"))
             .ok_or_else(|| PortError::NotFound("the Windows folder".to_owned()))?;
@@ -234,7 +256,7 @@ impl Uninstaller for WinUninstaller {
         // returns is owned by this function and closed below.
         unsafe { ShellExecuteExW(&raw mut info) }
             .map_err(|error| winrt_error(&error, "starting the uninstaller"))?;
-        wait_for_exit(info.hProcess)
+        wait_for_everything(info.hProcess, stop)
     }
 }
 
@@ -251,26 +273,112 @@ impl Drop for Process {
     }
 }
 
-/// Waits for the process to exit and returns its exit code. An invalid handle (Windows handed the
-/// file to a process that was already running) cannot be waited for.
-fn wait_for_exit(process: HANDLE) -> Result<Option<i32>, PortError> {
+/// How often the wait looks at the job and at the stop request.
+const WAIT_SLICE_MS: u32 = 200;
+
+/// An unnamed job object that only counts: it never limits or kills what is inside.
+struct Job(HANDLE);
+
+impl Job {
+    /// A job holding `process`, or `None` when the job could not be made or the process could not
+    /// be added (for example an elevated process).
+    fn holding(process: HANDLE) -> Option<Self> {
+        // SAFETY: null attributes and name create an unnamed job with default security.
+        let handle = unsafe { CreateJobObjectW(None, PCWSTR::null()) }.ok()?;
+        let job = Self(handle);
+        // SAFETY: both handles are live: the job is owned by `job` and the process handle is
+        // owned by the caller for the whole call.
+        unsafe { AssignProcessToJobObject(job.0, process) }.ok()?;
+        Some(job)
+    }
+
+    /// How many processes in the job have not exited. `None` when it cannot be read.
+    fn active(&self) -> Option<u32> {
+        let mut info = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+        // SAFETY: `info` is a live, writable accounting structure and the size passed is its
+        // size; the handle is a live job object owned by `self`.
+        unsafe {
+            QueryInformationJobObject(
+                Some(self.0),
+                JobObjectBasicAccountingInformation,
+                (&raw mut info).cast(),
+                u32::try_from(size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>()).unwrap_or(0),
+                None,
+            )
+        }
+        .ok()?;
+        Some(info.ActiveProcesses)
+    }
+}
+
+impl Drop for Job {
+    fn drop(&mut self) {
+        // SAFETY: the handle came from `CreateJobObjectW`, is owned by this value and is closed
+        // once, here. The job has no kill-on-close limit, so nothing in it is touched.
+        unsafe {
+            let _ = CloseHandle(self.0);
+        }
+    }
+}
+
+/// Waits for the process and every process it started, or until `stop` is requested. An invalid
+/// handle (Windows handed the file to a process that was already running) cannot be waited for.
+fn wait_for_everything(process: HANDLE, stop: &StopWaiting) -> Result<UninstallerExit, PortError> {
     if process.is_invalid() {
-        return Ok(None);
+        return Ok(UninstallerExit {
+            exit_code: None,
+            waited: Waited::FirstProcess,
+        });
     }
     let process = Process(process);
-    // SAFETY: `process.0` is a valid process handle owned by `process` for the whole call.
-    let waited = unsafe { WaitForSingleObject(process.0, INFINITE) };
-    if waited != WAIT_OBJECT_0 {
-        return Err(PortError::Other(
-            "waiting for the uninstaller failed".to_owned(),
-        ));
+    let job = Job::holding(process.0);
+    let mut exit_code = None;
+    loop {
+        if exit_code.is_none() {
+            // SAFETY: `process.0` is a valid process handle owned by `process`.
+            let waited = unsafe { WaitForSingleObject(process.0, 0) };
+            if waited == WAIT_OBJECT_0 {
+                exit_code = Some(read_exit_code(&process)?);
+            }
+        }
+        if let Some(code) = exit_code {
+            // The process is done. With a job, the wait covers its children too; without one,
+            // the first process is all that can be followed.
+            match job.as_ref().map(Job::active) {
+                Some(Some(0)) => return Ok(UninstallerExit::complete(Some(code))),
+                Some(Some(_)) => {}
+                Some(None) | None => {
+                    return Ok(UninstallerExit {
+                        exit_code: Some(code),
+                        waited: Waited::FirstProcess,
+                    });
+                }
+            }
+        }
+        if stop.is_requested() {
+            return Ok(UninstallerExit {
+                exit_code,
+                waited: Waited::Stopped,
+            });
+        }
+        if exit_code.is_none() {
+            // SAFETY: as above; wakes at once when the process exits.
+            unsafe { WaitForSingleObject(process.0, WAIT_SLICE_MS) };
+        } else {
+            std::thread::sleep(Duration::from_millis(u64::from(WAIT_SLICE_MS)));
+        }
     }
+}
+
+/// The exit code of a process that has exited.
+fn read_exit_code(process: &Process) -> Result<i32, PortError> {
     let mut code = 0_u32;
     // SAFETY: the handle is valid and `code` is a live, writable u32.
     unsafe { GetExitCodeProcess(process.0, &raw mut code) }
         .map_err(|error| winrt_error(&error, "reading the uninstaller's exit code"))?;
-    Ok(Some(code.cast_signed()))
+    Ok(code.cast_signed())
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,7 +438,47 @@ mod tests {
     #[test]
     fn a_started_program_is_waited_for_and_its_exit_code_returned() {
         let command = UninstallCommand::parse("cmd.exe /c exit 3").expect("accepted");
-        assert_eq!(WinUninstaller::new().run(&command), Ok(Some(3)));
+        let exit = WinUninstaller::new()
+            .run(&command, &StopWaiting::new())
+            .expect("runs");
+        assert_eq!(exit.exit_code, Some(3));
+        println!("quick program waited: {:?}", exit.waited);
+    }
+
+    /// A harmless system helper that starts a child and exits at once, the way a self-copying
+    /// uninstaller does: the wait must last as long as the child (about three seconds).
+    #[test]
+    fn the_wait_covers_a_child_that_outlives_the_first_process() {
+        let command = UninstallCommand::parse("cmd.exe /c start /b ping.exe -n 4 127.0.0.1")
+            .expect("accepted");
+        let started = std::time::Instant::now();
+        let exit = WinUninstaller::new()
+            .run(&command, &StopWaiting::new())
+            .expect("runs");
+        assert_eq!(exit.waited, Waited::Everything);
+        assert!(
+            started.elapsed() >= Duration::from_millis(2_000),
+            "returned after {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// Stopping ends the wait while the child still runs, and says so.
+    #[test]
+    fn stopping_ends_the_wait_while_a_child_still_runs() {
+        let command = UninstallCommand::parse("cmd.exe /c start /b ping.exe -n 6 127.0.0.1")
+            .expect("accepted");
+        let stop = StopWaiting::new();
+        let started = std::time::Instant::now();
+        let exit = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(700));
+                stop.request();
+            });
+            WinUninstaller::new().run(&command, &stop).expect("runs")
+        });
+        assert_eq!(exit.waited, Waited::Stopped);
+        assert!(started.elapsed() < Duration::from_millis(4_000));
     }
 
     #[test]
@@ -338,7 +486,7 @@ mod tests {
         let command =
             UninstallCommand::parse(r"C:\VoltTest\does-not-exist\remove.exe /S").expect("accepted");
         assert!(matches!(
-            WinUninstaller::new().run(&command),
+            WinUninstaller::new().run(&command, &StopWaiting::new()),
             Err(PortError::NotFound(_))
         ));
     }
