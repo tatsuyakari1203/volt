@@ -25,14 +25,14 @@ apps/desktop (crate volt-desktop: Tauri shell + React UI)      crates/volt-cli (
                         domain model, use cases, port traits
 ```
 
-| Crate          | Responsibility                                                        | May depend on           | Must not depend on                                      |
-| -------------- | --------------------------------------------------------------------- | ----------------------- | ------------------------------------------------------- |
-| `volt-core`    | Domain types, use cases, port traits, in-memory fakes                 | nothing internal        | `tauri`, `windows`, `windows-sys`, `winreg`, `rusqlite` |
-| `volt-win`     | Implements ports with the Windows API. The only crate with `unsafe`   | `volt-core`             | `tauri`, `rusqlite`                                     |
-| `volt-store`   | Implements persistence ports                                          | `volt-core`             | `tauri`, `windows`, `windows-sys`, `winreg`             |
-| `volt-desktop` | Tauri commands, tray, window lifecycle; wires adapters into use cases | all three               | -                                                       |
-| `volt-helper`  | The elevated helper: one pipe, one bound UI, a closed request set     | `volt-core`, `volt-win` | `tauri`, `rusqlite`                                     |
-| `volt-cli`     | Command-line front end (planned)                                      | all three               | `tauri`                                                 |
+| Crate          | Responsibility                                                        | May depend on    | Must not depend on                                      |
+| -------------- | --------------------------------------------------------------------- | ---------------- | ------------------------------------------------------- |
+| `volt-core`    | Domain types, use cases, port traits, in-memory fakes                 | nothing internal | `tauri`, `windows`, `windows-sys`, `winreg`, `rusqlite` |
+| `volt-win`     | Implements ports with the Windows API. The only crate with `unsafe`   | `volt-core`      | `tauri`, `rusqlite`                                     |
+| `volt-store`   | Implements persistence ports                                          | `volt-core`      | `tauri`, `windows`, `windows-sys`, `winreg`             |
+| `volt-desktop` | Tauri commands, tray, window lifecycle; wires adapters into use cases | all three        | -                                                       |
+| `volt-helper`  | The elevated helper: one pipe, one bound UI, a closed request set     | all three        | `tauri`, `rusqlite`                                     |
+| `volt-cli`     | Command-line front end (planned)                                      | all three        | `tauri`                                                 |
 
 `scripts/check-arch.mjs` enforces this table on direct dependencies, in the pre-commit hook, in
 `pnpm check` and in CI. A workspace crate with no rule fails the check: adding a crate is an
@@ -128,6 +128,13 @@ What `volt-core` contains today:
     that cannot be applied is reported once (an activity record and the rule's problem label) until
     it works again; processes already handled are not retried. The Undo page labels the operation
     `process.tune` as "Process settings". Screenshot: `docs/design/process-rules-light.png`.
+    Reapplying a saved rule to new processes is not journaled and is not an undo entry: the rule
+    is the record, and removing it is the undo for the future (processes already running keep
+    what they got until the manual change is undone). One Automation activity line is written per
+    rule and session, on its first successful application. A rule that could not change some
+    processes counts them (`RuleStatus.left_alone`, shown in the Saved rules card). Efficiency
+    off means `PowerThrottling::Default`. `save_rule` checks the core mask against the app's
+    system affinity mask. The manual tune path is unchanged (one `TuneProcesses` journal entry).
 - **Live metrics:** the `MetricsSource` port (`volt_core::metrics`) reads one _raw sample_: the
   cumulative CPU time counters, the physical memory totals, the space of every fixed volume and one
   reading per GPU adapter. A raw sample means little alone (a CPU counter only grows), so
@@ -265,6 +272,26 @@ What `volt-core` contains today:
     (the shell does not today). For a `requires_admin` tweak, apply and revert return
     `TweakError::NeedsAdministrator` before any read or write; `state()` and `plan()` are
     read-only and still work.
+  - **Drift.** `TweakEngine::drifted` is read-only: a tweak is drifted when the journal still
+    holds an Applied entry for it and `state()` is not Applied. It runs when the Tweaks page opens
+    (its own `list_tweak_drift` read) and when Home opens; there is no background or tray work.
+    Reapply is the normal `apply` and adds a new journal batch on top of the old one, so undo
+    walks back through both. `accept(id)` marks the Applied entries `EntryState::Accepted` and
+    touches no system state: `applied_by_volt` becomes false, so Reset applies again, and the Undo
+    page lists the old change as "cannot undo" (`undo.accepted`).
+  - **Configuration file** (`tweak/portable.rs`, shell side `transfer.rs`). JSON with
+    `format = "volt-configuration"` and `version = 1`, holding tweaks as `{id, title?}` and a
+    `settings` map. A newer version, a file over 1 MiB or one naming more than 500 tweaks is
+    refused. An import reads only tweak ids and the known settings keys (`boost.config`,
+    `memory.exclusions`); steps, values and commands always come from the local catalogue.
+    `plan_import` is the dry run and `apply_import` re-plans before applying, so each tweak goes
+    through `engine.apply`, one journal batch per tweak. Left out of the file: `clean.chosen_folders`
+    (machine paths), `process.rules` (cores and priorities fit one CPU and one set of programs)
+    and `ui.language` (it follows Windows). Protected programs are exported by executable name
+    only. Settings an import stores are not journaled (nothing in Volt journals settings); the
+    preview shows the current value of a replaced setting and `memory.exclusions` is only ever
+    extended. The file dialogs and file I/O are Rust only, and a previewed import waits in a
+    static until the user confirms it.
   - **Steps.** A step is a registry value, a registry key (`registry_key`, `exists = true` or
     `false`), a service or a command, each mapped to a journaled Operation. `EnsureRegistryKey`
     records how many levels of the path were missing; revert removes those levels leaf-first, each
@@ -442,7 +469,25 @@ What `volt-core` contains today:
     `KnownFolders::system_folders` (Windows, both Program Files folders and ProgramData; a scan
     root inside them is refused, and if the port cannot name them the scan refuses to run), the
     names `pagefile.sys`, `hiberfil.sys` and `swapfile.sys`, `$Recycle.Bin` and
-    `System Volume Information`.
+    `System Volume Information`. `scan_filtered` applies a `ScanFilter` (type, minimum age in
+    days) while walking, before the bounded top-200 heap, so filters find files beyond the 200
+    biggest at the cost of a rescan when the filter changes. Files with the system attribute
+    (`EntryInfo.system`) are excluded wherever they are and counted in `excluded`.
+  - **Tidy finder** (`volt_core::tidy`, shell `src-tauri/src/tidy.rs`, the Duplicates view). Next
+    to the large files finder, the Clean page finds duplicate files, empty folders and broken
+    shortcuts. The `FileSystem` port gained `identity()` and `read_at()` (default `Unsupported`
+    bodies); `WinFileSystem` reads attributes before opening and refuses reparse points and files
+    not on disk (offline, recall-on-open, recall-on-data-access), so reading never triggers a
+    cloud download. Hashing runs in the core with `sha2`; the port only supplies bytes.
+    Duplicates: size, identity (drop placeholders, fold hard links), SHA-256 of the first 64 KiB,
+    then the full SHA-256. Limits: 1 MiB minimum size, 300k files, 500k folders, 500 groups
+    listed. An empty folder is the topmost folder holding nothing or only empty folders, never a
+    scanned root, link, system-attribute, system or unreadable folder. A shortcut is broken only
+    when its `.lnk` LinkInfo local path is on a fixed drive, the target is gone and the drive root
+    exists; everything else counts as unchecked. Moves go to the Recycle Bin only, one activity
+    record each (labels `tidy_duplicates`, `tidy_folders`, `tidy_shortcuts`); for duplicates a
+    kept copy is re-hashed and at least one copy must stay. The scan stays in Rust: the UI sends
+    the scan id and row numbers only.
 
 ## Persistence
 
@@ -617,17 +662,19 @@ Volt itself never runs elevated. Administrator work goes to a second, small prog
 that UI over a private named pipe. Tested without elevation:
 
 - **Protocol** (`volt-core::elevation`, the `Elevator` port): JSON, one message per pipe message,
-  1 KiB request cap, a closed request set (`hello`, `memory_purge`, `bye`), unknown fields refused,
+  1 KiB request cap, a closed request set (`hello`, `memory_purge`, `tweak_apply`, `tweak_revert`,
+  `history`, `bye`), six non-closing error codes, unknown fields refused,
   ids exactly 1, 2, 3. A framing or order violation gets an error reply and the connection is
   closed. A request that is valid but refused (no areas, rate limited) keeps the connection and
-  never extends the idle clock.
+  never extends the idle clock. A tweak is named by id only, and the helper serves only
+  `requires_admin` tweaks of its own embedded catalogue.
 - **The process** (`volt-win::helper`, `volt-helper::run`). It hardens itself first: environment
   scrub, DLL search limited to System32, working directory System32, five process mitigation
   policies (among them no child process) and privileges cut to three. Then it parses the one
   accepted command line (`serve --pipe volt-<32 hex> --ui-pid N --ui-created TICKS`), checks that
   it runs from the Program Files install folder (owner and ACL of the image, the folder and the
-  state folder, no reparse points), verifies the UI process it is bound to, creates the pipe and
-  serves. Exit codes are in `run::exit`; 6 means the helper's user is not the UI's user.
+  state folder, no reparse points), verifies the UI process it is bound to, opens its own state
+  (create, verify, lock, store, reconcile pending entries), creates the pipe and serves. Exit codes are in `run::exit`; 6 means the helper's user is not the UI's user.
 - **The pipe.** A unique first instance, one instance, remote clients rejected, message mode,
   overlapped I/O with timeouts, so the idle limit (10 minutes), the hard cap (60 minutes) and the
   exit on disconnect need no watchdog thread. A client is served only if it is the bound process
@@ -651,8 +698,34 @@ that UI over a private named pipe. Tested without elevation:
   is no boundary to protect. The message follows the Windows display language, since the settings
   store is not open yet.
 
-Not built yet: the confirmation desktop and the helper's own store. The
-rest of this page works unelevated and does not depend on the helper, except where it says so.
+- **State.** `Program Files\Volt\state` is created by the helper with a protected ACL (SYSTEM and
+  Administrators) and verified like the install folder. It holds one folder per user SID
+  (`state\<SID>\helper.db`), and `state\helper.lock` (an open handle with no sharing) is the
+  single-helper lock. `volt-helper` may depend on `volt-store` (a rule in `check-arch.mjs`).
+- **Administrator tweaks.** `tweak_apply`, `tweak_revert` and `history` run behind a
+  confirmation, the `Confirmer` port. `ConfirmGate` holds the 10 minute block and the two-denial
+  lockout. `AdminRegistry` is HKLM only: every key on the path is checked on opened handles
+  (owner, DACL write rights, not a symbolic link); CREATOR OWNER and CREATOR GROUP entries are
+  ignored because no token holds them. At build time `Catalogue::administrator_issues` rejects a
+  command step and HKLM registry steps outside `requires_admin` tweaks.
+- **Confirmation** is `volt_win::helper::prompt`, on a private desktop whose DACL is
+  `D:P(A;;GA;;;BA)S:(ML;;NW;;;HI)`. The UI token has Administrators deny-only, so a medium
+  process cannot open it, and Windows does not deliver messages across desktops. `ask()` makes
+  the window on a worker thread attached to the desktop, then calls `SwitchDesktop` on the calling
+  thread; the `Switched` guard always switches back. An unreadable input desktop (locked session)
+  or a failed create or switch is `Unavailable` and fails closed. The 45 s timeout counts as a
+  denial. Buttons are disabled for 1.5 s and Cancel is the default. Text comes from the helper
+  catalogue (English) or the embedded `vi.catalogue.json` (Vietnamese) by the Windows display
+  language.
+- **Restore point.** For Caution and Advanced applies only, once per 10 minutes per session,
+  behind the `RestorePoints` port. A failure refuses the tweak (`ErrorCode::RestorePointFailed`).
+  Windows adds its own 24 h limit with no error. The hosted runner (Server) answers 120, so a real
+  creation is not shown there.
+- **UI mirror.** The UI mirrors the helper log by pull (it never starts the helper) and saves it
+  in the settings key `helper.mirror`. Undo of an administrator row is `tweak_revert` by tweak.
+  Rows of a recreated store show without Undo, and Clear keeps rows that can still be undone.
+
+The rest of this page works unelevated and does not depend on the helper, except where it says so.
 
 ### The UI half of the helper
 
@@ -705,8 +778,12 @@ limited by paths to the helper's code. It is not a required check.
   `GetNamedPipeServerProcessId` equals the handle's pid; the helper's working set is 9.9 MiB after
   hello (peak 10.0) and 1.04 MiB after the first purge; the launch call takes 316 to 413 ms and
   launch to hello 347 to 444 ms; the purge works after hardening, twice on one helper.
+- The job runs the release helper cases, proves the release helper holds no harness strings
+  (`scripts/check-helper-harness.ps1`), then swaps in the `elevated-ci` helper and runs the tweak
+  and prompt cases (`crates/volt-helper/ci/prompt_cases.rs`). The `elevated-ci` feature is a
+  compile error in a release build. Screenshot: `docs/design/tweaks-administrator-light.png`.
 - Not measured: a launch from a filtered medium-integrity token (handle rights across the UAC
-  boundary), the private-desktop dialog and the real ACLs of the machine cleaning roots.
+  boundary) and the real ACLs of the machine cleaning roots.
 
 ### The installer
 
@@ -999,8 +1076,8 @@ the WebView2 processes. The diagnostic log was read to confirm the sampler start
   are shown but cannot be cleaned, and a note names running browsers whose open files are skipped.
   The confirm dialog shows a note when a ticked browser rule has a `locked_note` (that browser is
   running).
-  Screenshot: `docs/design/clean-light-460x700.png`. The page has two views, Junk and Large
-  files, both kept mounted so a result survives switching. The Large files view lists the biggest
+  Screenshot: `docs/design/clean-light-460x700.png`. The page has three views, Junk, Large
+  files and Duplicates (the tidy finder), both kept mounted so a result survives switching. The Large files view lists the biggest
   files under a chosen folder and moves ticked ones to the Recycle Bin; screenshot:
   `docs/design/clean-large-files-light-460x700.png` (sample data, mocked IPC).
 - `shared/i18n` is a foundation module (see Localisation). `Shell` remounts the current page when
@@ -1247,7 +1324,9 @@ is visible, so every record Volt writes is listed and says whether it can be tak
   `undo_entry` and `undo_batch` take the later-entry ids the caller showed the user, and if any
   overwrite found is not in that list they return `UndoStatus::NeedsAcknowledgement` with the
   overwrites and change nothing. The check runs under the exclusive lock, so a change that appears
-  after the preview is refused too. UI flows pass what they displayed.
+  after the preview is refused too. UI flows pass what they displayed. A refused undo
+  (`needsAcknowledgement`) reopens the overwrite warning with a fresh preview instead of only a
+  notice. History rows are memoised, so a state change redraws only the affected rows.
 - **Incomplete history and clearing.** When `history_status` says the history is incomplete the
   page shows a notice. A Clear button (`clear_history`, with a confirmation) removes the history
   within the retention rules above; its result also reports `kept`, counted by paging the activity
@@ -1292,6 +1371,15 @@ The UI is available in English and Vietnamese.
   4) has a nullable `phrase` column (JSON); older records have none and show their stored English
   summary. Health
   reasons are translated by deduction id, with the figures read back out of the English sentence.
+- **Errors the shell builds.** `IpcError` variants carry `message` (English) and an optional
+  `phrase` (code and parameters). A sentence the shell builds uses the `err.*` codes in
+  `phrase.rs` `ENGLISH`; the window writes it from `vi.phrases.json` with `say()`, and
+  `describeIpcError` capitalises it and adds no prefix. An error with no phrase is a detail from
+  an adapter or the OS and keeps the "Kind: message" text; an adapter `PortError` message stays
+  English by design. New shell code builds a `Phrase` and calls `IpcError::invalid`, `not_found`
+  and so on with it, then adds the code to `ENGLISH` and `vi.phrases.json` (`pnpm check:i18n`
+  fails when either is missing). `ApplyResult` and `RevertResult` carry `detailPhrase` and
+  `TweakStateView::Unreadable` carries `phrase`.
 - **The setting.** The language is System, `en` or `vi`, stored under the settings key
   `ui.language` as `{choice, system}`. What System means is the display language
   from `volt-win` `display_languages()` (`GetUserPreferredUILanguages`, `MUI_LANGUAGE_NAME`); the
@@ -1319,6 +1407,13 @@ real registry adapter, a real store and two temp folders, with every Run and `St
 redirected to a throwaway `HKCU\Software\VoltTest\Startup-...` key. It lists, disables, reads the
 state back, undoes and restarts; the real Run keys, the real approval keys and the real Startup
 folders are never written, and no test or script changes a real startup entry.
+
+Waits are bounded. `findBy` and `waitFor` share one 10 s limit in the vitest setup and test
+timeouts one 30 s limit in the vitest config. Rust tests that wait on a process, pipe or job must
+have a limit (the pipe tests pass a timeout to every call, the uninstaller tests run under a
+watchdog). Tests do not assert tight upper bounds on elapsed time: they assert the exit reason or
+result, and use a bound far below the configured limit only to show the end came from the rule and
+not from the limit.
 
 Tests never apply a real tweak, clean real user data or purge memory on the machine running them.
 In particular no test applies or reverts the shipped "Show file extensions" tweak: the end to end
