@@ -328,7 +328,8 @@ pub struct TuneRequest {
     pub priority: Option<PriorityClass>,
     /// The cores to run on, one bit per core. Never zero.
     pub affinity_mask: Option<u64>,
-    /// Efficiency mode: on is power throttling and the lowest priority, off forces throttling off.
+    /// Efficiency mode: on is power throttling and the lowest priority, off gives the process
+    /// back to the Windows default (it does not force throttling off).
     pub efficiency: Option<bool>,
 }
 
@@ -362,7 +363,7 @@ impl TuneRequest {
                 if on {
                     PowerThrottling::On
                 } else {
-                    PowerThrottling::Off
+                    PowerThrottling::Default
                 }
             }),
         }
@@ -504,6 +505,18 @@ pub struct RuleStatus {
     pub rule: ProcessRule,
     /// The class of the error that kept it from being applied ("access denied"), until it works.
     pub problem: Option<&'static str>,
+    /// How many processes of the app the rule could not change since Volt started, although it
+    /// changed others (or none). Windows refused them, or they lack a core the rule asks for.
+    pub left_alone: u32,
+}
+
+/// What applying a rule to new processes did.
+#[derive(Default)]
+struct RuleApplied {
+    changed: u32,
+    left_alone: u32,
+    /// The class of the first refusal.
+    problem: Option<&'static str>,
 }
 
 /// A process the tuner may change, with its settings.
@@ -527,6 +540,11 @@ struct RuleState {
     handled: HashSet<(u32, u64)>,
     /// The class of the error of each rule that failed, by rule key.
     problems: HashMap<String, &'static str>,
+    /// How many processes each rule left alone since Volt started (Windows refused them), by
+    /// rule key.
+    left_alone: HashMap<String, u32>,
+    /// Rules that already wrote their one activity line this session.
+    reported: HashSet<String>,
 }
 
 /// Changes process settings and keeps the rules, over the [`Processes`] port and an [`Executor`].
@@ -815,6 +833,7 @@ impl ProcessTuner {
             .into_iter()
             .map(|rule| RuleStatus {
                 problem: state.problems.get(&rule.key).copied(),
+                left_alone: state.left_alone.get(&rule.key).copied().unwrap_or(0),
                 rule,
             })
             .collect())
@@ -829,7 +848,18 @@ impl ProcessTuner {
             return Err(TuneError::Nothing);
         }
         request.validate()?;
-        let (name, path, _) = self.app(key)?;
+        let (name, path, processes) = self.app(key)?;
+        if let Some(mask) = request.affinity_mask {
+            // The cores must exist on this machine (as far as the app's processes may use them).
+            let sorted = self.sort(processes);
+            if sorted
+                .changeable
+                .iter()
+                .any(|c| mask & !c.settings.system_affinity_mask != 0)
+            {
+                return Err(TuneError::UnknownCore);
+            }
+        }
         let rule = ProcessRule {
             key: path
                 .as_ref()
@@ -847,6 +877,8 @@ impl ProcessTuner {
         self.store_rules(rules).map_err(TuneError::Rules)?;
         let mut state = lock(&self.state);
         state.problems.remove(&rule.key);
+        state.left_alone.remove(&rule.key);
+        state.reported.remove(&rule.key);
         // The running processes are looked at again, so the new rule reaches them.
         state.handled.clear();
         Ok(rule)
@@ -863,7 +895,10 @@ impl ProcessTuner {
             return Ok(false);
         }
         self.store_rules(rules).map_err(TuneError::Rules)?;
-        lock(&self.state).problems.remove(&key);
+        let mut state = lock(&self.state);
+        state.problems.remove(&key);
+        state.left_alone.remove(&key);
+        state.reported.remove(&key);
         Ok(true)
     }
 
@@ -883,6 +918,8 @@ impl ProcessTuner {
             let mut state = lock(&self.state);
             state.handled.clear();
             state.problems.clear();
+            state.left_alone.clear();
+            state.reported.clear();
             return run;
         }
         let list = match self.processes.list() {
@@ -923,79 +960,117 @@ impl ProcessTuner {
             lock(&self.state)
                 .handled
                 .extend(processes.iter().map(|p| (p.pid, p.created_at_100ns)));
-            match self.apply_rule(rule, &processes) {
-                Ok(changed) => {
-                    run.changed += changed;
-                    lock(&self.state).problems.remove(&rule.key);
-                }
-                Err(class) => {
+            let done = self.apply_rule(rule, &processes);
+            if done.left_alone > 0 {
+                *lock(&self.state)
+                    .left_alone
+                    .entry(rule.key.clone())
+                    .or_insert(0) += done.left_alone;
+            }
+            match done.problem {
+                Some(class) if done.changed == 0 => {
                     run.failed += 1;
                     self.report_once(rule, class);
+                }
+                _ => {
+                    run.changed += done.changed;
+                    if done.changed > 0 {
+                        lock(&self.state).problems.remove(&rule.key);
+                        self.report_applied(rule, done.changed, done.left_alone);
+                    }
                 }
             }
         }
         run
     }
 
-    /// Applies one rule to processes that started. `Err` is the class of what went wrong.
-    fn apply_rule(
-        &self,
-        rule: &ProcessRule,
-        processes: &[&ProcessInfo],
-    ) -> Result<u32, &'static str> {
+    /// Applies one rule to processes that started, process by process, straight through the port.
+    ///
+    /// This writes no undo entry and no activity record of its own: the rule is the record (the
+    /// Rules list shows it, and removing it is the undo for the future), and a browser that starts
+    /// a renderer every few seconds would otherwise bury the Undo and activity pages. One activity
+    /// line per rule and session is written by [`ProcessTuner::report_applied`]. A process that
+    /// cannot be changed is counted as left alone and never makes the others wait.
+    fn apply_rule(&self, rule: &ProcessRule, processes: &[&ProcessInfo]) -> RuleApplied {
+        let mut done = RuleApplied::default();
         // A rule read from a damaged settings value is checked again, like a request.
-        rule.request.validate().map_err(|_| "error")?;
+        if rule.request.validate().is_err() {
+            done.problem = Some("error");
+            return done;
+        }
         let change = rule.request.change();
         let sorted = self.sort(processes.iter().map(|p| (*p).clone()).collect());
-        let due: Vec<ProcessTarget> = sorted
-            .changeable
-            .iter()
-            .filter(|c| {
-                change
-                    .affinity_mask
-                    .is_none_or(|mask| mask & !c.settings.system_affinity_mask == 0)
-            })
-            .filter(|c| !change.is_met_by(&c.settings))
-            .map(|c| ProcessTarget {
-                pid: c.process.pid,
-                created_at_100ns: c.process.created_at_100ns,
-            })
-            .collect();
-        if due.is_empty() {
-            return if sorted.changeable.is_empty() && sorted.needs_administrator > 0 {
-                Err("access denied")
-            } else {
-                Ok(0)
-            };
+        done.left_alone = sorted.needs_administrator;
+        if sorted.needs_administrator > 0 {
+            done.problem = Some("access denied");
         }
-        let changed = count(due.len());
-        let operation = Operation::TuneProcesses {
-            name: rule.name.clone(),
-            targets: due,
-            change,
+        for c in &sorted.changeable {
+            if change
+                .affinity_mask
+                .is_some_and(|mask| mask & !c.settings.system_affinity_mask != 0)
+            {
+                done.left_alone += 1;
+                done.problem.get_or_insert("error");
+                continue;
+            }
+            if change.is_met_by(&c.settings) {
+                continue;
+            }
+            match self
+                .processes
+                .apply_settings(c.process.pid, c.process.created_at_100ns, &change)
+            {
+                Ok(()) => done.changed += 1,
+                Err(PortError::NotFound(_)) => {}
+                Err(error) => {
+                    // Best effort: do not leave a half-written change (priority set, affinity
+                    // refused) behind.
+                    let _ = self.processes.apply_settings(
+                        c.process.pid,
+                        c.process.created_at_100ns,
+                        &change.restoring(&c.settings),
+                    );
+                    done.left_alone += 1;
+                    done.problem.get_or_insert(error_class(&error));
+                }
+            }
+        }
+        done
+    }
+
+    /// Writes the one activity line of a rule for this session: the first time it changes
+    /// processes. Later processes of the same app follow the rule without further lines.
+    fn report_applied(&self, rule: &ProcessRule, changed: u32, left_alone: u32) {
+        if !lock(&self.state).reported.insert(rule.key.clone()) {
+            return;
+        }
+        let Some(log) = &self.activity else { return };
+        let processes = Phrase::new("count.process").count("count", changed);
+        let summary = if left_alone > 0 {
+            Phrase::new("summary.ruleAppliedPartly")
+                .text("name", rule.name.clone())
+                .phrase("processes", processes)
+                .phrase(
+                    "left",
+                    Phrase::new("count.process").count("count", left_alone),
+                )
+        } else {
+            Phrase::new("summary.ruleApplied")
+                .text("name", rule.name.clone())
+                .phrase("processes", processes)
         };
-        let plan = Plan::build(
-            vec![OperationRequest::new(
-                operation,
-                risk_of(&change),
-                Evidence::Anecdotal,
-            )],
-            self.executor.ports(),
-        )
-        .map_err(|_| "error")?
-        .with_label(TUNE_LABEL);
-        let report = self
-            .executor
-            .apply(&plan, Source::Automation)
-            .map_err(|_| "error")?;
-        match report.outcomes.first().map(|o| &o.status) {
-            Some(ItemStatus::Applied { .. }) => Ok(changed),
-            // The executor wrote its own failure record; the rule still shows the problem.
-            Some(ItemStatus::Failed {
-                error: ExecError::Apply { error, .. },
-                ..
-            }) => Err(error_class(error)),
-            _ => Err("error"),
+        let record = NewActivity::said(
+            self.clock.now(),
+            Source::Automation,
+            ActivityOutcome::Applied,
+            summary,
+            Some(TUNE_LABEL.to_owned()),
+        );
+        if let Err(error) = log.record(record) {
+            log::warn!(
+                "could not write the activity record for a rule ({})",
+                error_class(&error)
+            );
         }
     }
 

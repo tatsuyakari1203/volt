@@ -4,7 +4,7 @@ import { t } from '../../shared/i18n';
 import { listProcessRules, type RuleView, removeProcessRule } from '../../shared/ipc';
 import { describeError } from '../../shared/text/memory';
 import { Button, Card } from '../../shared/ui';
-import { ruleSummary } from './processes';
+import { processesText, ruleSummary } from './processes';
 
 /** How often the list is read again: a rule's problem appears when the app next starts. */
 const REREAD_MS = 10_000;
@@ -111,6 +111,10 @@ export function RulesCard({ rules, problem, busy, onRemove }: RulesCardProps) {
                     {rule.problem === 'needsAdministrator'
                       ? t('processes.rules.problem.admin')
                       : t('processes.rules.problem.failed')}
+                  </span>
+                ) : rule.leftAlone > 0 ? (
+                  <span className="block text-caption text-caution-fg">
+                    {t('processes.rules.leftAlone', { processes: processesText(rule.leftAlone) })}
                   </span>
                 ) : null}
               </span>

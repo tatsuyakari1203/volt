@@ -2578,7 +2578,12 @@ request: TuneRequestView;
 /**
  * Why it was last not applied, until it works again.
  */
-problem: RuleProblemView | null }
+problem: RuleProblemView | null; 
+/**
+ * How many processes of the app the rule could not change since Volt started (Windows
+ * refused them) although it changed others.
+ */
+leftAlone: number }
 /**
  * One item of a rule the user picks from.
  */
@@ -2804,8 +2809,8 @@ priority: PriorityView | null;
  */
 cores: number[] | null; 
 /**
- * Efficiency mode: on is power throttling together with Low priority; off turns throttling
- * off.
+ * Efficiency mode: on is power throttling together with Low priority; off gives the process
+ * back to the Windows default.
  */
 efficiency: boolean | null }
 /**
