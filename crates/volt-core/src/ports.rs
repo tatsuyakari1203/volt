@@ -59,6 +59,8 @@ pub struct EntryInfo {
     pub size_bytes: u64,
     /// Last modification time, when the file system reports one.
     pub modified: Option<Timestamp>,
+    /// Whether the entry has the system attribute (hidden operating system files).
+    pub system: bool,
 }
 
 /// One entry of a directory listing.

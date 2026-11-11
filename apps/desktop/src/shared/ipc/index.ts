@@ -34,6 +34,7 @@ import {
   type ItemPick,
   type LanguageChoice,
   type LanguageSetting,
+  type LargeFilesFilter,
   type LargeFilesProgress,
   type LargeFilesResult,
   type LargeFilesTrashResult,
@@ -112,6 +113,7 @@ export type {
   Lang,
   LanguageChoice,
   LanguageSetting,
+  LargeFilesFilter,
   LargeFilesProgress,
   LargeFilesResult,
   LargeFilesTrashResult,
@@ -547,9 +549,13 @@ export async function emptyRecycleBin(): Promise<EmptyBinResult> {
  * Scans a folder for its biggest files (the system drive when `root` is `null`), read-only. Runs in
  * the background: listen with `onLargeFilesProgress` and call `cancelLargeFilesScan` to stop it
  * (the result then has `cancelled: true`). The result names the scan, which the calls below need.
+ * A `filter` (type, minimum age) is applied while walking, so it finds files beyond the 200 biggest.
  */
-export async function scanLargeFiles(root: string | null): Promise<LargeFilesResult> {
-  return call(() => commands.scanLargeFiles(root));
+export async function scanLargeFiles(
+  root: string | null,
+  filter: LargeFilesFilter | null = null,
+): Promise<LargeFilesResult> {
+  return call(() => commands.scanLargeFiles(root, filter));
 }
 
 /** Asks the running large files scan to stop. Does nothing when none runs. */

@@ -141,7 +141,7 @@ pub use journal::{
 pub use label::{Evidence, Risk};
 pub use large_files::{
     DEFAULT_MAX_FILES, FileGroup, LargeFile, LargeFilesError, LargeFilesFinder, LargeFilesObserver,
-    LargeFilesScan, LargeFilesTrash,
+    LargeFilesScan, LargeFilesTrash, ScanFilter,
 };
 pub use memory::{AreaReport, MEMORY_LABEL, MemoryCleanReport, MemoryCleaner};
 pub use metrics::{

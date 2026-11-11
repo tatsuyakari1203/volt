@@ -9,7 +9,9 @@ use volt_core::clean::fakes::FakeKnownFolders;
 use volt_core::fakes::FakeSystem;
 use volt_desktop_lib::IpcError;
 use volt_desktop_lib::catalogue::{EMBEDDED_CATALOGUE, EMBEDDED_CLEANING_RULES};
-use volt_desktop_lib::large_files::{FileGroupView, LargeFilesProgress, scan_with, trash_with};
+use volt_desktop_lib::large_files::{
+    FileGroupView, LargeFilesFilter, LargeFilesProgress, scan_filtered_with, scan_with, trash_with,
+};
 use volt_desktop_lib::wiring::{AppCore, CleaningSetup, build_core_with_cleaning};
 
 fn abs(rest: &str) -> PathBuf {
@@ -55,6 +57,35 @@ fn a_scan_lists_the_biggest_files_and_leaves_the_windows_folder_out() {
         scan_with(&core, Some(&windows), &quiet),
         Err(IpcError::InvalidInput { .. })
     ));
+}
+
+#[test]
+fn a_filtered_scan_finds_files_beyond_the_biggest_and_leaves_system_files_out() {
+    let dir = TempDir::new().expect("temp dir");
+    let system = FakeSystem::new();
+    for n in 0..300_u64 {
+        system
+            .file_system
+            .add_file(abs(&format!("Data/v{n}.mkv")), 1000 + n);
+    }
+    system.file_system.add_file(abs("Data/tiny.zip"), 1);
+    system
+        .file_system
+        .add_system_file(abs("Data/hidden.zip"), 9);
+    let core = core(&system, &dir);
+    let root = abs("Data").display().to_string();
+    let all = scan_with(&core, Some(&root), &quiet).expect("scan");
+    assert_eq!(all.files.len(), 200);
+    assert!(all.files.iter().all(|f| f.group == FileGroupView::Video));
+
+    let filter = LargeFilesFilter {
+        group: Some(FileGroupView::Archive),
+        min_age_days: None,
+    };
+    let found = scan_filtered_with(&core, Some(&root), filter, &quiet).expect("scan");
+    assert_eq!(found.files.len(), 1);
+    assert!(found.files[0].path.ends_with("tiny.zip"));
+    assert!((found.excluded - 1.0).abs() < f64::EPSILON);
 }
 
 #[test]

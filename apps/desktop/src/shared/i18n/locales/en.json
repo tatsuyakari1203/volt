@@ -633,6 +633,7 @@
   "large.skippedNote": "{unreadable} could not be read and {links} links were not followed.",
   "large.filter.type": "Type",
   "large.filter.age": "Last changed",
+  "large.filter.hint": "A filter scans again, so it can find files beyond the biggest ones. System files are never listed.",
   "large.group.all": "All types",
   "large.group.video": "Video",
   "large.group.archive": "Archive",

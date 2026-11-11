@@ -571,25 +571,45 @@ it('asks before an undo that would overwrite a later change, and names it', asyn
   await vi.waitFor(() => expect(ipc.undoEntry).toHaveBeenCalledWith('1', ['9']));
 });
 
-it('says nothing was undone when the core refuses an unacknowledged overwrite', async () => {
+const refusal = () =>
+  result({
+    status: 'needsAcknowledgement',
+    restored: 0,
+    overwrites: [
+      {
+        entry: '1',
+        what: 'Flag',
+        whatPhrase: { code: 'subject.registryValue', args: {} },
+        laterEntry: '9',
+        laterTime: '2026-11-10T04:00:00.000Z',
+        laterSource: 'manual',
+      },
+    ],
+  });
+
+it('opens the warning again with the new overwrites when the core refuses an undo', async () => {
   const user = userEvent.setup();
   ipc.listActivity.mockResolvedValue(page([undoable('1')]));
-  ipc.undoEntry.mockResolvedValue(
-    result({
-      status: 'needsAcknowledgement',
-      restored: 0,
-      overwrites: [
-        {
-          entry: '1',
-          what: 'Flag',
-          whatPhrase: { code: 'subject.registryValue', args: {} },
-          laterEntry: '9',
-          laterTime: '2026-11-10T04:00:00.000Z',
-          laterSource: 'manual',
-        },
-      ],
-    }),
-  );
+  ipc.previewUndoEntry.mockResolvedValueOnce({ items: [], overwrites: [] }).mockResolvedValueOnce({
+    items: [{ entry: '1', what: 'Flag', restore: 'set back to REG_DWORD 1' }],
+    overwrites: refusal().overwrites,
+  });
+  ipc.undoEntry.mockResolvedValueOnce(refusal()).mockResolvedValue(result());
+  render(<UndoScreen />);
+  await user.click(await screen.findByRole('button', { name: /^Undo/ }));
+  const dialog = await screen.findByRole('dialog');
+  expect(within(dialog).getByText('A later change will be overwritten')).toBeDefined();
+  await user.click(within(dialog).getByRole('button', { name: 'Undo anyway' }));
+  await vi.waitFor(() => expect(ipc.undoEntry).toHaveBeenLastCalledWith('1', ['9']));
+});
+
+it('falls back to the notice when the warning cannot be shown again', async () => {
+  const user = userEvent.setup();
+  ipc.listActivity.mockResolvedValue(page([undoable('1')]));
+  ipc.previewUndoEntry
+    .mockResolvedValueOnce({ items: [], overwrites: [] })
+    .mockRejectedValueOnce(new Error('gone'));
+  ipc.undoEntry.mockResolvedValue(refusal());
   render(<UndoScreen />);
   await user.click(await screen.findByRole('button', { name: /^Undo/ }));
   expect(await screen.findByText(/Nothing was undone: a later change/)).toBeDefined();
