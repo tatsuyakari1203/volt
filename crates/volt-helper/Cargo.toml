@@ -21,6 +21,16 @@ path = "src/lib.rs"
 name = "volt-helper"
 path = "src/main.rs"
 
+# The harness of the elevated CI job (see ci/elevated_ci.rs). Never built by the release workflow,
+# never bundled, not part of `pnpm check`.
+[[bin]]
+name = "volt-elevated-ci"
+path = "ci/elevated_ci.rs"
+required-features = ["elevated-ci"]
+
+[features]
+elevated-ci = ["volt-win/elevated-ci"]
+
 [dependencies]
 volt-core.workspace = true
 volt-win.workspace = true

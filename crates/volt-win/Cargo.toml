@@ -12,6 +12,11 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Measurements and launch calls for the CI job that runs the real helper on a hosted runner. Never
+# enabled by a product build (see `helper::ci`).
+elevated-ci = []
+
 [dependencies]
 volt-core.workspace = true
 log.workspace = true
