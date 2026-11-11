@@ -46,6 +46,10 @@
 //! needs and Volt itself (in the core, not only in the UI) and is recorded as an activity that
 //! cannot be undone.
 //!
+//! Priority, CPU affinity and Efficiency mode of running apps are the [`tuning`] module: a change
+//! is one undoable operation over the processes of an app, and saved rules reapply it to the
+//! processes that start later, on a tick the shell already has.
+//!
 //! Installed apps are the [`apps`] module: desktop apps from the Uninstall registry keys and the
 //! packaged apps of the current user are listed read-only, and removing one starts the vendor's
 //! own registered uninstaller (or asks the package manager) and is recorded as an activity that
@@ -88,6 +92,7 @@ pub mod settings;
 pub mod startup;
 pub mod time;
 pub mod trend;
+pub mod tuning;
 pub mod tweak;
 
 #[cfg(any(test, feature = "fakes"))]
@@ -167,6 +172,11 @@ pub use startup::{
 };
 pub use time::{Clock, SystemClock, Timestamp};
 pub use trend::{MemoryHistory, MemoryPoint};
+pub use tuning::{
+    Inspection, MAX_RULES, PowerThrottling, PriorityClass, ProcessChange, ProcessRule,
+    ProcessSettings, ProcessTarget, ProcessTuner, RULES_SETTINGS_KEY, RuleStatus, RulesRun,
+    TUNE_LABEL, TuneError, TuneReport, TuneRequest,
+};
 pub use tweak::{
     ApplyOutcome, BatchRevert, Catalogue, CatalogueError, CatalogueIssue, Category, IssueKind,
     RESET_LABEL_SUFFIX, RestartRequirement, StepPreview, Tweak, TweakApplyReport, TweakEngine,

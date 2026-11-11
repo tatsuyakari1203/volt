@@ -144,6 +144,30 @@ pub trait Processes: Send + Sync {
     /// An unknown pid, or one whose creation time differs, is [`PortError::NotFound`] and a process
     /// the user may not end is [`PortError::AccessDenied`].
     fn terminate(&self, pid: u32, created_at_100ns: u64) -> Result<(), PortError>;
+
+    /// Reads the settings of a process that Volt can change: priority class, CPU affinity and
+    /// power throttling. `created_at_100ns` is the creation time the listing gave; another one
+    /// means the id was reused and is [`PortError::NotFound`], like an unknown id.
+    ///
+    /// A process the unelevated user may not change (it runs elevated, belongs to another user or
+    /// is protected) is [`PortError::AccessDenied`]: the adapter asks for the right to change it,
+    /// so "readable" means "changeable". A priority class Volt does not offer (Realtime) is
+    /// [`PortError::Unsupported`].
+    fn settings(
+        &self,
+        pid: u32,
+        created_at_100ns: u64,
+    ) -> Result<crate::tuning::ProcessSettings, PortError>;
+
+    /// Changes the settings a [`ProcessChange`](crate::tuning::ProcessChange) names and leaves
+    /// the others alone. All or nothing: when one field cannot be set, the ones already set are
+    /// put back and the error is returned. Errors as for [`Processes::settings`].
+    fn apply_settings(
+        &self,
+        pid: u32,
+        created_at_100ns: u64,
+        change: &crate::tuning::ProcessChange,
+    ) -> Result<(), PortError>;
 }
 
 /// Physical memory totals.

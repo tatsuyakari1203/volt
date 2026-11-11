@@ -66,7 +66,7 @@ const WINDOWS_CRITICAL: [&str; 25] = [
 ];
 
 /// The lowest process id that may be ended. Ids 0 (idle) and 4 (System) are the kernel.
-const FIRST_ENDABLE_PID: u32 = 5;
+pub(crate) const FIRST_ENDABLE_PID: u32 = 5;
 
 /// 100 ns ticks in one millisecond.
 const TICKS_PER_MILLI: u64 = 10_000;
@@ -526,7 +526,7 @@ fn percent(used: u64, capacity: u64) -> f64 {
 
 /// The identity of the group a process belongs to: its executable path in lower case when known,
 /// else its executable name in lower case.
-fn group_key(process: &ProcessInfo) -> String {
+pub(crate) fn group_key(process: &ProcessInfo) -> String {
     match process.path.as_deref() {
         Some(path) if !path.is_empty() => path.to_lowercase(),
         _ => process.name.to_lowercase(),
@@ -535,7 +535,7 @@ fn group_key(process: &ProcessInfo) -> String {
 
 /// Whether a process is system-owned: it runs in session 0, where Windows keeps its services and
 /// system processes. A user's apps never run there.
-fn is_system_owned(process: &ProcessInfo) -> bool {
+pub(crate) fn is_system_owned(process: &ProcessInfo) -> bool {
     process.session_id == 0
 }
 
@@ -555,7 +555,7 @@ fn endability(name: &str, volt: u32, system: u32, total: u32) -> Endability {
 
 /// The ids of Volt's own process and everything it started (the `WebView`), found through the
 /// parent ids of the list.
-fn volt_pids(list: &[ProcessInfo], own_pid: u32) -> HashSet<u32> {
+pub(crate) fn volt_pids(list: &[ProcessInfo], own_pid: u32) -> HashSet<u32> {
     let mut owned = HashSet::from([own_pid]);
     loop {
         let before = owned.len();

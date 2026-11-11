@@ -27,6 +27,7 @@ use volt_win::{WinMemory, WinMetrics};
 
 use crate::metrics::{MetricsUpdated, MetricsView};
 use crate::trend::{MemoryPointView, MemoryTrend, MemoryTrendUpdated, TrendSource};
+use crate::tuning::{RULES_EVERY_READS, RulesSource, apply_rules_on};
 use crate::window::MAIN_WINDOW;
 
 /// Time between two samples.
@@ -344,10 +345,11 @@ pub(crate) fn real<R: Runtime>(app: &AppHandle<R>, trend: Arc<MemoryTrend>) -> S
     let emitter = app.clone();
     let probe = app.clone();
     let trend_emitter = app.clone();
+    let rules_app = app.clone();
     Sampler::new(
         Arc::new(move || {
             let announcer = trend_emitter.clone();
-            Box::new(TrendSource::new(
+            let trended = Box::new(TrendSource::new(
                 Box::new(WinMetrics::new()),
                 Arc::new(WinMemory::new()) as Arc<dyn Memory>,
                 Arc::new(SystemClock),
@@ -356,6 +358,14 @@ pub(crate) fn real<R: Runtime>(app: &AppHandle<R>, trend: Arc<MemoryTrend>) -> S
                     // A failed emit only means the chart misses one point.
                     let _ = MemoryTrendUpdated(MemoryPointView::from(point)).emit(&announcer);
                 }),
+            ));
+            // The saved process rules are reapplied on this thread every few reads (see
+            // `tuning`), so they add no thread and stop when the window closes.
+            let ticking = rules_app.clone();
+            Box::new(RulesSource::new(
+                trended,
+                Arc::new(move || apply_rules_on(&ticking)),
+                RULES_EVERY_READS,
             ))
         }),
         Arc::new(move |snapshot| {

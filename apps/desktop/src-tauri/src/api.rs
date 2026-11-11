@@ -22,8 +22,8 @@ use volt_core::{
     Clock, EntryId, EntryState, Evidence, ItemStatus, JournalEntry, MEMORY_LABEL,
     PROCESS_END_LABEL, Phrase, RESET_LABEL_SUFFIX, RestartRequirement, RevertError, RevertOutcome,
     RevertReport, Risk, Source, StartupEntry, StartupOrigin, StartupScope, StartupState,
-    StepPreview, SystemClock, Timestamp, TweakApplyReport, TweakError, TweakRevertReport,
-    TweakState, activity, overwrites_of, render_text,
+    StepPreview, SystemClock, TUNE_LABEL, Timestamp, TweakApplyReport, TweakError,
+    TweakRevertReport, TweakState, activity, overwrites_of, render_text,
 };
 
 use crate::IpcError;
@@ -477,6 +477,9 @@ const MEMORY_TITLE: &str = "Memory cleaning";
 
 /// What the Undo page calls ending apps from the Processes page.
 const PROCESS_END_TITLE: &str = "Ended apps";
+
+/// What the Undo page calls a change of priority, cores or Efficiency mode of an app.
+const PROCESS_TUNE_TITLE: &str = "Process settings";
 
 /// What the Undo page calls emptying the Recycle Bin.
 const RECYCLE_BIN_TITLE: &str = "Recycle Bin";
@@ -1212,6 +1215,7 @@ fn activity_title(core: &AppCore, label: &str) -> Option<String> {
         STARTUP_LABEL => return Some(STARTUP_TITLE.to_owned()),
         MEMORY_LABEL => return Some(MEMORY_TITLE.to_owned()),
         PROCESS_END_LABEL => return Some(PROCESS_END_TITLE.to_owned()),
+        TUNE_LABEL => return Some(PROCESS_TUNE_TITLE.to_owned()),
         "recycle-bin" => return Some(RECYCLE_BIN_TITLE.to_owned()),
         _ => {}
     }

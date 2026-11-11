@@ -172,5 +172,22 @@
   "boost.notice.done": "Boost xong.",
   "boost.notice.memory": "Bộ nhớ khả dụng {before} lên {after}.",
   "boost.notice.moved": "Đã chuyển {files} vào Thùng rác.",
-  "boost.notice.skipped": "Đã bỏ qua {count}: mở Volt để xem lý do."
+  "boost.notice.skipped": "Đã bỏ qua {count}: mở Volt để xem lý do.",
+  "subject.process": "cài đặt của {name}",
+  "prior.processes.other": "cài đặt của {count} tiến trình",
+  "restore.processes.other": "đã khôi phục cài đặt của {count} tiến trình",
+  "summary.processTuned": "Đã thay đổi {name}: {change}",
+  "summary.processesEnded": "{verb} {subject}: mọi tiến trình đã thoát từ trước nên không còn gì để khôi phục{note}",
+  "summary.ruleFailed": "Không áp dụng được quy tắc đã lưu cho {name} ({reason})",
+  "tune.list": "{items}",
+  "tune.priority": "mức ưu tiên {class}",
+  "tune.affinity.other": "{count} lõi xử lý",
+  "tune.efficiency.on": "Chế độ tiết kiệm bật",
+  "tune.efficiency.off": "Chế độ tiết kiệm tắt",
+  "tune.efficiency.default": "Chế độ tiết kiệm do Windows quyết định",
+  "priority.idle": "thấp",
+  "priority.belowNormal": "dưới bình thường",
+  "priority.normal": "bình thường",
+  "priority.aboveNormal": "trên bình thường",
+  "priority.high": "cao"
 }

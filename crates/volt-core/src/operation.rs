@@ -16,6 +16,7 @@ use crate::registry::{
     read_key_contents, remove_empty_keys,
 };
 use crate::service::ServiceStartType;
+use crate::tuning::{self, ProcessChange, ProcessSettings, ProcessTarget};
 
 /// One undoable change to the system.
 ///
@@ -76,6 +77,17 @@ pub enum Operation {
         #[serde(default = "effect_after_default")]
         effect_after: bool,
     },
+    /// Change the priority, CPU affinity or power throttling of running processes (all the
+    /// processes of one app). All or nothing. Reverting puts back what each process held, for
+    /// the processes that still run.
+    TuneProcesses {
+        /// The executable name, for descriptions.
+        name: String,
+        /// The processes, as the listing named them.
+        targets: Vec<ProcessTarget>,
+        /// What to change.
+        change: ProcessChange,
+    },
 }
 
 const fn effect_after_default() -> bool {
@@ -110,6 +122,9 @@ pub enum PriorState {
     /// Whether the effect of a command was in place (its detect command said
     /// so).
     CommandState(bool),
+    /// The settings of processes, in the order of the operation's targets; `None` for one that
+    /// had ended when they were read.
+    Processes(Vec<Option<ProcessSettings>>),
 }
 
 impl Operation {
@@ -145,6 +160,9 @@ impl Operation {
             Self::RunCommand { detect, .. } => {
                 Ok(PriorState::CommandState(run_detect(ports, detect)?))
             }
+            Self::TuneProcesses { targets, .. } => Ok(PriorState::Processes(
+                tuning::detect_targets(ports, targets)?,
+            )),
         }
     }
 
@@ -162,6 +180,9 @@ impl Operation {
             }
             (Self::RunCommand { effect_after, .. }, PriorState::CommandState(now)) => {
                 effect_after == now
+            }
+            (Self::TuneProcesses { change, .. }, PriorState::Processes(now)) => {
+                tuning::targets_met(change, now)
             }
             _ => false,
         }
@@ -191,6 +212,9 @@ impl Operation {
                 start_type,
             } => ports.services.set_start_type(service, *start_type),
             Self::RunCommand { apply, .. } => run_expecting_success(ports, apply),
+            Self::TuneProcesses {
+                targets, change, ..
+            } => tuning::apply_targets(ports, targets, change),
         }
     }
 
@@ -240,6 +264,12 @@ impl Operation {
             (Self::RunCommand { revert, .. }, PriorState::CommandState(_)) => {
                 run_expecting_success(ports, revert)
             }
+            (
+                Self::TuneProcesses {
+                    targets, change, ..
+                },
+                PriorState::Processes(before),
+            ) => tuning::revert_targets(ports, targets, change, before),
             _ => Err(PortError::InvalidInput(
                 "journal prior state does not match the operation".to_owned(),
             )),
@@ -273,6 +303,15 @@ impl Operation {
                     "not applied"
                 }
                 .to_owned(),
+            ),
+            Self::TuneProcesses { name, change, .. } => (
+                format!("processes of {name}"),
+                change
+                    .phrases()
+                    .iter()
+                    .map(crate::phrase::Phrase::english)
+                    .collect::<Vec<_>>()
+                    .join(", "),
             ),
         }
     }
@@ -318,6 +357,10 @@ impl Operation {
                     "prior.notApplied"
                 }),
             ),
+            Self::TuneProcesses { name, change, .. } => (
+                Phrase::new("subject.process").text("name", name.clone()),
+                Phrase::new("tune.list").list("items", ", ", change.phrases()),
+            ),
         }
     }
 }
@@ -349,6 +392,9 @@ impl PriorState {
             Self::ServiceStartType(start_type) => start_type_phrase(*start_type),
             Self::CommandState(true) => Phrase::new("prior.applied"),
             Self::CommandState(false) => Phrase::new("prior.notApplied"),
+            Self::Processes(settings) => {
+                Phrase::new("prior.processes").count("count", settings.iter().flatten().count())
+            }
         }
     }
 
@@ -369,6 +415,10 @@ impl PriorState {
             Self::ServiceStartType(start_type) => start_type.to_string(),
             Self::CommandState(true) => "applied".to_owned(),
             Self::CommandState(false) => "not applied".to_owned(),
+            Self::Processes(settings) => match settings.iter().flatten().count() {
+                1 => "1 process".to_owned(),
+                n => format!("{n} processes"),
+            },
         }
     }
 }

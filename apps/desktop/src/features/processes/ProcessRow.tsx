@@ -1,4 +1,4 @@
-import { Lock } from 'lucide-react';
+import { Lock, SlidersHorizontal } from 'lucide-react';
 import { memo } from 'react';
 import { type MessageKey, t } from '../../shared/i18n';
 import type { ProcessGroupView } from '../../shared/ipc';
@@ -9,6 +9,8 @@ export interface ProcessRowProps {
   group: ProcessGroupView;
   /** Ask to end the app (the screen confirms first). Must be a stable function. */
   onEnd: (group: ProcessGroupView) => void;
+  /** Open the settings (priority, cores, Efficiency mode). Must be a stable function. */
+  onTune: (group: ProcessGroupView) => void;
 }
 
 const protectedReason = {
@@ -24,6 +26,7 @@ const protectedReason = {
 function sameRow(a: ProcessRowProps, b: ProcessRowProps): boolean {
   return (
     a.onEnd === b.onEnd &&
+    a.onTune === b.onTune &&
     a.group.id === b.group.id &&
     a.group.name === b.group.name &&
     a.group.processCount === b.group.processCount &&
@@ -34,8 +37,11 @@ function sameRow(a: ProcessRowProps, b: ProcessRowProps): boolean {
   );
 }
 
-/** One app: name and process count, summed memory and CPU, and End (or why it cannot be ended). */
-export const ProcessRow = memo(function ProcessRow({ group, onEnd }: ProcessRowProps) {
+/**
+ * One app: name and process count, summed memory and CPU, and Settings and End (or why it cannot
+ * be changed or ended).
+ */
+export const ProcessRow = memo(function ProcessRow({ group, onEnd, onTune }: ProcessRowProps) {
   const { endability } = group;
   const locked = endability === 'protectedWindows' || endability === 'protectedVolt';
   return (
@@ -54,7 +60,7 @@ export const ProcessRow = memo(function ProcessRow({ group, onEnd }: ProcessRowP
         <span className="sr-only">{t('processes.row.cpu')} </span>
         {cpuText(group.cpuPercent)}
       </p>
-      <div className="flex w-20 shrink-0 justify-end">
+      <div className="flex w-24 shrink-0 items-center justify-end gap-1">
         {locked ? (
           <span title={t(protectedReason[endability])}>
             <Badge>
@@ -64,13 +70,24 @@ export const ProcessRow = memo(function ProcessRow({ group, onEnd }: ProcessRowP
             <span className="sr-only">{t(protectedReason[endability])}</span>
           </span>
         ) : (
-          <Button
-            size="sm"
-            aria-label={t('processes.row.end.label', { name: group.name })}
-            onClick={() => onEnd(group)}
-          >
-            {t('processes.row.end')}
-          </Button>
+          <>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="px-2"
+              aria-label={t('processes.row.tune.label', { name: group.name })}
+              title={t('processes.row.tune.label', { name: group.name })}
+              icon={<SlidersHorizontal aria-hidden size={16} />}
+              onClick={() => onTune(group)}
+            />
+            <Button
+              size="sm"
+              aria-label={t('processes.row.end.label', { name: group.name })}
+              onClick={() => onEnd(group)}
+            >
+              {t('processes.row.end')}
+            </Button>
+          </>
         )}
       </div>
     </li>

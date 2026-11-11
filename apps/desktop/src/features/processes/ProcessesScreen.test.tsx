@@ -9,6 +9,10 @@ import { ProcessesScreen } from './ProcessesScreen';
 const ipc = vi.hoisted(() => ({
   listProcesses: vi.fn(),
   endApp: vi.fn(),
+  listProcessRules: vi.fn(),
+  removeProcessRule: vi.fn(),
+  inspectApp: vi.fn(),
+  tuneApp: vi.fn(),
 }));
 vi.mock('../../shared/ipc', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../shared/ipc')>()),
@@ -85,6 +89,8 @@ beforeEach(() => {
   ipc.listProcesses.mockReset();
   ipc.endApp.mockReset();
   ipc.listProcesses.mockResolvedValue(sample);
+  ipc.listProcessRules.mockReset();
+  ipc.listProcessRules.mockResolvedValue([]);
 });
 
 afterEach(() => {

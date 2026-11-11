@@ -66,6 +66,8 @@ export function activityTitle(item: ActivityItem): string | null {
       return t('undo.title.memory');
     case 'process.end':
       return t('undo.title.endedApps');
+    case 'process.tune':
+      return t('undo.title.processSettings');
     case 'recycle-bin':
       return t('clean.bin.title');
     default:
