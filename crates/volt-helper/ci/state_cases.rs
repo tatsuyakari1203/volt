@@ -368,12 +368,18 @@ fn marker() -> RegistryValueRef {
 }
 
 /// Removes the throwaway keys, whatever is left of them.
-fn clean_up(registry: WinRegistry) {
+fn clean_up(registry: WinRegistry, with_open_key: bool) {
+    // The key the workflow made writable for Users is the workflow's: it is left alone at the start
+    // and removed at the end.
+    let open = with_open_key.then_some(r"SOFTWARE\VoltTest\Open");
     for subkey in [
-        r"SOFTWARE\VoltTest\Ci",
-        r"SOFTWARE\VoltTest\Open",
-        r"SOFTWARE\VoltTest",
-    ] {
+        Some(r"SOFTWARE\VoltTest\Ci"),
+        open,
+        Some(r"SOFTWARE\VoltTest"),
+    ]
+    .into_iter()
+    .flatten()
+    {
         let _ = registry.delete_key(&RegistryKeyRef::new(
             RegistryHive::LocalMachine,
             subkey,
@@ -442,7 +448,7 @@ fn leave_an_interrupted_apply(
 /// The cases against the harness-feature helper, which confirms everything.
 pub(crate) fn tweaks_phase(report: &mut Report, image: &Path, me: &ProcessFacts) {
     let registry = WinRegistry::new();
-    clean_up(registry);
+    clean_up(registry, false);
     let staged = leave_an_interrupted_apply(report, image, me, registry);
 
     let elevator = WinElevator::new(volt_helper::catalogue_hashes());
@@ -453,7 +459,7 @@ pub(crate) fn tweaks_phase(report: &mut Report, image: &Path, me: &ProcessFacts)
         format!("{:?}", hello.as_ref().map(|h| h.helper_version.clone())),
     );
     if hello.is_err() {
-        clean_up(registry);
+        clean_up(registry, true);
         return;
     }
 
@@ -536,7 +542,7 @@ pub(crate) fn tweaks_phase(report: &mut Report, image: &Path, me: &ProcessFacts)
     open_key_refused(report, &elevator, registry);
 
     elevator.bye();
-    clean_up(registry);
+    clean_up(registry, true);
 }
 
 /// A key on the path that a non-administrator can write: the workflow made `SOFTWARE\VoltTest\Open`
