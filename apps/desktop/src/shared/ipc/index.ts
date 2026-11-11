@@ -46,6 +46,8 @@ import {
   type LargeFilesProgress,
   type LargeFilesResult,
   type LargeFilesTrashResult,
+  type LeftoverRemovalView,
+  type LeftoverScanView,
   type MemoryAreaView,
   type MemoryCleanResult,
   type MemoryPointView,
@@ -103,6 +105,7 @@ export type {
   CleanScanProgress,
   CleanScanResult,
   ClearResult,
+  ConfidenceView,
   ConfigExportResult,
   DeductionView,
   DiskView,
@@ -146,6 +149,12 @@ export type {
   LargeFilesResult,
   LargeFilesTrashResult,
   LargeFileView,
+  LeftoverKindView,
+  LeftoverRemovalView,
+  LeftoverRemovedView,
+  LeftoverScanView,
+  LeftoverSkippedView,
+  LeftoverView,
   MemoryAreaView,
   MemoryCleanResult,
   MemoryListsView,
@@ -929,4 +938,21 @@ export async function uninstallApp(id: string, includeSystem: boolean): Promise<
  */
 export async function stopWaitingForUninstaller(): Promise<void> {
   await call(() => commands.stopWaitingForUninstaller());
+}
+
+/**
+ * Looks for what the uninstaller of an app removed in this session left behind, from what its
+ * entry said before it was removed. Reads only. Each find carries a confidence level and the
+ * evidence in words.
+ */
+export async function scanLeftovers(id: string): Promise<LeftoverScanView> {
+  return call(() => commands.scanLeftovers(id));
+}
+
+/**
+ * Removes the chosen leftovers of an app: folders go to the Recycle Bin and per-user registry keys
+ * are saved in the undo journal first. The caller shows a preview with sizes and asks first.
+ */
+export async function removeLeftovers(id: string, ids: string[]): Promise<LeftoverRemovalView> {
+  return call(() => commands.removeLeftovers(id, ids));
 }

@@ -45,6 +45,8 @@ export interface QueuePanelProps {
   onStop: () => void;
   onStopWaiting: () => void;
   onDone: () => void;
+  /** Opens the leftover scan of a removed app. Never started on its own. */
+  onLeftovers: (item: QueueItem) => void;
 }
 
 /**
@@ -52,7 +54,7 @@ export interface QueuePanelProps {
  * how it ended, and while it runs two ways out: stop waiting for the uninstaller that is running
  * (the queue goes on with the next app) or stop after it (the rest is skipped); then Done.
  */
-export function QueuePanel({ queue, onStop, onStopWaiting, onDone }: QueuePanelProps) {
+export function QueuePanel({ queue, onStop, onStopWaiting, onDone, onLeftovers }: QueuePanelProps) {
   const counts = tally(queue.items);
   const waiting = queue.items.some((item) => item.status === 'running');
   return (
@@ -84,6 +86,11 @@ export function QueuePanel({ queue, onStop, onStopWaiting, onDone }: QueuePanelP
               >
                 {statusText(item)}
               </p>
+              {item.status === 'removed' && item.leftovers ? (
+                <Button size="sm" className="mt-1" onClick={() => onLeftovers(item)}>
+                  {t('apps.leftovers.button')}
+                </Button>
+              ) : null}
             </div>
           </li>
         ))}

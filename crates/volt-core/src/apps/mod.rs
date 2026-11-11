@@ -28,9 +28,13 @@ mod command;
 #[cfg(any(test, feature = "fakes"))]
 pub mod fakes;
 #[cfg(test)]
+mod leftover_tests;
+mod leftovers;
+#[cfg(test)]
 mod tests;
 mod win32;
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, TryLockError};
 use std::time::{Duration, Instant};
@@ -38,6 +42,10 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 
 pub use command::{CommandRefusal, UninstallCommand};
+pub use leftovers::{
+    Confidence, LEFTOVERS_LABEL, Leftover, LeftoverCleaner, LeftoverError, LeftoverKind,
+    LeftoverLock, LeftoverRemoval, LeftoverRemoved, LeftoverScan, LeftoverSkip, MAX_KEYS,
+};
 pub use win32::AppLocation;
 
 use crate::activity::{ActivityLog, ActivityOutcome, NewActivity, error_class};
@@ -46,6 +54,7 @@ use crate::journal::Source;
 use crate::phrase::{Phrase, class_phrase};
 use crate::registry::Registry;
 use crate::time::{Clock, Timestamp};
+use leftovers::Footprint;
 
 /// The activity label of removing an app.
 pub const UNINSTALL_LABEL: &str = "apps.uninstall";
@@ -170,6 +179,8 @@ pub struct InstalledApp {
     /// Why it is hidden by default; `None` for an ordinary app.
     pub hidden: Option<HiddenReason>,
     removal: Removal,
+    /// What the entry said about where the app lives; kept for the leftover scan.
+    footprint: Option<Footprint>,
 }
 
 impl InstalledApp {
@@ -349,6 +360,23 @@ impl OwnInstall {
     }
 }
 
+impl OwnInstall {
+    /// Whether `folder` is Volt's folder, is inside it or holds it.
+    fn overlaps(&self, folder: &str) -> bool {
+        let Some(own) = self.folder.as_deref().filter(|own| !own.is_empty()) else {
+            return false;
+        };
+        let folder = normalise(folder);
+        let below = |inner: &str, outer: &str| {
+            inner == outer
+                || inner
+                    .strip_prefix(outer)
+                    .is_some_and(|rest| rest.starts_with('\\'))
+        };
+        below(&folder, own) || below(own, &folder)
+    }
+}
+
 fn normalise(path: &str) -> String {
     path.trim()
         .trim_matches('"')
@@ -389,6 +417,10 @@ pub struct UninstallReport {
     pub listing: AppListing,
     /// Whether the activity record could not be written (the removal itself is unaffected).
     pub activity_write_failed: bool,
+    /// Whether Volt kept what the app's entry said about where it lived, so
+    /// [`AppManager::scan_leftovers`] can look for what the uninstaller left. Only for an app that
+    /// was removed.
+    pub leftovers_available: bool,
 }
 
 /// Why nothing was started. Nothing was changed.
@@ -424,6 +456,9 @@ pub struct AppManager {
     stop: StopWaiting,
     poll: Duration,
     limit: Duration,
+    leftovers: Option<LeftoverCleaner>,
+    /// What the entries of the apps removed in this session said, by app id.
+    removed: Mutex<HashMap<String, Footprint>>,
 }
 
 /// How often the registry is read while waiting for an uninstaller that could not be followed.
@@ -460,7 +495,16 @@ impl AppManager {
             stop: StopWaiting::new(),
             poll: DEFAULT_POLL,
             limit: DEFAULT_LIMIT,
+            leftovers: None,
+            removed: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Lets the page look for what an uninstaller left behind (see [`AppManager::scan_leftovers`]).
+    #[must_use]
+    pub fn with_leftovers(mut self, cleaner: LeftoverCleaner) -> Self {
+        self.leftovers = Some(cleaner);
+        self
     }
 
     /// Changes how an uninstaller that could not be followed is waited for: the registry is read
@@ -654,9 +698,52 @@ impl AppManager {
             exit_code,
             listing,
             activity_write_failed: false,
+            leftovers_available: false,
         };
+        if outcome == UninstallOutcome::Removed
+            && self.leftovers.is_some()
+            && let Some(footprint) = app.footprint.clone()
+        {
+            self.removed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(app.id.clone(), footprint);
+            report.leftovers_available = true;
+        }
         report.activity_write_failed = !self.record(&report, source);
         Ok(report)
+    }
+
+    /// Looks for what the uninstaller of the app `id` left behind, from what its entry said before
+    /// it was removed. Read-only. Only an app Volt removed in this session has a record.
+    pub fn scan_leftovers(&self, id: &str) -> Result<LeftoverScan, LeftoverError> {
+        let (cleaner, footprint) = self.leftover_inputs(id)?;
+        Ok(cleaner.scan(&footprint, &self.list().apps, &self.own))
+    }
+
+    /// Removes the leftovers `chosen` names (ids of a fresh [`AppManager::scan_leftovers`]), after
+    /// looking at each again: folders to the Recycle Bin, per-user registry keys through the undo
+    /// journal. Locked finds and ids that are not in a fresh scan are skipped.
+    pub fn remove_leftovers(
+        &self,
+        id: &str,
+        chosen: &[String],
+        source: Source,
+    ) -> Result<LeftoverRemoval, LeftoverError> {
+        let (cleaner, footprint) = self.leftover_inputs(id)?;
+        Ok(cleaner.remove(&footprint, &self.list().apps, &self.own, chosen, source))
+    }
+
+    fn leftover_inputs(&self, id: &str) -> Result<(&LeftoverCleaner, Footprint), LeftoverError> {
+        let cleaner = self.leftovers.as_ref().ok_or(LeftoverError::Unavailable)?;
+        let footprint = self
+            .removed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .cloned()
+            .ok_or(LeftoverError::NoRecord)?;
+        Ok((cleaner, footprint))
     }
 
     /// For an uninstaller that could not be followed past its first process: waits until the
@@ -750,5 +837,6 @@ fn packaged_app(package: &PackagedApp) -> Option<InstalledApp> {
         installed: package.installed.and_then(AppDate::of),
         hidden,
         removal: Removal::Package(package.full_name.clone()),
+        footprint: None,
     })
 }

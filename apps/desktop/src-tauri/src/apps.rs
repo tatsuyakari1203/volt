@@ -14,12 +14,14 @@
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use volt_core::{
-    AppListing, AppProblem, AppSource, HiddenReason, InstalledApp, Source, UninstallError,
+    AppListing, AppProblem, AppSource, Confidence, HiddenReason, InstalledApp, Leftover,
+    LeftoverError, LeftoverKind, LeftoverRemoval, LeftoverScan, Phrase, Source, UninstallError,
     UninstallOutcome, UninstallReport,
 };
 
 use crate::IpcError;
 use crate::commands::blocking;
+use crate::phrase::PhraseView;
 use crate::wiring::{AppCore, AppState};
 
 /// Where an app was listed. Mirrors [`volt_core::AppSource`].
@@ -164,6 +166,9 @@ pub struct UninstallResult {
     pub exit_code: Option<i32>,
     /// Whether it was written to the activity log (as a change that cannot be undone).
     pub recorded: bool,
+    /// Whether Volt kept what the app's entry said about where it lived, so the page can offer
+    /// to look for what the uninstaller left behind (`scanLeftovers`).
+    pub leftovers_available: bool,
     /// The list as it is now.
     pub listing: AppListView,
 }
@@ -213,6 +218,7 @@ fn result_view(report: &UninstallReport) -> UninstallResult {
         outcome: report.outcome.into(),
         exit_code: report.exit_code,
         recorded: !report.activity_write_failed,
+        leftovers_available: report.leftovers_available,
         listing: list_view(&report.listing),
     }
 }
@@ -234,6 +240,224 @@ impl From<UninstallError> for IpcError {
             other => Self::plain(crate::ipc::ErrorClass::InvalidInput, other.to_string()),
         }
     }
+}
+
+/// How sure Volt is that a find belongs to the removed app. Mirrors [`volt_core::Confidence`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ConfidenceView {
+    /// A record made before the uninstall points exactly there.
+    High,
+    /// The names fit exactly, or an indirect record points there.
+    Medium,
+    /// Shared, or only the name fits.
+    Low,
+}
+
+impl From<Confidence> for ConfidenceView {
+    fn from(confidence: Confidence) -> Self {
+        match confidence {
+            Confidence::High => Self::High,
+            Confidence::Medium => Self::Medium,
+            Confidence::Low => Self::Low,
+        }
+    }
+}
+
+/// What a leftover is. Mirrors [`volt_core::LeftoverKind`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum LeftoverKindView {
+    /// A folder, which goes to the Recycle Bin.
+    Folder,
+    /// A registry key, which is saved in the undo journal first.
+    RegistryKey,
+}
+
+impl From<LeftoverKind> for LeftoverKindView {
+    fn from(kind: LeftoverKind) -> Self {
+        match kind {
+            LeftoverKind::Folder => Self::Folder,
+            LeftoverKind::RegistryKey => Self::RegistryKey,
+        }
+    }
+}
+
+/// One folder or registry key the uninstaller seems to have left behind.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LeftoverView {
+    /// Identity within the app; pass it to `removeLeftovers`.
+    pub id: String,
+    /// Folder or registry key.
+    pub kind: LeftoverKindView,
+    /// The path or the key.
+    pub location: String,
+    /// How sure Volt is.
+    pub confidence: ConfidenceView,
+    /// Whether the page selects it at first (high confidence and removable).
+    pub selected_by_default: bool,
+    /// Why Volt thinks it belongs to the app, one English sentence per piece of evidence.
+    pub evidence: Vec<String>,
+    /// The same sentences as phrases, for the window to write in its own language.
+    pub evidence_phrases: Vec<PhraseView>,
+    /// A folder's size in bytes (0 for a key).
+    pub size_bytes: f64,
+    /// The files of a folder, or the keys of a registry tree.
+    pub items: f64,
+    /// Why it cannot be removed from here, when so (machine-wide keys need the helper).
+    pub locked: Option<String>,
+    /// `locked` as a phrase.
+    pub locked_phrase: Option<PhraseView>,
+}
+
+/// What the scan for leftovers found.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LeftoverScanView {
+    /// The app the scan is for.
+    pub app_name: String,
+    /// The finds, the most certain first.
+    pub items: Vec<LeftoverView>,
+    /// Something could not be read, or a size is only what was counted before Volt stopped.
+    pub incomplete: bool,
+}
+
+/// One leftover that was removed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LeftoverRemovedView {
+    /// The find's id.
+    pub id: String,
+    /// Folder or registry key.
+    pub kind: LeftoverKindView,
+    /// The path or the key.
+    pub location: String,
+    /// A folder's size in bytes.
+    pub size_bytes: f64,
+}
+
+/// One leftover that was chosen and not removed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LeftoverSkippedView {
+    /// The find's id.
+    pub id: String,
+    /// Why it was left, in English.
+    pub reason: String,
+    /// `reason` as a phrase.
+    pub reason_phrase: PhraseView,
+}
+
+/// What removing the chosen leftovers did.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LeftoverRemovalView {
+    /// What was removed.
+    pub removed: Vec<LeftoverRemovedView>,
+    /// What was chosen and left alone.
+    pub skipped: Vec<LeftoverSkippedView>,
+    /// The bytes of the folders that went to the Recycle Bin.
+    pub removed_bytes: f64,
+    /// Whether the activity record could not be written.
+    pub history_incomplete: bool,
+}
+
+fn leftover_view(item: &Leftover) -> LeftoverView {
+    LeftoverView {
+        id: item.id.clone(),
+        kind: item.kind.into(),
+        location: item.location.clone(),
+        confidence: item.confidence.into(),
+        selected_by_default: item.selected_by_default(),
+        evidence: item.evidence.iter().map(Phrase::english).collect(),
+        evidence_phrases: item.evidence.iter().map(PhraseView::from).collect(),
+        size_bytes: bytes(item.size_bytes),
+        items: bytes(item.items),
+        locked: item.locked.map(|lock| lock.phrase().english()),
+        locked_phrase: item.locked.map(|lock| PhraseView::from(&lock.phrase())),
+    }
+}
+
+fn scan_view(scan: &LeftoverScan) -> LeftoverScanView {
+    LeftoverScanView {
+        app_name: scan.app_name.clone(),
+        items: scan.items.iter().map(leftover_view).collect(),
+        incomplete: scan.incomplete,
+    }
+}
+
+fn removal_view(removal: &LeftoverRemoval) -> LeftoverRemovalView {
+    LeftoverRemovalView {
+        removed: removal
+            .removed
+            .iter()
+            .map(|removed| LeftoverRemovedView {
+                id: removed.id.clone(),
+                kind: removed.kind.into(),
+                location: removed.location.clone(),
+                size_bytes: bytes(removed.size_bytes),
+            })
+            .collect(),
+        skipped: removal
+            .skipped
+            .iter()
+            .map(|(id, reason)| LeftoverSkippedView {
+                id: id.clone(),
+                reason: reason.phrase().english(),
+                reason_phrase: PhraseView::from(&reason.phrase()),
+            })
+            .collect(),
+        removed_bytes: bytes(
+            removal
+                .removed
+                .iter()
+                .map(|removed| removed.size_bytes)
+                .sum(),
+        ),
+        history_incomplete: removal.activity_write_failed,
+    }
+}
+
+impl From<LeftoverError> for IpcError {
+    fn from(error: LeftoverError) -> Self {
+        match error {
+            LeftoverError::NoRecord => {
+                Self::not_found(&volt_core::Phrase::new("err.leftovers.noRecord"))
+            }
+            LeftoverError::Unavailable => {
+                Self::unsupported(&volt_core::Phrase::new("err.leftovers.unavailable"))
+            }
+            // Anything added later.
+            other => Self::plain(crate::ipc::ErrorClass::InvalidInput, other.to_string()),
+        }
+    }
+}
+
+/// Looks for what the uninstaller of the app `id` left behind, from what its entry said before
+/// it was removed. Reads only; an app Volt did not remove in this session is `notFound`.
+pub fn scan_leftovers_of(core: &AppCore, id: &str) -> Result<LeftoverScanView, IpcError> {
+    Ok(scan_view(&core.apps()?.scan_leftovers(id)?))
+}
+
+/// Removes the leftovers `ids` of the app `id`: folders to the Recycle Bin, per-user registry keys
+/// through the undo journal. Each is found again first; one that is not in a fresh scan, or is
+/// locked, is left alone and reported.
+pub fn remove_leftovers_of(
+    core: &AppCore,
+    id: &str,
+    ids: &[String],
+) -> Result<LeftoverRemovalView, IpcError> {
+    if ids.is_empty() {
+        return Err(IpcError::invalid(&volt_core::Phrase::new(
+            "err.leftovers.noItem",
+        )));
+    }
+    let removal = core.apps()?.remove_leftovers(id, ids, Source::Manual)?;
+    if removal.activity_write_failed {
+        core.note_history_incomplete();
+    }
+    Ok(removal_view(&removal))
 }
 
 /// Reads the installed apps (desktop apps from the registry and the current user's packaged
@@ -302,4 +526,28 @@ pub(crate) async fn stop_waiting_for_uninstaller(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), IpcError> {
     blocking(&state, stop_waiting_of).await
+}
+
+/// Tauri command: looks for what the uninstaller of an app removed in this session left behind.
+/// Reads only. Each find has a confidence level and the evidence in words.
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn scan_leftovers(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<LeftoverScanView, IpcError> {
+    blocking(&state, move |core| scan_leftovers_of(core, &id)).await
+}
+
+/// Tauri command: removes the chosen leftovers of an app: folders go to the Recycle Bin and
+/// per-user registry keys are saved in the undo journal first. The UI shows a preview with sizes
+/// and asks first.
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn remove_leftovers(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    ids: Vec<String>,
+) -> Result<LeftoverRemovalView, IpcError> {
+    blocking(&state, move |core| remove_leftovers_of(core, &id, &ids)).await
 }

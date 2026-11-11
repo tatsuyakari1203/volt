@@ -18,6 +18,8 @@ export interface QueueItem {
   status: ItemStatus;
   /** The reason a command was refused or failed, when there is one. */
   error: string | null;
+  /** Whether Volt kept what the app's entry said, so leftovers can be looked for. */
+  leftovers: boolean;
 }
 
 /** The queue as the screen draws it. */
@@ -80,7 +82,7 @@ export function useUninstallQueue(onListing: (listing: AppListView) => void) {
       busy.current = true;
       stopRequested.current = false;
       setQueue({
-        items: apps.map((app) => ({ ...app, status: 'waiting', error: null })),
+        items: apps.map((app) => ({ ...app, status: 'waiting', error: null, leftovers: false })),
         running: true,
         stopping: false,
         waitStopped: false,
@@ -111,7 +113,10 @@ export function useUninstallQueue(onListing: (listing: AppListView) => void) {
         try {
           const result = await uninstallApp(app.id, includeSystem);
           if (alive.current) listing.current(result.listing);
-          patch(index, { status: statusOf(result.outcome) });
+          patch(index, {
+            status: statusOf(result.outcome),
+            leftovers: result.leftoversAvailable,
+          });
         } catch (error) {
           patch(
             index,

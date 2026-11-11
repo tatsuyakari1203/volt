@@ -20,9 +20,10 @@ use tauri::{AppHandle, Manager as _};
 use volt_core::{
     ActivityLog, AppManager, AutoStartServices, Automation, Catalogue, CatalogueError, CleanEngine,
     CleaningRules, Clock, Elevator, Executor, FilePublisher, Journal, KnownFolders,
-    LargeFilesFinder, LogonTasks, MemoryCleaner, OwnInstall, PortError, Ports, ProcessMonitor,
-    ProcessTuner, Processes, ReconcileReport, RecycleBinManager, Resolution, RulesError, Settings,
-    ShortcutResolver, StartupManager, StartupSources, SystemClock, TidyFinder, TweakEngine,
+    LargeFilesFinder, LeftoverCleaner, LogonTasks, MemoryCleaner, OwnInstall, PortError, Ports,
+    ProcessMonitor, ProcessTuner, Processes, ReconcileReport, RecycleBinManager, Resolution,
+    RulesError, Settings, ShortcutResolver, StartupManager, StartupSources, SystemClock,
+    TidyFinder, TweakEngine,
 };
 use volt_store::{CorruptionRecovery, OpenOutcome, Store, StoreError};
 use volt_win::{
@@ -764,7 +765,7 @@ fn build_real_core(app: &AppHandle) -> Result<AppCore, InitError> {
         .map_err(|error| InitError::DataDir(error.to_string()))?;
     std::fs::create_dir_all(&dir).map_err(|error| InitError::DataDir(error.to_string()))?;
     let ports = windows_ports();
-    let registry = ports.registry.clone();
+    let (registry, file_system) = (ports.registry.clone(), ports.file_system.clone());
     let core = build_core_with(
         ports,
         &dir.join(STORE_FILE_NAME),
@@ -789,7 +790,18 @@ fn build_real_core(app: &AppHandle) -> Result<AppCore, InitError> {
     )
     .with_packages(Arc::new(WinPackagedApps::new()))
     .with_own_install(OwnInstall::new(own_folder))
-    .with_activity_log(core.activity.clone());
+    .with_activity_log(core.activity.clone())
+    // What an uninstaller left behind: folders go to the Recycle Bin, per-user registry keys are
+    // deleted through the engine's executor, so they are journaled and can be undone.
+    .with_leftovers(
+        LeftoverCleaner::new(
+            file_system,
+            Arc::new(WinKnownFolders::new()),
+            core.engine.executor().clone(),
+            Arc::new(SystemClock),
+        )
+        .with_activity_log(core.activity.clone()),
+    );
     // Automation reads the real fullscreen, battery saver and time zone signals, so it is attached
     // here only. It changes nothing until the user turns a feature on.
     let automation = Automation::new(
