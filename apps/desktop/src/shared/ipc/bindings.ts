@@ -317,11 +317,13 @@ async listStartupEntries() : Promise<Result<StartupList, IpcError>> {
 },
 /**
  * Tauri command: switches a startup entry on or off the way Windows does, through the undo
- * journal. Entries that apply to every user answer `accessDenied` (administrator rights).
+ * journal. Entries that apply to every user answer `accessDenied` (administrator rights), and so
+ * do entries Microsoft publishes unless `unlocked` says the user unlocked Windows items; entries
+ * Windows cannot run without are always refused.
  */
-async setStartupEntryEnabled(id: string, enabled: boolean) : Promise<Result<StartupChangeResult, IpcError>> {
+async setStartupEntryEnabled(id: string, enabled: boolean, unlocked: boolean) : Promise<Result<StartupChangeResult, IpcError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("set_startup_entry_enabled", { id, enabled }) };
+    return { status: "ok", data: await TAURI_INVOKE("set_startup_entry_enabled", { id, enabled, unlocked }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -3058,7 +3060,52 @@ enabled: boolean;
 /**
  * Whether the task is part of Windows.
  */
-microsoft: boolean }
+microsoft: boolean; 
+/**
+ * How it is protected.
+ */
+protection: StartupProtectionView; 
+/**
+ * Why it has no switch.
+ */
+lock: StartupLockView }
+/**
+ * A Windows service that starts automatically. Read-only here: changing it needs the
+ * administrator helper.
+ */
+export type ServiceView = { 
+/**
+ * The service name.
+ */
+name: string; 
+/**
+ * The display name.
+ */
+displayName: string; 
+/**
+ * The command line as written.
+ */
+command: string; 
+/**
+ * Who published the program, when its version information says.
+ */
+publisher: string | null; 
+/**
+ * Whether the start is delayed until after sign-in has settled.
+ */
+delayed: boolean; 
+/**
+ * The account it runs as; empty for the default.
+ */
+account: string; 
+/**
+ * How it is protected.
+ */
+protection: StartupProtectionView; 
+/**
+ * Why it has no switch.
+ */
+lock: StartupLockView }
 /**
  * One setting of a file and what an import does with it.
  */
@@ -3152,6 +3199,23 @@ state: OperationState;
  */
 reason: string }
 /**
+ * Whether the `StartupApproved` flag decides if an entry runs. Mirrors
+ * [`volt_core::ApprovalRecord`].
+ */
+export type StartupApprovalView = 
+/**
+ * Windows holds a record that says whether the entry runs.
+ */
+"recorded" | 
+/**
+ * There is no record: Windows runs the entry.
+ */
+"missing" | 
+/**
+ * `StartupApproved` does not apply to this kind of entry.
+ */
+"notUsed"
+/**
  * Precise result of [`set_startup_entry_enabled`].
  */
 export type StartupChangeResult = { 
@@ -3218,7 +3282,20 @@ enabled: boolean;
 /**
  * Whether changing it needs administrator rights (it applies to every user).
  */
-needsAdmin: boolean }
+needsAdmin: boolean; 
+/**
+ * How it is protected.
+ */
+protection: StartupProtectionView; 
+/**
+ * Why the switch is locked; `null` when it can be switched now. A `microsoft` lock is lifted
+ * by unlocking Windows items.
+ */
+lock: StartupLockView | null; 
+/**
+ * Whether the `StartupApproved` flag decides if it runs.
+ */
+approval: StartupApprovalView }
 /**
  * Everything that starts with Windows, read just now.
  */
@@ -3238,7 +3315,43 @@ tasks: ScheduledTaskView[];
 /**
  * Why the scheduled tasks could not be read ("access denied", ...), if so.
  */
-tasksProblem: string | null }
+tasksProblem: string | null; 
+/**
+ * `RunOnce` entries: they run once at the next sign-in. The user's own can be switched.
+ */
+once: StartupEntryView[]; 
+/**
+ * Services that start automatically, read-only, sorted by display name.
+ */
+services: ServiceView[]; 
+/**
+ * Why the services could not be read ("access denied", ...), if so.
+ */
+servicesProblem: string | null }
+/**
+ * Why an item has its switch locked. Mirrors [`volt_core::StartupLock`].
+ */
+export type StartupLockView = 
+/**
+ * Windows needs it: never switchable.
+ */
+"critical" | 
+/**
+ * It applies to every user: changing it needs administrator rights.
+ */
+"needsAdministrator" | 
+/**
+ * Changing it needs the administrator helper.
+ */
+"needsHelper" | 
+/**
+ * Volt cannot change this kind of item yet.
+ */
+"notYet" | 
+/**
+ * Published by Microsoft: locked until the user unlocks Windows items.
+ */
+"microsoft"
 /**
  * A source that could not be read; the rest of the list is valid.
  */
@@ -3255,6 +3368,22 @@ sourceLabel: string;
  * The class of the failure ("access denied", "not found", ...), never a message with data.
  */
 reason: string }
+/**
+ * How a startup item is protected. Mirrors [`volt_core::StartupProtection`].
+ */
+export type StartupProtectionView = 
+/**
+ * Not protected.
+ */
+"none" | 
+/**
+ * Microsoft or Windows itself publishes it: locked until Windows items are unlocked.
+ */
+"microsoft" | 
+/**
+ * Windows cannot run without it: never switchable.
+ */
+"critical"
 /**
  * Where a startup entry comes from. Mirrors [`volt_core::StartupOrigin`].
  */
@@ -3279,6 +3408,18 @@ export type StartupSource =
  * The Startup folder shared by all users.
  */
 "commonFolder" | 
+/**
+ * The current user's `RunOnce` key.
+ */
+"userRunOnce" | 
+/**
+ * The machine-wide `RunOnce` key.
+ */
+"machineRunOnce" | 
+/**
+ * The machine-wide `RunOnce` key of 32-bit programs.
+ */
+"machineRunOnce32" | 
 /**
  * A source this version of the UI does not know.
  */

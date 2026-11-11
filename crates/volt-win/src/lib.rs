@@ -10,7 +10,7 @@
 //!
 //! Adapters in this crate: [`WinRegistry`], [`WinServices`], [`WinFileSystem`],
 //! [`WinKnownFolders`], [`WinRecycleBin`], [`WinMetrics`], [`WinMemory`], [`WinProcesses`],
-//! [`WinCommands`], [`WinPackagedApps`], [`WinUninstaller`], [`WinFilePublisher`], [`WinShortcuts`], [`WinLogonTasks`],
+//! [`WinCommands`], [`WinPackagedApps`], [`WinUninstaller`], [`WinFilePublisher`], [`WinShortcuts`], [`WinLogonTasks`], [`WinAutoStartServices`],
 //! [`WinElevator`], plus the function [`display_languages`] (the user's display language).
 //! The [`helper`] module holds the Windows side of the elevated helper: its named pipe, the checks on
 //! who may use it, the install-folder check and the helper's self-hardening.
@@ -21,6 +21,7 @@
 #![cfg(windows)]
 
 mod apps;
+mod autostart_services;
 mod command;
 mod error;
 mod files;
@@ -39,6 +40,7 @@ mod version;
 mod wide;
 
 pub use apps::{WinPackagedApps, WinUninstaller};
+pub use autostart_services::WinAutoStartServices;
 pub use command::{DEFAULT_MAX_OUTPUT, DEFAULT_TIMEOUT, WinCommands};
 pub use files::WinFileSystem;
 pub use folders::WinKnownFolders;

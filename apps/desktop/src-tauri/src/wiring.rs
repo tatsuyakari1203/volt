@@ -18,17 +18,17 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use tauri::{AppHandle, Manager as _};
 use volt_core::{
-    ActivityLog, AppManager, Catalogue, CatalogueError, CleanEngine, CleaningRules, Clock,
-    Elevator, Executor, FilePublisher, Journal, KnownFolders, LargeFilesFinder, LogonTasks,
-    MemoryCleaner, OwnInstall, PortError, Ports, ProcessMonitor, ProcessTuner, Processes,
-    ReconcileReport, RecycleBinManager, Resolution, RulesError, Settings, ShortcutResolver,
-    StartupManager, StartupSources, SystemClock, TidyFinder, TweakEngine,
+    ActivityLog, AppManager, AutoStartServices, Catalogue, CatalogueError, CleanEngine,
+    CleaningRules, Clock, Elevator, Executor, FilePublisher, Journal, KnownFolders,
+    LargeFilesFinder, LogonTasks, MemoryCleaner, OwnInstall, PortError, Ports, ProcessMonitor,
+    ProcessTuner, Processes, ReconcileReport, RecycleBinManager, Resolution, RulesError, Settings,
+    ShortcutResolver, StartupManager, StartupSources, SystemClock, TidyFinder, TweakEngine,
 };
 use volt_store::{CorruptionRecovery, OpenOutcome, Store, StoreError};
 use volt_win::{
-    WinCommands, WinElevator, WinFilePublisher, WinFileSystem, WinKnownFolders, WinLogonTasks,
-    WinMemory, WinPackagedApps, WinProcesses, WinRecycleBin, WinRegistry, WinServices,
-    WinShortcuts, WinUninstaller,
+    WinAutoStartServices, WinCommands, WinElevator, WinFilePublisher, WinFileSystem,
+    WinKnownFolders, WinLogonTasks, WinMemory, WinPackagedApps, WinProcesses, WinRecycleBin,
+    WinRegistry, WinServices, WinShortcuts, WinUninstaller,
 };
 
 use crate::IpcError;
@@ -431,6 +431,8 @@ pub struct StartupWiring {
     pub shortcuts: Option<Arc<dyn ShortcutResolver>>,
     /// Lists logon scheduled tasks (read-only); `None` lists none.
     pub logon_tasks: Option<Arc<dyn LogonTasks>>,
+    /// Lists auto-start services (read-only); `None` lists none.
+    pub services: Option<Arc<dyn AutoStartServices>>,
 }
 
 impl fmt::Debug for StartupWiring {
@@ -451,6 +453,7 @@ impl StartupWiring {
             publisher: Arc::new(WinFilePublisher::new()),
             shortcuts: Some(Arc::new(WinShortcuts::new())),
             logon_tasks: Some(Arc::new(WinLogonTasks::new())),
+            services: Some(Arc::new(WinAutoStartServices::new())),
         }
     }
 }
@@ -580,7 +583,8 @@ fn build_core_inner(
         activity.clone(),
     );
     let startup_apps = startup.map(|wiring| {
-        let (shortcuts, logon_tasks) = (wiring.shortcuts, wiring.logon_tasks);
+        let (shortcuts, logon_tasks, services) =
+            (wiring.shortcuts, wiring.logon_tasks, wiring.services);
         let mut manager = StartupManager::new(
             registry,
             file_system,
@@ -596,6 +600,9 @@ fn build_core_inner(
         }
         if let Some(tasks) = logon_tasks {
             manager = manager.with_logon_tasks(tasks);
+        }
+        if let Some(services) = services {
+            manager = manager.with_auto_start_services(services);
         }
         manager
     });

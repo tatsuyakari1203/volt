@@ -22,8 +22,9 @@ use volt_core::{
 };
 use volt_desktop_lib::IpcError;
 use volt_desktop_lib::api::{
-    ActivityStatus, ChangeState, StartupChangeStatus, StartupSource, UndoStatus, list_activity,
-    list_startup_entries, preview_undo_batch, set_startup_entry_enabled, undo_batch, undo_entry,
+    ActivityStatus, ChangeState, StartupApprovalView, StartupChangeStatus, StartupLockView,
+    StartupProtectionView, StartupSource, UndoStatus, list_activity, list_startup_entries,
+    preview_undo_batch, set_startup_entry_enabled, undo_batch, undo_entry,
 };
 use volt_desktop_lib::catalogue::EMBEDDED_CATALOGUE;
 use volt_desktop_lib::wiring::{
@@ -81,6 +82,7 @@ impl Sandbox {
                 publisher: Arc::new(WinFilePublisher::new()),
                 shortcuts: None,
                 logon_tasks: None,
+                services: None,
             },
         )
         .expect("core builds")
@@ -202,7 +204,7 @@ fn check_listing(core: &AppCore) {
 fn check_disable(core: &AppCore, sandbox: &Sandbox) {
     // ---- disable ----
     let changed =
-        set_startup_entry_enabled(core, "user-run/Sample Notepad", false).expect("disables");
+        set_startup_entry_enabled(core, "user-run/Sample Notepad", false, true).expect("disables");
     assert_eq!(changed.status, StartupChangeStatus::Changed);
     assert_eq!(changed.enabled, Some(false));
     // The state is the Windows record: 12 bytes, flags 3, a time.
@@ -224,7 +226,8 @@ fn check_disable(core: &AppCore, sandbox: &Sandbox) {
     assert_eq!(state("user-run/Sample Notepad"), Some(false));
     assert_eq!(state("user-run/No Publisher"), Some(true));
     // Disabling again is a no-op.
-    let again = set_startup_entry_enabled(core, "user-run/Sample Notepad", false).expect("fine");
+    let again =
+        set_startup_entry_enabled(core, "user-run/Sample Notepad", false, true).expect("fine");
     assert_eq!(again.status, StartupChangeStatus::AlreadyInState);
 
     // ---- the Undo page reads well ----
@@ -310,8 +313,8 @@ fn a_startup_folder_item_is_approved_under_startup_folder_and_undone_by_batch() 
     write_file(&sandbox.user_folder().join("My Notes.lnk"));
     let core = sandbox.core();
 
-    let changed =
-        set_startup_entry_enabled(&core, "user-folder/My Notes.lnk", false).expect("disables");
+    let changed = set_startup_entry_enabled(&core, "user-folder/My Notes.lnk", false, false)
+        .expect("disables");
     assert_eq!(changed.name, "My Notes.lnk");
     assert_eq!(changed.enabled, Some(false));
     assert!(matches!(
@@ -320,7 +323,7 @@ fn a_startup_folder_item_is_approved_under_startup_folder_and_undone_by_batch() 
     ));
     // Enabling writes the enabled record (kept, not deleted), as Task Manager does.
     let enabled =
-        set_startup_entry_enabled(&core, "user-folder/My Notes.lnk", true).expect("enables");
+        set_startup_entry_enabled(&core, "user-folder/My Notes.lnk", true, false).expect("enables");
     assert_eq!(enabled.enabled, Some(true));
     assert_eq!(
         sandbox.read(r"Explorer\StartupApproved\StartupFolder", "My Notes.lnk"),
@@ -368,7 +371,7 @@ fn machine_wide_entries_are_listed_but_refused_without_touching_anything() {
         "machine-run-32/Old Helper",
         "common-folder/Shared.lnk",
     ] {
-        let error = set_startup_entry_enabled(&core, id, false).expect_err("refused");
+        let error = set_startup_entry_enabled(&core, id, false, false).expect_err("refused");
         assert!(
             matches!(&error, IpcError::AccessDenied { message, .. } if message.contains("administrator rights")),
             "{id}: {error:?}"
@@ -402,15 +405,15 @@ fn stale_and_malformed_ids_are_typed_errors() {
     let core = sandbox.core();
 
     assert!(matches!(
-        set_startup_entry_enabled(&core, "user-run/Gone", false),
+        set_startup_entry_enabled(&core, "user-run/Gone", false, false),
         Err(IpcError::NotFound { .. })
     ));
     assert!(matches!(
-        set_startup_entry_enabled(&core, "nonsense", false),
+        set_startup_entry_enabled(&core, "nonsense", false, false),
         Err(IpcError::InvalidInput { .. })
     ));
     assert!(matches!(
-        set_startup_entry_enabled(&core, "user-folder/..\\..\\evil.lnk", false),
+        set_startup_entry_enabled(&core, "user-folder/..\\..\\evil.lnk", false, false),
         Err(IpcError::InvalidInput { .. })
     ));
 }
@@ -431,7 +434,107 @@ fn a_core_built_without_the_startup_wiring_answers_unsupported() {
         Err(IpcError::Unsupported { .. })
     ));
     assert!(matches!(
-        set_startup_entry_enabled(&core, "user-run/X", false),
+        set_startup_entry_enabled(&core, "user-run/X", false, false),
         Err(IpcError::Unsupported { .. })
     ));
+}
+
+#[test]
+fn a_microsoft_entry_is_locked_until_windows_items_are_unlocked() {
+    let sandbox = Sandbox::new();
+    sandbox.set_command("Run", "Sample Notepad", NOTEPAD);
+    sandbox.set_command("Run", "Own Tool", r"C:\this\does\not\exist\tool.exe");
+    let core = sandbox.core();
+
+    let list = list_startup_entries(&core).expect("lists");
+    let find = |id: &str| list.entries.iter().find(|e| e.id == id).expect("entry");
+    let notepad = find("user-run/Sample Notepad");
+    assert_eq!(notepad.protection, StartupProtectionView::Microsoft);
+    assert_eq!(notepad.lock, Some(StartupLockView::Microsoft));
+    assert_eq!(notepad.approval, StartupApprovalView::Missing);
+    assert_eq!(find("user-run/Own Tool").lock, None);
+
+    let error = set_startup_entry_enabled(&core, "user-run/Sample Notepad", false, false)
+        .expect_err("locked");
+    assert!(
+        matches!(&error, IpcError::AccessDenied { message, .. } if message.contains("Windows item")),
+        "{error:?}"
+    );
+    assert_eq!(
+        sandbox.read(r"Explorer\StartupApproved\Run", "Sample Notepad"),
+        None
+    );
+    assert!(
+        list_activity(&core, 10, None)
+            .expect("activity")
+            .items
+            .is_empty()
+    );
+
+    let changed =
+        set_startup_entry_enabled(&core, "user-run/Sample Notepad", false, true).expect("unlocked");
+    assert_eq!(changed.enabled, Some(false));
+    let after = list_startup_entries(&core).expect("lists again");
+    let notepad = after
+        .entries
+        .iter()
+        .find(|e| e.id == "user-run/Sample Notepad")
+        .expect("entry");
+    assert_eq!(notepad.approval, StartupApprovalView::Recorded);
+}
+
+#[test]
+fn run_once_entries_are_listed_switched_through_the_journal_and_undone_on_a_sandbox() {
+    let sandbox = Sandbox::new();
+    sandbox.set_command(
+        "RunOnce",
+        "Setup Step",
+        r"C:\this\does\not\exist\setup.exe /finish",
+    );
+    sandbox.set_command("RunOnceMachine", "Vendor Step", r"C:.exe");
+    let core = sandbox.core();
+
+    let list = list_startup_entries(&core).expect("lists");
+    assert!(list.entries.is_empty(), "RunOnce is listed apart");
+    let ids: Vec<_> = list.once.iter().map(|e| e.id.as_str()).collect();
+    assert_eq!(ids, ["user-once/Setup Step", "machine-once/Vendor Step"]);
+    assert_eq!(list.once[0].source, StartupSource::UserRunOnce);
+    assert_eq!(list.once[0].approval, StartupApprovalView::NotUsed);
+    assert_eq!(list.once[0].lock, None);
+    assert_eq!(list.once[1].lock, Some(StartupLockView::NeedsAdministrator));
+
+    let changed =
+        set_startup_entry_enabled(&core, "user-once/Setup Step", false, false).expect("disables");
+    assert_eq!(changed.status, StartupChangeStatus::Changed);
+    assert_eq!(changed.enabled, Some(false));
+    assert_eq!(sandbox.read("RunOnce", "Setup Step"), None);
+    assert_eq!(
+        sandbox.read("HeldRunOnce", "Setup Step"),
+        Some(RegistryValue::Sz(
+            r"C:\this\does\not\exist\setup.exe /finish".to_owned()
+        ))
+    );
+    let after = list_startup_entries(&core).expect("lists again");
+    assert_eq!(after.once[0].id, "user-once/Setup Step");
+    assert!(!after.once[0].enabled);
+
+    // The machine-wide one is refused and left alone.
+    let error = set_startup_entry_enabled(&core, "machine-once/Vendor Step", false, false)
+        .expect_err("refused");
+    assert!(matches!(error, IpcError::AccessDenied { .. }), "{error:?}");
+    assert!(sandbox.read("RunOnceMachine", "Vendor Step").is_some());
+
+    // One batch holds both writes; undoing it puts the value back and removes the held copy.
+    let page = list_activity(&core, 50, None).expect("activity");
+    let batches: std::collections::BTreeSet<_> =
+        page.items.iter().filter_map(|i| i.batch.clone()).collect();
+    assert_eq!(batches.len(), 1, "{:?}", page.items);
+    for batch in &batches {
+        assert_eq!(
+            undo_batch(&core, batch, &[]).expect("undoes").status,
+            UndoStatus::Restored
+        );
+    }
+    assert!(sandbox.read("RunOnce", "Setup Step").is_some());
+    assert_eq!(sandbox.read("HeldRunOnce", "Setup Step"), None);
 }

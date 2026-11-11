@@ -577,6 +577,8 @@ pub const ENGLISH: &[(&str, &str)] = &[
     ("err.startup.needsAdmin", "Changing \"{name}\" needs administrator rights."),
     ("err.startup.read", "Volt could not read the startup entry ({class})."),
     ("err.startup.change", "The startup entry could not be changed: {reason}."),
+    ("err.startup.protected", "\"{name}\" is a Windows item and is locked. Unlock Windows items to change it."),
+    ("err.startup.critical", "\"{name}\" is needed by Windows and cannot be changed."),
     ("err.tweak.unknown", "unknown tweak `{tweak}`"),
     ("err.tweak.needsAdmin", "tweak `{tweak}` needs administrator rights"),
     ("err.tweak.detect", "tweak `{tweak}`: cannot read the current state ({class})"),

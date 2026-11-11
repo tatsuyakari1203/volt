@@ -35,7 +35,7 @@ impl WinServices {
 }
 
 /// An SCM or service handle, closed on drop.
-struct ScHandle(SC_HANDLE);
+pub(crate) struct ScHandle(pub(crate) SC_HANDLE);
 
 impl Drop for ScHandle {
     fn drop(&mut self) {
@@ -69,7 +69,7 @@ fn open_service(service: &str, access: u32) -> Result<ScHandle, PortError> {
 }
 
 /// Extracts the Win32 code from an error returned by the `windows` crate.
-fn win32_of(error: &windows::core::Error) -> u32 {
+pub(crate) fn win32_of(error: &windows::core::Error) -> u32 {
     let hr = error.code().0.cast_unsigned();
     if hr >> 16 == 0x8007 { hr & 0xFFFF } else { hr }
 }
@@ -195,7 +195,7 @@ impl Services for WinServices {
 }
 
 /// Reads the delayed-auto-start flag of an automatic service.
-fn query_delayed(handle: &ScHandle, context: &str) -> Result<bool, PortError> {
+pub(crate) fn query_delayed(handle: &ScHandle, context: &str) -> Result<bool, PortError> {
     let mut info = SERVICE_DELAYED_AUTO_START_INFO::default();
     let mut needed = 0_u32;
     let size = u32::try_from(size_of::<SERVICE_DELAYED_AUTO_START_INFO>())

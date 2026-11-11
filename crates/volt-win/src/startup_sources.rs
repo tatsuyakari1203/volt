@@ -14,7 +14,8 @@ use windows::Win32::System::Com::{
 };
 use windows::Win32::System::TaskScheduler::{
     IExecAction, IRegisteredTask, ITaskFolder, ITaskService, TASK_ACTION_EXEC, TASK_ACTION_TYPE,
-    TASK_ENUM_HIDDEN, TASK_TRIGGER_LOGON, TASK_TRIGGER_TYPE2, TaskScheduler,
+    TASK_ENUM_HIDDEN, TASK_RUNLEVEL_HIGHEST, TASK_RUNLEVEL_TYPE, TASK_TRIGGER_LOGON,
+    TASK_TRIGGER_TYPE2, TaskScheduler,
 };
 use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
@@ -253,11 +254,26 @@ fn read_task(task: &IRegisteredTask) -> Option<LogonTask> {
                 }
             }
         }
+        // Who the task runs as, and whether with the highest privileges: the core uses them to
+        // tell a task of the user from one that runs for everybody.
+        let (mut user_id, mut elevated) = (String::new(), false);
+        if let Ok(principal) = definition.Principal() {
+            let mut id = BSTR::new();
+            if principal.UserId(&raw mut id).is_ok() {
+                user_id = id.to_string();
+            }
+            let mut level = TASK_RUNLEVEL_TYPE::default();
+            if principal.RunLevel(&raw mut level).is_ok() {
+                elevated = level == TASK_RUNLEVEL_HIGHEST;
+            }
+        }
         Some(LogonTask {
             path,
             program,
             arguments,
             enabled: task_enabled && logon_enabled,
+            user_id,
+            elevated,
         })
     }
 }

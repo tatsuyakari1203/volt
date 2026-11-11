@@ -176,9 +176,11 @@ pub use registry::{
 pub use service::ServiceStartType;
 pub use settings::{Settings, SettingsExt};
 pub use startup::{
-    ChangeOutcome, FilePublisher, LogonTask, LogonTasks, NoPublisher, ScheduledTaskEntry,
-    ShortcutResolver, ShortcutTarget, SourceProblem, StartupChange, StartupEntry, StartupError,
-    StartupListing, StartupManager, StartupOrigin, StartupScope, StartupSources, StartupState,
+    ApprovalRecord, AutoStartService, AutoStartServices, ChangeOutcome, FilePublisher, LogonTask,
+    LogonTasks, NoPublisher, OnceSource, ScheduledTaskEntry, ServiceEntry, ShortcutResolver,
+    ShortcutTarget, SourceProblem, StartupChange, StartupEntry, StartupError, StartupListing,
+    StartupLock, StartupManager, StartupOrigin, StartupProtection, StartupScope, StartupSources,
+    StartupState,
 };
 pub use tidy::{
     BrokenShortcut, ContentHash, DEFAULT_MIN_DUPLICATE_BYTES, DuplicateFile, DuplicateGroup,

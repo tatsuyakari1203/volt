@@ -334,6 +334,14 @@ impl From<StartupError> for IpcError {
             StartupError::NeedsAdministrator { name } => {
                 Self::access_denied(&Phrase::new("err.startup.needsAdmin").text("name", name))
             }
+            StartupError::Protected { name, critical } => Self::access_denied(
+                &Phrase::new(if *critical {
+                    "err.startup.critical"
+                } else {
+                    "err.startup.protected"
+                })
+                .text("name", name),
+            ),
             StartupError::Read(port) => kinded(
                 port,
                 &Phrase::new("err.startup.read").phrase("class", error_class_phrase(port)),
@@ -619,6 +627,20 @@ mod tests {
             admin.phrase().map(|phrase| phrase.code.as_str()),
             Some("err.startup.needsAdmin")
         );
+        for (critical, code) in [
+            (false, "err.startup.protected"),
+            (true, "err.startup.critical"),
+        ] {
+            let protected = IpcError::from(StartupError::Protected {
+                name: "Cloud".into(),
+                critical,
+            });
+            assert_eq!(protected.class(), ErrorClass::AccessDenied);
+            assert_eq!(
+                protected.phrase().map(|phrase| phrase.code.as_str()),
+                Some(code)
+            );
+        }
         assert_eq!(
             IpcError::from(StartupError::NotFound("x".into())).class(),
             ErrorClass::NotFound

@@ -327,11 +327,13 @@ fn a_registry_without_enumeration_makes_the_run_sources_problems() {
         sandbox(),
     );
 
-    let listing = manager.list();
+    let listing = manager.list_entries();
 
     assert!(listing.entries.is_empty());
     assert_eq!(listing.problems.len(), 3);
     assert!(listing.problems.iter().all(|p| p.reason == "unsupported"));
+    // The full listing also reports the three RunOnce sources.
+    assert_eq!(manager.list().problems.len(), 6);
 }
 
 #[test]
@@ -924,6 +926,8 @@ fn logon_task(path: &str, program: &str, arguments: &str, enabled: bool) -> Logo
         program: program.to_owned(),
         arguments: arguments.to_owned(),
         enabled,
+        user_id: String::new(),
+        elevated: false,
     }
 }
 
@@ -1040,4 +1044,421 @@ fn listing_entries_only_never_asks_the_task_source() {
     let full = manager.list();
     assert_eq!(full.tasks.len(), 1);
     assert_eq!(tasks.calls(), 1);
+}
+
+// ---- RunOnce, auto-start services, protection and the approval flag -------------------------
+
+use super::fakes::FakeAutoStartServices;
+
+fn once_value(leaf: &str, name: &str) -> RegistryValueRef {
+    run_value(&format!(r"{ROOT}\{leaf}"), name)
+}
+
+fn add_once(f: &Fixture, leaf: &str, name: &str, command: &str) {
+    f.system.registry.set(
+        &once_value(leaf, name),
+        RegistryValue::Sz(command.to_owned()),
+    );
+}
+
+fn service(name: &str, display: &str, image: &str) -> AutoStartService {
+    AutoStartService {
+        name: name.to_owned(),
+        display_name: display.to_owned(),
+        image_path: image.to_owned(),
+        delayed: false,
+        account: String::new(),
+    }
+}
+
+#[test]
+fn the_approval_flag_is_reported_as_recorded_missing_or_not_used() {
+    let f = fixture();
+    add_run(&f, "Alpha", r"C:\a.exe");
+    add_run(&f, "Beta", r"C:\b.exe");
+    f.manager
+        .set_enabled("user-run/Beta", false, Source::Manual)
+        .expect("disables");
+    add_once(&f, "RunOnce", "Gamma", r"C:\g.exe");
+
+    let listing = f.manager.list();
+
+    assert_eq!(
+        find(&listing, "user-run/Alpha").approval,
+        ApprovalRecord::Missing
+    );
+    assert_eq!(
+        find(&listing, "user-run/Beta").approval,
+        ApprovalRecord::Recorded
+    );
+    assert_eq!(listing.once[0].approval, ApprovalRecord::NotUsed);
+}
+
+#[test]
+fn run_once_entries_are_listed_apart_from_the_entries_with_their_state_and_origin() {
+    let f = fixture();
+    add_run(&f, "Alpha", r"C:\a.exe");
+    add_once(
+        &f,
+        "RunOnce",
+        "Setup Step",
+        r#""C:\Sample\setup.exe" /finish"#,
+    );
+    add_once(&f, "RunOnceMachine", "Vendor Step", r"C:\Vendor\step.exe");
+    add_once(&f, "RunOnceMachine32", "Old Step", r"C:\Legacy\step.exe");
+    add_once(&f, "HeldRunOnce", "Held Step", r"C:\Sample\held.exe");
+    f.system
+        .registry
+        .set(&once_value("RunOnce", "Not Text"), RegistryValue::Dword(1));
+    f.publisher.set(r"C:\Sample\setup.exe", "Sample Ltd");
+
+    let listing = f.manager.list();
+    let entries = f.manager.list_entries();
+
+    assert_eq!(
+        listing.entries.len(),
+        1,
+        "RunOnce is not a switchable entry"
+    );
+    assert!(entries.once.is_empty(), "the cheap listing skips RunOnce");
+    let names: Vec<_> = listing.once.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["Held Step", "Old Step", "Setup Step", "Vendor Step"]
+    );
+    let held = &listing.once[0];
+    assert_eq!(held.origin, StartupOrigin::UserRunOnce);
+    assert_eq!(held.state, StartupState::Disabled);
+    assert_eq!(held.id, "user-once/Held Step");
+    let setup = &listing.once[2];
+    assert_eq!(setup.state, StartupState::Enabled);
+    assert_eq!(setup.program.as_deref(), Some(r"C:\Sample\setup.exe"));
+    assert_eq!(setup.publisher.as_deref(), Some("Sample Ltd"));
+    assert_eq!(setup.lock(), None);
+    assert_eq!(
+        listing.once[1].lock(),
+        Some(StartupLock::NeedsAdministrator)
+    );
+}
+
+#[test]
+fn switching_a_run_once_entry_off_moves_it_aside_in_one_journaled_batch_and_on_moves_it_back() {
+    let f = fixture();
+    add_once(&f, "RunOnce", "Setup Step", r"C:\Sample\setup.exe");
+
+    let dry = f
+        .manager
+        .plan("user-once/Setup Step", false)
+        .expect("plans")
+        .expect("a change");
+    assert_eq!(dry.items.len(), 2);
+    assert!(f.system.log.events().is_empty(), "a dry run writes nothing");
+
+    let change = f
+        .manager
+        .set_enabled("user-once/Setup Step", false, Source::Manual)
+        .expect("disables");
+
+    assert_eq!(change.state, Some(StartupState::Disabled));
+    assert_eq!(
+        f.system.registry.get(&once_value("RunOnce", "Setup Step")),
+        None
+    );
+    assert_eq!(
+        f.system
+            .registry
+            .get(&once_value("HeldRunOnce", "Setup Step")),
+        Some(RegistryValue::Sz(r"C:\Sample\setup.exe".into()))
+    );
+    let entries = f.system.journal.entries();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].batch, entries[1].batch);
+    assert_eq!(
+        f.manager.list().once[0].state,
+        StartupState::Disabled,
+        "still listed, now off"
+    );
+
+    let back = f
+        .manager
+        .set_enabled("user-once/Setup Step", true, Source::Manual)
+        .expect("enables");
+    assert_eq!(back.state, Some(StartupState::Enabled));
+    assert_eq!(
+        f.system.registry.get(&once_value("RunOnce", "Setup Step")),
+        Some(RegistryValue::Sz(r"C:\Sample\setup.exe".into()))
+    );
+    assert_eq!(
+        f.system
+            .registry
+            .get(&once_value("HeldRunOnce", "Setup Step")),
+        None
+    );
+}
+
+#[test]
+fn undoing_a_run_once_switch_puts_the_value_back_where_it_was() {
+    let f = fixture();
+    add_once(&f, "RunOnce", "Setup Step", r"C:\Sample\setup.exe");
+    let change = f
+        .manager
+        .set_enabled("user-once/Setup Step", false, Source::Manual)
+        .expect("disables");
+    let ChangeOutcome::Changed { batch, .. } = change.outcome else {
+        panic!("expected a change");
+    };
+
+    let report = f
+        .manager
+        .executor
+        .revert_batch(batch, Source::Manual, None)
+        .expect("reverts");
+
+    assert!(report.outcomes.iter().all(|outcome| outcome.result.is_ok()));
+    assert_eq!(
+        f.system.registry.get(&once_value("RunOnce", "Setup Step")),
+        Some(RegistryValue::Sz(r"C:\Sample\setup.exe".into()))
+    );
+    assert_eq!(
+        f.system
+            .registry
+            .get(&once_value("HeldRunOnce", "Setup Step")),
+        None
+    );
+    assert_eq!(f.manager.list().once[0].state, StartupState::Enabled);
+}
+
+#[test]
+fn a_machine_wide_run_once_entry_needs_administrator_rights() {
+    let f = fixture();
+    add_once(&f, "RunOnceMachine", "Vendor Step", r"C:\Vendor\step.exe");
+    let error = f
+        .manager
+        .set_enabled("machine-once/Vendor Step", false, Source::Manual)
+        .expect_err("refused");
+    assert!(matches!(error, StartupError::NeedsAdministrator { .. }));
+    assert!(f.system.journal.entries().is_empty());
+    let missing = f
+        .manager
+        .set_enabled("user-once/Nope", false, Source::Manual)
+        .expect_err("not there");
+    assert!(matches!(missing, StartupError::NotFound(_)));
+}
+
+#[test]
+fn a_microsoft_entry_is_locked_until_windows_items_are_unlocked() {
+    let f = fixture();
+    add_run(&f, "Cloud Sync", r"C:\Sample\cloud.exe");
+    add_run(&f, "Own", r"C:\Own\own.exe");
+    f.publisher
+        .set(r"C:\Sample\cloud.exe", "Microsoft Corporation");
+
+    let listing = f.manager.list();
+    let cloud = find(&listing, "user-run/Cloud Sync");
+    assert_eq!(cloud.protection, StartupProtection::Microsoft);
+    assert_eq!(cloud.lock(), Some(StartupLock::Microsoft));
+    assert_eq!(find(&listing, "user-run/Own").lock(), None);
+
+    let error = f
+        .manager
+        .set_enabled("user-run/Cloud Sync", false, Source::Manual)
+        .expect_err("locked");
+    assert_eq!(
+        error,
+        StartupError::Protected {
+            name: "Cloud Sync".into(),
+            critical: false
+        }
+    );
+    assert_eq!(
+        f.manager.plan("user-run/Cloud Sync", false),
+        Err(error),
+        "the dry run refuses the same way"
+    );
+    assert!(f.system.journal.entries().is_empty());
+    assert!(f.system.log.events().is_empty());
+
+    let change = f
+        .manager
+        .set_enabled_with("user-run/Cloud Sync", false, Source::Manual, true)
+        .expect("unlocked");
+    assert_eq!(change.state, Some(StartupState::Disabled));
+}
+
+#[test]
+fn a_critical_entry_is_never_switchable_even_when_windows_items_are_unlocked() {
+    let f = fixture();
+    add_run(
+        &f,
+        "SecurityHealth",
+        r"%windir%\system32\SecurityHealthSystray.exe",
+    );
+    f.publisher.set(
+        r"%windir%\system32\SecurityHealthSystray.exe",
+        "Microsoft Corporation",
+    );
+
+    let listing = f.manager.list();
+    assert_eq!(
+        find(&listing, "user-run/SecurityHealth").lock(),
+        Some(StartupLock::Critical)
+    );
+    for unlocked in [false, true] {
+        let error = f
+            .manager
+            .set_enabled_with("user-run/SecurityHealth", false, Source::Manual, unlocked)
+            .expect_err("refused");
+        assert_eq!(
+            error,
+            StartupError::Protected {
+                name: "SecurityHealth".into(),
+                critical: true
+            }
+        );
+    }
+    assert!(f.system.journal.entries().is_empty());
+    assert!(
+        f.system
+            .registry
+            .get(&user_approval("SecurityHealth"))
+            .is_none()
+    );
+}
+
+#[test]
+fn auto_start_services_are_listed_read_only_with_publisher_and_protection() {
+    let f = fixture();
+    f.publisher
+        .set(r"C:\Program Files\Sample\sync.exe", "Sample Ltd");
+    f.publisher
+        .set(r"C:\Windows\system32\svchost.exe", "Microsoft Corporation");
+    let services = FakeAutoStartServices::new(vec![
+        service(
+            "SampleSync",
+            "Sample Sync Service",
+            r#""C:\Program Files\Sample\sync.exe" --service"#,
+        ),
+        service(
+            "Dnscache",
+            "DNS Client",
+            r"C:\Windows\system32\svchost.exe -k NetworkService -p",
+        ),
+        service("Themes", "", r"C:\Windows\system32\svchost.exe -k netsvcs"),
+        service("NoImage", "No Image", ""),
+    ]);
+    let manager = f.manager.with_auto_start_services(Arc::new(services));
+
+    let listing = manager.list();
+
+    assert_eq!(listing.services_problem, None);
+    let names: Vec<_> = listing.services.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["Dnscache", "NoImage", "SampleSync", "Themes"]);
+    let sample = &listing.services[2];
+    assert_eq!(sample.publisher.as_deref(), Some("Sample Ltd"));
+    assert_eq!(sample.protection, StartupProtection::None);
+    assert_eq!(sample.lock(), StartupLock::NeedsHelper);
+    assert_eq!(listing.services[0].protection, StartupProtection::Critical);
+    assert_eq!(listing.services[0].lock(), StartupLock::Critical);
+    // A service without a display name shows its name.
+    assert_eq!(listing.services[3].display_name, "Themes");
+    assert_eq!(listing.services[1].program, None);
+    // Services are not entries, and the cheap listing does not read them.
+    assert!(listing.entries.is_empty());
+    assert!(manager.list_entries().services.is_empty());
+}
+
+#[test]
+fn each_service_program_is_asked_about_once() {
+    let f = fixture();
+    let services = FakeAutoStartServices::new(
+        (0..5)
+            .map(|n| {
+                service(
+                    &format!("Svc{n}"),
+                    "x",
+                    r"C:\Windows\system32\svchost.exe -k group",
+                )
+            })
+            .collect(),
+    );
+    let publisher = f.publisher.clone();
+    let manager = f.manager.with_auto_start_services(Arc::new(services));
+
+    let _ = manager.list();
+
+    assert_eq!(publisher.asked().len(), 1);
+}
+
+#[test]
+fn unreadable_services_are_a_problem_class_and_leave_the_rest_alone() {
+    let f = fixture();
+    add_run(&f, "Alpha", r"C:\a.exe");
+    let manager = f
+        .manager
+        .with_auto_start_services(Arc::new(FakeAutoStartServices::failing(
+            PortError::AccessDenied("secret".into()),
+        )));
+    let listing = manager.list();
+    assert_eq!(listing.entries.len(), 1);
+    assert!(listing.services.is_empty());
+    assert_eq!(listing.services_problem, Some("access denied"));
+}
+
+#[test]
+fn tasks_say_why_they_have_no_switch() {
+    let f = fixture();
+    let mut system_task = logon_task(r"\Vendor Boot", r"C:\Vendor\boot.exe", "", true);
+    system_task.user_id = "SYSTEM".into();
+    let mut own_task = logon_task(r"\My Sync", r"C:\Sample\sync.exe", "", true);
+    own_task.user_id = r"PC\sample".into();
+    let defender = logon_task(r"\Microsoft\Windows\Windows Defender\Scan", "", "", true);
+    let manager = f
+        .manager
+        .with_logon_tasks(Arc::new(FakeLogonTasks::new(vec![
+            system_task,
+            own_task,
+            defender,
+        ])));
+
+    let listing = manager.list();
+    let lock = |name: &str| {
+        listing
+            .tasks
+            .iter()
+            .find(|task| task.name == name)
+            .expect("task")
+            .lock()
+    };
+    assert_eq!(lock("Vendor Boot"), StartupLock::NeedsHelper);
+    assert_eq!(lock("My Sync"), StartupLock::NotYet);
+    assert_eq!(lock("Scan"), StartupLock::Critical);
+}
+
+#[test]
+fn a_run_once_switch_that_fails_halfway_is_rolled_back() {
+    let f = fixture();
+    add_once(&f, "RunOnce", "Setup Step", r"C:\Sample\setup.exe");
+    // The copy aside works; removing the original is refused.
+    f.system.registry.fail_on(
+        &once_value("RunOnce", "Setup Step"),
+        PortError::AccessDenied("no".into()),
+    );
+
+    let error = f
+        .manager
+        .set_enabled("user-once/Setup Step", false, Source::Manual)
+        .expect_err("fails");
+
+    assert!(matches!(error, StartupError::Change(_)), "{error:?}");
+    assert_eq!(
+        f.system.registry.get(&once_value("RunOnce", "Setup Step")),
+        Some(RegistryValue::Sz(r"C:\Sample\setup.exe".into()))
+    );
+    assert_eq!(
+        f.system
+            .registry
+            .get(&once_value("HeldRunOnce", "Setup Step")),
+        None,
+        "the copy aside was rolled back"
+    );
 }
