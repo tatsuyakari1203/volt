@@ -43,7 +43,11 @@ impl Sandbox {
             .map_or(0, |d| d.as_nanos());
         Self {
             root: format!(r"Software\VoltTest\Apps-{}-{nanos}", std::process::id()),
-            dir: TempDir::new().expect("temp dir"),
+            // Under the target folder, not the system temp folder: on a CI runner that one is
+            // spelled with an 8.3 short name, which the leftover scan refuses on purpose.
+            dir: tempfile::Builder::new()
+                .tempdir_in(env!("CARGO_TARGET_TMPDIR"))
+                .expect("temp dir"),
         }
     }
 
