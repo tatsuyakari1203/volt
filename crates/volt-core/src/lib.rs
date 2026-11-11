@@ -68,6 +68,7 @@
 
 pub mod activity;
 pub mod apps;
+pub mod automation;
 pub mod boost;
 pub mod clean;
 pub mod command;
@@ -108,6 +109,11 @@ pub use apps::{
     HiddenReason, InstalledApp, OwnInstall, PackagedApp, PackagedApps, StopWaiting,
     UNINSTALL_LABEL, UninstallCommand, UninstallError, UninstallOutcome, UninstallReport,
     Uninstaller, UninstallerExit, Waited,
+};
+pub use automation::{
+    Automation, AutomationConfig, AutomationState, AutomationStatus, CleaningOutcome, Environment,
+    Frequency, MemoryRule, PauseReason, Schedule, SkippedRun, TickReport,
+    is_eligible as is_automatic_rule,
 };
 pub use boost::{
     BOOST_SETTINGS_KEY, BOOST_TEMP_RULE_ID, BoostConfig, BoostReport, JunkFound, SkippedOperation,

@@ -439,6 +439,8 @@ pub fn bindings_builder() -> Builder<tauri::Wry> {
             crate::apps::list_apps,
             crate::apps::uninstall_app,
             crate::apps::stop_waiting_for_uninstaller,
+            crate::automation::automation_status,
+            crate::automation::set_automation_config,
             crate::boost::boost,
             crate::boost::boost_config,
             crate::boost::set_boost_config,
@@ -450,6 +452,7 @@ pub fn bindings_builder() -> Builder<tauri::Wry> {
         ])
         .events(collect_events![
             AppReady,
+            crate::automation::AutomationUpdated,
             crate::boost::BoostFinished,
             crate::MetricsUpdated,
             crate::MemoryTrendUpdated,

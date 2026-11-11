@@ -2,8 +2,10 @@
 //! holds commands and window wiring, never business rules.
 
 pub mod administrator;
+mod agent;
 pub mod api;
 pub mod apps;
+pub mod automation;
 mod autostart;
 pub mod boost;
 pub mod catalogue;
@@ -39,6 +41,7 @@ use tauri::webview::PageLoadEvent;
 use tauri::{RunEvent, WindowEvent};
 use tauri_specta::Event as _;
 
+pub use automation::AutomationUpdated;
 pub use boost::BoostFinished;
 pub use ipc::{AppReady, IpcError, bindings_builder, export_bindings};
 pub use metrics::MetricsUpdated;
@@ -114,6 +117,7 @@ pub fn run() {
             app.manage(sampler::real(app.handle(), trend));
             bindings.mount_events(app);
             tray::setup(app)?;
+            agent::start(app.handle());
             if window::LaunchMode::from_args(std::env::args().skip(1)) == window::LaunchMode::Foreground {
                 window::open_in_background(app.handle(), |_, _| {});
             }

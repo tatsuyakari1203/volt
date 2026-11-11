@@ -53,6 +53,23 @@ fn generated_bindings_describe_boost_its_settings_and_the_tray_report_event() {
 }
 
 #[test]
+fn generated_bindings_describe_automation_its_bounds_and_the_run_event() {
+    let text = generated_bindings();
+    for name in [
+        "automationStatus",
+        "setAutomationConfig",
+        "automationUpdated",
+        "export type AutomationConfigView",
+        "export type AutomationStatusView",
+        "lastCleanSkip",
+        "nextCleanRun",
+        "standbyAboveMb",
+    ] {
+        assert!(text.contains(name), "{name} missing in {text}");
+    }
+}
+
+#[test]
 fn generated_bindings_describe_live_metrics_with_optional_gpu_values() {
     let text = generated_bindings();
     assert!(text.contains("latestMetrics"), "{text}");

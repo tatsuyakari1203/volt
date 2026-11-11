@@ -24,6 +24,7 @@
 mod apps;
 mod autostart_services;
 mod command;
+mod environment;
 mod error;
 mod files;
 mod folders;
@@ -43,6 +44,7 @@ mod wide;
 pub use apps::{WinPackagedApps, WinUninstaller};
 pub use autostart_services::WinAutoStartServices;
 pub use command::{DEFAULT_MAX_OUTPUT, DEFAULT_TIMEOUT, WinCommands};
+pub use environment::WinEnvironment;
 pub use files::WinFileSystem;
 pub use folders::WinKnownFolders;
 pub use helper::elevator::WinElevator;

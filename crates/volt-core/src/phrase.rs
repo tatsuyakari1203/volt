@@ -607,6 +607,8 @@ pub const ENGLISH: &[(&str, &str)] = &[
     ("err.tuningUnavailable", "changing process settings is not available in this build"),
     ("err.appsUnavailable", "the installed apps list is not available in this build"),
     ("err.startupUnavailable", "the startup apps manager is not available in this build"),
+    ("err.automationUnavailable", "automation is not available in this build"),
+    ("err.automation.notAutomatic", "\"{name}\" cannot run on its own: it needs administrator rights or a choice of items or folder"),
     ("err.protection.windows", "needed by Windows"),
     ("err.protection.volt", "Volt itself"),
     ("err.process.protected", "{name} cannot be ended: it is {protection}"),
@@ -636,6 +638,11 @@ pub const ENGLISH: &[(&str, &str)] = &[
     ("boost.notice.memory", "Memory available {before} to {after}."),
     ("boost.notice.moved", "{files} moved to the Recycle Bin."),
     ("boost.notice.skipped", "{count} skipped: open Volt to see why."),
+    // Automation: the tooltip and the notification after an automatic run.
+    ("automation.tooltip.memory", "Volt: memory cleaned automatically, available {before} to {after}"),
+    ("automation.tooltip.clean", "Volt: scheduled clean done"),
+    ("automation.notice.memory", "Memory cleaned automatically: available {before} to {after}."),
+    ("automation.notice.clean", "Scheduled clean: {files} moved to the Recycle Bin."),
 ];
 
 #[cfg(test)]

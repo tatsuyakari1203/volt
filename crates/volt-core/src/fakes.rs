@@ -1048,6 +1048,11 @@ impl FakeMemory {
         lock(&self.failures).insert(area, error);
     }
 
+    /// Replaces the memory split the fake reports.
+    pub fn set_lists(&self, lists: MemoryLists) {
+        *lock(&self.lists) = lists;
+    }
+
     /// Makes reading the lists fail with `error`.
     pub fn fail_lists(&self, error: PortError) {
         *lock(&self.lists_fail) = Some(error);
@@ -1603,6 +1608,13 @@ impl ManualClock {
     }
 }
 
+impl ManualClock {
+    /// Moves the clock forward by `millis`.
+    pub fn advance(&self, millis: i64) {
+        self.0.fetch_add(millis, Ordering::SeqCst);
+    }
+}
+
 impl Clock for ManualClock {
     fn now(&self) -> Timestamp {
         Timestamp::from_unix_millis(self.0.fetch_add(1, Ordering::SeqCst))
@@ -1903,5 +1915,50 @@ mod tests {
             journal.set_state(EntryId(99), EntryState::Applied, None),
             Err(PortError::NotFound(_))
         ));
+    }
+}
+
+/// Fake [`Environment`](crate::automation::Environment): the test says what the "system" reports.
+#[derive(Debug, Default)]
+pub struct FakeEnvironment {
+    fullscreen: std::sync::atomic::AtomicBool,
+    battery_saver: std::sync::atomic::AtomicBool,
+    offset_minutes: std::sync::atomic::AtomicI32,
+}
+
+impl FakeEnvironment {
+    /// UTC, no fullscreen app, battery saver off.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Says whether a fullscreen app is active.
+    pub fn set_fullscreen(&self, on: bool) {
+        self.fullscreen.store(on, Ordering::SeqCst);
+    }
+
+    /// Says whether battery saver is on.
+    pub fn set_battery_saver(&self, on: bool) {
+        self.battery_saver.store(on, Ordering::SeqCst);
+    }
+
+    /// Sets local time minus UTC, in minutes.
+    pub fn set_offset_minutes(&self, minutes: i32) {
+        self.offset_minutes.store(minutes, Ordering::SeqCst);
+    }
+}
+
+impl crate::automation::Environment for FakeEnvironment {
+    fn fullscreen_app_active(&self) -> bool {
+        self.fullscreen.load(Ordering::SeqCst)
+    }
+
+    fn battery_saver_on(&self) -> bool {
+        self.battery_saver.load(Ordering::SeqCst)
+    }
+
+    fn utc_offset_minutes(&self) -> i32 {
+        self.offset_minutes.load(Ordering::SeqCst)
     }
 }

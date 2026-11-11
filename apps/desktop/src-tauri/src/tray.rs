@@ -82,6 +82,13 @@ pub(crate) fn apply_language<R: Runtime>(app: &AppHandle<R>, lang: Lang) {
     }
 }
 
+/// Sets the tray tooltip. A failure changes nothing that matters, so it is ignored.
+pub(crate) fn set_tooltip<R: Runtime>(app: &AppHandle<R>, text: String) {
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        let _ = tray.set_tooltip(Some(text));
+    }
+}
+
 /// One entry of the tray menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TrayAction {
