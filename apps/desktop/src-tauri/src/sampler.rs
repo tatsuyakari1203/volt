@@ -26,6 +26,7 @@ use volt_core::{Clock, Memory, MetricsSnapshot, MetricsSource, MetricsTracker, S
 use volt_win::{WinMemory, WinMetrics};
 
 use crate::metrics::{MetricsUpdated, MetricsView};
+use crate::panel::PANEL_WINDOW;
 use crate::trend::{MemoryPointView, MemoryTrend, MemoryTrendUpdated, TrendSource};
 use crate::tuning::{RULES_EVERY_READS, RulesSource, apply_rules_on};
 use crate::window::MAIN_WINDOW;
@@ -372,17 +373,22 @@ pub(crate) fn real<R: Runtime>(app: &AppHandle<R>, trend: Arc<MemoryTrend>) -> S
             // A failed emit only means the UI misses one reading; the next one follows.
             let _ = MetricsUpdated(MetricsView::from(snapshot)).emit(&emitter);
         }),
-        Arc::new(move || probe.get_webview_window(MAIN_WINDOW).is_some()),
+        Arc::new(move || shows_metrics(&probe)),
         Arc::new(SystemClock),
         SAMPLE_INTERVAL,
     )
 }
 
-/// Starts or stops sampling to match whether the main window exists right now. Called after a
+/// Whether a window that shows live metrics exists: the main window or the tray panel.
+fn shows_metrics<R: Runtime>(app: &AppHandle<R>) -> bool {
+    app.get_webview_window(MAIN_WINDOW).is_some() || app.get_webview_window(PANEL_WINDOW).is_some()
+}
+
+/// Starts or stops sampling to match whether a window that shows metrics exists right now. Called after a
 /// window was created and when one was destroyed. Does nothing before the sampler is managed.
 pub(crate) fn sync_with_window<R: Runtime>(app: &AppHandle<R>) {
     if let Some(sampler) = app.try_state::<Sampler>() {
-        sampler.set_window_open(|| app.get_webview_window(MAIN_WINDOW).is_some());
+        sampler.set_window_open(|| shows_metrics(app));
     }
 }
 

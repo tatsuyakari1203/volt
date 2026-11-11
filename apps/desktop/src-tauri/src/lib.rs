@@ -18,6 +18,7 @@ pub mod large_files;
 mod logging;
 pub mod memory;
 pub mod metrics;
+pub mod panel;
 pub mod phrase;
 pub mod processes;
 mod sampler;
@@ -116,10 +117,16 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Sampling stops with the window; the tick probe in the sampler is the safety net
-            // for the order in which Tauri unregisters the window and sends this event.
-            if matches!(event, WindowEvent::Destroyed) && window.label() == window::MAIN_WINDOW {
+            // Sampling stops with the last window that shows it; the tick probe in the sampler
+            // is the safety net for the order in which Tauri unregisters the window and sends
+            // this event.
+            let label = window.label();
+            let shows_metrics = label == window::MAIN_WINDOW || label == panel::PANEL_WINDOW;
+            if matches!(event, WindowEvent::Destroyed) && shows_metrics {
                 sampler::sync_with_window(window.app_handle());
+            }
+            if label == panel::PANEL_WINDOW {
+                panel::on_window_event(window.app_handle(), event);
             }
         })
         .on_page_load(|webview, payload| {

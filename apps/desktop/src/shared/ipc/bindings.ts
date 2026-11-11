@@ -668,6 +668,41 @@ async setBoostConfig(config: BoostConfigView) : Promise<Result<BoostConfigView, 
 }
 },
 /**
+ * Tauri command: runs Boost the way the tray menu item does (the same use case, notification
+ * and tooltip) and returns the line to show. `null` when a Boost is already running. It never
+ * asks for administrator rights.
+ */
+async panelBoost() : Promise<Result<PanelBoostLine | null, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("panel_boost") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: closes the panel (Escape).
+ */
+async closeTrayPanel() : Promise<Result<null, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("close_tray_panel") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: opens (or focuses) the main window and closes the panel.
+ */
+async openMainFromPanel() : Promise<Result<null, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("open_main_from_panel") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Tauri command: the saved language setting and the display language of Windows.
  */
 async languageSetting() : Promise<Result<LanguageSetting, IpcError>> {
@@ -2217,6 +2252,18 @@ export type OperationState =
  * This Windows build cannot do it.
  */
 "unsupported"
+/**
+ * The result line under the panel's Boost button.
+ */
+export type PanelBoostLine = { 
+/**
+ * One sentence in the language of the app, the same words as the tray tooltip.
+ */
+line: string; 
+/**
+ * The Boost failed.
+ */
+failed: boolean }
 /**
  * A sentence, or a part of one, as a code and parameters.
  */

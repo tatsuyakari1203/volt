@@ -20,6 +20,23 @@
         "minHeight": 600,
         "resizable": true,
         "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required --disable-component-update --disable-domain-reliability --no-pings"
+      },
+      {
+        "label": "tray-panel",
+        "create": false,
+        "url": "index.html?view=tray-panel",
+        "title": "Volt",
+        "width": 300,
+        "height": 360,
+        "decorations": false,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": false,
+        "skipTaskbar": true,
+        "alwaysOnTop": true,
+        "visible": false,
+        "shadow": true,
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required --disable-component-update --disable-domain-reliability --no-pings"
       }
     ],
     "security": {
