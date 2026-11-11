@@ -1,6 +1,6 @@
 [files]
-# The Vietnamese locale files are not English: an English spell checker has nothing to say about them.
-extend-exclude = ["pnpm-lock.yaml", "Cargo.lock", ".backlog/config.yml", "apps/desktop/src/shared/i18n/locales/vi*.json", "apps/desktop/src/**/*Vietnamese*.test.tsx", "apps/desktop/src/shared/i18n/say.test.ts", "apps/desktop/src/features/home/messages.test.ts"]
+# The Vietnamese locale files (and the helper's Vietnamese confirmation text) are not English: an English spell checker has nothing to say about them.
+extend-exclude = ["pnpm-lock.yaml", "Cargo.lock", ".backlog/config.yml", "apps/desktop/src/shared/i18n/locales/vi*.json", "apps/desktop/src/**/*Vietnamese*.test.tsx", "apps/desktop/src/shared/i18n/say.test.ts", "apps/desktop/src/features/home/messages.test.ts", "crates/volt-helper/src/prompt_text.rs"]
 
 [default.extend-identifiers]
 # Win32 IFileOperation flag names (FOF_* / FOFX_*), used by volt-win.
@@ -12,7 +12,7 @@ FOF_SILENT = "FOF_SILENT"
 [default]
 # SDDL ACE trustee aliases (BA = built-in Administrators), used in the helper pipe and state folder
 # security descriptors (the second field is the optional ACE flags, such as OICI).
-extend-ignore-re = ['\(A;[A-Z]*;[0-9A-Za-z]+;;;BA\)']
+extend-ignore-re = ['\(A;[A-Z]*;[0-9A-Za-z]+;;;BA\)', ';;;BA\)']
 
 [default.extend-words]
 # NSIS instruction StrCpy, used in the installer hooks.
