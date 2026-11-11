@@ -663,7 +663,7 @@ that UI over a private named pipe. Tested without elevation:
 
 - **Protocol** (`volt-core::elevation`, the `Elevator` port): JSON, one message per pipe message,
   1 KiB request cap, a closed request set (`hello`, `memory_purge`, `tweak_apply`, `tweak_revert`,
-  `history`, `bye`), six non-closing error codes, unknown fields refused,
+  `history`, `clean_scan`, `clean_apply`, `bye`), six non-closing error codes, unknown fields refused,
   ids exactly 1, 2, 3. A framing or order violation gets an error reply and the connection is
   closed. A request that is valid but refused (no areas, rate limited) keeps the connection and
   never extends the idle clock. A tweak is named by id only, and the helper serves only
@@ -674,7 +674,8 @@ that UI over a private named pipe. Tested without elevation:
   accepted command line (`serve --pipe volt-<32 hex> --ui-pid N --ui-created TICKS`), checks that
   it runs from the Program Files install folder (owner and ACL of the image, the folder and the
   state folder, no reparse points), verifies the UI process it is bound to, opens its own state
-  (create, verify, lock, store, reconcile pending entries), creates the pipe and serves. Exit codes are in `run::exit`; 6 means the helper's user is not the UI's user.
+  (create, verify, lock, store, reconcile pending entries), creates the pipe and serves. Exit codes are in `run::exit`; 6 means the helper's user is not the UI's user, 11 (`DESKTOP`) that the
+  private desktop could not be left, 12 (`STUCK`) that a stuck walk could not be stopped.
 - **The pipe.** A unique first instance, one instance, remote clients rejected, message mode,
   overlapped I/O with timeouts, so the idle limit (10 minutes), the hard cap (60 minutes) and the
   exit on disconnect need no watchdog thread. A client is served only if it is the bound process
@@ -686,7 +687,7 @@ that UI over a private named pipe. Tested without elevation:
   ends (polled every 250 ms with the held process handle), when the bound client disconnects or
   says `bye`, after 10 idle minutes, or at the 60 minute hard cap.
 - **The build** is `scripts/build-helper.ps1`. The release helper has the `requireAdministrator`
-  manifest, a static CRT and the Dependent Load Flag, and no test modes. One cfg
+  manifest, a static CRT and the Dependent Load Flag, and no test modes (no failpoint module and no `ci-voltest-crash` tweak). One cfg
   (`helper_release`, set by the build script from the release profile) gates both the manifest and
   the debug-only test modes, so they cannot coexist. The build script refuses a release build
   without `crt-static`.
@@ -715,12 +716,41 @@ that UI over a private named pipe. Tested without elevation:
   thread; the `Switched` guard always switches back. An unreadable input desktop (locked session)
   or a failed create or switch is `Unavailable` and fails closed. The 45 s timeout counts as a
   denial. Buttons are disabled for 1.5 s and Cancel is the default. Text comes from the helper
-  catalogue (English) or the embedded `vi.catalogue.json` (Vietnamese) by the Windows display
-  language.
+  catalogue (English) or the embedded `vi.catalogue.json` (Vietnamese) by the machine UI
+  language (`GetSystemDefaultUILanguage`); the user's display language is for the UI only and the
+  helper never uses it. The desktop handle is reaped; a failed switch back is retried, then tried
+  on Default, and then the helper exits with code 11.
 - **Restore point.** For Caution and Advanced applies only, once per 10 minutes per session,
   behind the `RestorePoints` port. A failure refuses the tweak (`ErrorCode::RestorePointFailed`).
   Windows adds its own 24 h limit with no error. The hosted runner (Server) answers 120, so a real
-  creation is not shown there.
+  creation is not shown there. The Tweaks page shows a read-only System Protection hint
+  (SystemRestore `RPSessionInterval` and the `DisableSR` policy). The helper still refuses Caution
+  and Advanced administrator tweaks without a restore point; continuing without one is an open
+  owner decision.
+- **Timeouts.** The UI gives a tweak request `CHANGE_TIMEOUT` = 165 s (45 s question, 90 s restore
+  point, 30 s change), longer than the "120 s per request" line of the decision. A request with no
+  answer is `ElevationError::TimedOut` (`timedOut` in the IPC statuses); the connection is dropped,
+  the helper finishes alone and its record shows from the next history pull.
+- **Machine-wide cleaning.** `clean_scan{rule, min_age_days?}` and `clean_apply{scan}` clean the
+  `requires_admin` rules. `volt-win::safetree` is a handle-based walker: every open is
+  `NtCreateFile` relative to a held parent, and the root is walked down from the volume GUID with
+  every ancestor held (shared read and write, not delete). Reparse points are never followed, so
+  junctions, mount points and links are counted and skipped. Apply re-opens each item below its
+  held parent, checks the 128-bit file id, kind, link count 1, size and mtime on the handle and
+  deletes through that handle (POSIX semantics). Caps: depth 32, 25,000 items, 200,000 entries,
+  100 s per walk; `run_bounded` cancels a stuck call and the helper exits with code 12 if it cannot
+  stop. The scan id is 128 random bits, single use, bound to the connection, and at most 4 are
+  kept. Replies hold counts, sizes and skip reasons only. The catalogue age is a floor that a
+  request can only raise. Rules gain `permanent` and `confirm_each_time` (both need
+  `requires_admin`): Windows Temp and the Delivery Optimization cache are confirmed every time, and
+  any other root whose DACL lets a non-administrator write is forced through the confirmation. For
+  a silent rule a subfolder a non-administrator owns or can write to is skipped (DACL read through
+  the held handle at scan and again at apply). Names in `PendingFileRenameOperations` are left for
+  Windows; if the list cannot be read nothing is scanned. The app keeps the helper's scan id in
+  Rust and writes the activity record itself (`summary.cleanMachine`, no undo entry), like the
+  memory purge. Race harness: `crates/volt-win/tests/safetree.rs` (unelevated, in the Check job)
+  and `crates/volt-helper/ci/clean_cases.rs` (real helper, NTFS and a volume mount point, on the
+  elevated runner). Screenshot: `docs/design/clean-machine-rules-light.png`.
 - **UI mirror.** The UI mirrors the helper log by pull (it never starts the helper) and saves it
   in the settings key `helper.mirror`. Undo of an administrator row is `tweak_revert` by tweak.
   Rows of a recreated store show without Undo, and Clear keeps rows that can still be undone.
@@ -752,12 +782,12 @@ The rest of this page works unelevated and does not depend on the helper, except
 
 What already depends on it: the machine-wide cleaning rules (`windows-temp`, `machine-wer-*`,
 `windows-update-logs`, `delivery-optimization-cache`) are flagged `requires_admin`. Unelevated they
+are cleaned through the helper when it is available (above). Unelevated they
 are scanned and report `needs_administrator()`; nothing is attempted by other means. Measured on a
 development machine without elevation (a read-only scan, counts only): Windows temp and the
 Delivery Optimization cache refuse the root itself, the machine-wide error report folders list
-but refuse every report folder inside, and the Windows Update logs are readable. Cleaning them
-for real (and the Windows Update download cache, which also needs the update service stopped and
-started) waits for the elevation decision. The memory page shows the three admin-only kinds of
+but refuse every report folder inside, and the Windows Update logs are readable. The Windows Update download cache, which also needs the update service stopped and
+started, is not cleaned yet. The memory page shows the three admin-only kinds of
 purge disabled with the reason, and `requires_admin` tweaks are refused (`needsAdmin` in the UI).
 
 ### Elevated CI job
@@ -780,7 +810,8 @@ limited by paths to the helper's code. It is not a required check.
   launch to hello 347 to 444 ms; the purge works after hardening, twice on one helper.
 - The job runs the release helper cases, proves the release helper holds no harness strings
   (`scripts/check-helper-harness.ps1`), then swaps in the `elevated-ci` helper and runs the tweak
-  and prompt cases (`crates/volt-helper/ci/prompt_cases.rs`). The `elevated-ci` feature is a
+  and prompt cases (`crates/volt-helper/ci/prompt_cases.rs`). `check-helper-harness.ps1` also runs
+  in `release.yml`. The `elevated-ci` feature is a
   compile error in a release build. Screenshot: `docs/design/tweaks-administrator-light.png`.
 - Not measured: a launch from a filtered medium-integrity token (handle rights across the UAC
   boundary) and the real ACLs of the machine cleaning roots.
@@ -895,7 +926,9 @@ switches entries on and off the way Windows does, so Task Manager and Settings s
   apart from the switchable entries. They have no switch and are not counted in the health
   startup load. A failed task read is reported as `tasks_problem`, not as a source problem. Both
   COM adapters call `CoInitializeEx` on the calling thread and uninitialise it afterwards.
-  `RunOnce`, services and the other autostart places are not listed.
+  `list()` (not `list_entries()`) also reads the `RunOnce` keys (`HKCU` and `HKLM`, 64 and 32 bit)
+  into `StartupListing.once` and the auto-start services through the read-only
+  `AutoStartServices` port (SCM) into `StartupListing.services`. No impact is shown for any item.
 - **The command line** (`parse_command_line`, pure): a quoted program ends at the closing quote;
   an unquoted one ends at the first whitespace after `.exe`, `.com`, `.bat`, `.cmd`, `.lnk` or
   `.scr`, which handles paths with spaces, and otherwise at the first word. Environment variable
@@ -936,6 +969,18 @@ switches entries on and off the way Windows does, so Task Manager and Settings s
     previous value as `enabled`, `disabled` or `enabled (it had no record)` instead of
     `REG_BINARY (12 bytes)`, and the batch is titled "Startup apps". Per the redaction rule
     the record names the entry and the outcome, never the command line.
+- **RunOnce** has no `StartupApproved` kind. Volt switches a user RunOnce entry off by moving the
+  value to `HKCU\Software\Volt\HeldStartup\RunOnce` (`SetRegistryValue` then
+  `DeleteRegistryValue`, one batch, rolled back if the second step fails) and back when it is
+  switched on. `StartupApproved` still decides Run, Run32 and StartupFolder entries.
+- **Protection** (`startup::protection`, pure rules). A Microsoft publisher or a program in the
+  Windows folder is Microsoft. A fixed list of critical services, critical process names
+  (`is_windows_critical`), the SecurityHealth entry and the Defender, WindowsUpdate,
+  UpdateOrchestrator and Servicing task folders are Critical. The manager refuses Microsoft items
+  unless `set_enabled_with` gets `unlocked=true`, and Critical items always
+  (`StartupError::Protected`).
+- **Locks.** Machine-wide entries need administrator rights, services and machine-wide tasks need
+  the helper (no helper request exists yet) and user-owned tasks have no switch yet (`NotYet`).
 - **Machine-wide entries cannot be changed yet.** Changing the `HKLM` Run keys, their approval
   records and the common Startup folder needs administrator rights, and the elevation model is not
   decided. They are listed (marked "Needs administrator rights") but `set_enabled` returns
@@ -951,9 +996,69 @@ switches entries on and off the way Windows does, so Task Manager and Settings s
   temp folders with the same shape, which is how the adapter and the integration tests run without
   touching the real Run or `StartupApproved` keys.
 - **Known limits.** Task Manager can also show "Startup impact" and entries from places Volt does
-  not list; tasks have no switch; the "Task Manager shows the same state" claim rests on the
+  not list; tasks and services have no switch; the "Task Manager shows the same state" claim rests on the
   layout above and has not been checked by changing a real entry. That check is manual: switch an
   entry off in Volt and see it off in Task Manager's Startup apps tab, then the other way round.
+
+### Automation and profiles
+
+Memory cleaning on thresholds, scheduled cleaning and profile triggers run inside the tray
+process: no service, no scheduled task, no new always-on process.
+
+- **Where it runs.** One thread (`apps/desktop/src-tauri/src/agent.rs`) is parked, with no
+  wake-ups, while every feature is off and is woken by a config save (`Thread::unpark`). While
+  automation is on it wakes once a minute (`TICK_SECS` = 60), not at the 1 s sampler pace. Nothing
+  runs in the first 3 minutes after start. While a profile names an app it also wakes every 15 s
+  (`TRIGGER_POLL_SECS`) and reads `Processes::list` once (the tray process reads the process list
+  every 15 s while a trigger exists; no network, no files).
+- **Decisions are pure** (`volt_core::automation`, over a `Clock` and `Probes`, tested with
+  fakes). The tick holds `AppCore::exclusive()`, so it never overlaps a tweak, Boost or a manual
+  clean.
+- **Memory rule.** Standby strictly above X MB and free strictly below Y MB, a cooldown after its
+  own run, then the same unelevated clean as Boost (the areas that are Available, no junk scan, no
+  temp move), honouring the protected programs list through `MemoryCleaner`. Defaults 4096 MB,
+  1024 MB, 30 min. Bounds: standby 256 to 262144 MB, free 128 to 131072 MB, cooldown 5 to 1440 min.
+  Off by default.
+- **Schedule.** Daily or weekly at a local time (the offset is read from Windows at the moment of
+  use). A run is due when the latest occurrence is newer than the newest of last run, last skip and
+  armed-at, so a missed run happens once at the next start and a period is never served twice.
+  Switching the schedule on or moving it arms it at that moment. Only rules with no administrator
+  need, no chosen folder and no item picking run (`is_eligible`, checked again at run time). Items
+  go to the Recycle Bin through `CleanEngine::clean(.., Source::Automation)`.
+- **Pauses** (`Automation::pause_now`): a manual run (memory: within the cooldown; schedule and
+  profile switch: 15 min, read from the activity log), fullscreen or presentation, and battery
+  saver. A paused memory run is judged again at the next tick; a paused scheduled run is recorded as
+  skipped and not made up. The fullscreen signal is `SHQueryUserNotificationState` (busy, D3D
+  exclusive fullscreen, presentation mode, fullscreen Store app). It misses borderless-window games
+  and video that Windows does not count as fullscreen, a fullscreen app on a second monitor, and
+  Focus Assist quiet time (deliberately not a pause). Battery saver is the `GetSystemPowerStatus`
+  status flag 1.
+- **Recording.** The memory and clean engines write their own activity records with the Automation
+  source; undo is exactly as far as the manual run (Recycle Bin items restore, memory runs cannot be
+  undone). Automation never reverts anything, so there is no automatic revert to record;
+  `revert_entry` already takes a `Source`.
+- **Notification.** After a run that changed something the tray tooltip is updated, a desktop
+  notification is shown only when no main window is open and the notify setting is on, and
+  `AutomationUpdated` is emitted for an open window.
+- **Cost** (release build, `--background`, private working set from the perf counters, process CPU
+  time over 180 s after 25 s settle, three runs each): automation off 2.38, 2.38 and 2.33 MB with
+  0 ms CPU in all three; on with thresholds that cannot be reached (standby above 256 GB, schedule
+  on with no rules) 2.38, 2.37 and 2.37 MB with 15.7, 0 and 0 ms CPU (one scheduler quantum in one
+  run, below 0.01 % of a core). About 7 context switches per tick. Screenshot:
+  `docs/design/automation-light.png` (sample data through a mocked IPC).
+- **Profiles** (`volt_core::profile`). A `Profiles` service over `TweakEngine`, `Settings`
+  (`profiles.list`, `profiles.state`), `ActivityLog`, `Clock` and `Processes`. The core starts no
+  thread; the shell calls `poll`. A switch is a plan (read-only, the preview) and then per-tweak
+  engine `apply` / `revert_as`, each its own journal batch labelled with the tweak id. It stops at
+  the first failure, and `SwitchRecord` keeps the changes so `undo_switch` puts them back as one
+  action (a card on the Undo page). The automation parts of a profile go through
+  `Automation::save_config`, and the previous config is kept in the record.
+- **Triggers.** A rising edge of a named app is one start; the first look after Volt starts is a
+  baseline only. Pauses are `Automation::pause_now`; a paused switch is skipped, never queued.
+  Automatic switches use `Source::Automation`.
+- **Export and import.** `profiles.list` is a portable setting, merged by id and sanitised (known
+  non-admin tweak ids, plain `.exe` names, clamped numbers, rules that can run alone). The active
+  profile is not exported.
 
 ### Idle memory
 
@@ -1215,6 +1320,39 @@ in the page: leaving the page or closing the window ends it after the running re
 not finished are kept in `localStorage` and the next open names those still installed. Removals are
 not undoable, and the page and the activity record say so. Screenshot:
 `docs/design/apps-light-460x700.png`.
+
+- **Leftovers.** After an uninstall that ends Removed, `AppManager` keeps in memory the `Footprint`
+  it read from the uninstall entry before running the uninstaller. The record is lost when Volt
+  restarts, so the scan is offered only in the session that did the removal. `LeftoverCleaner`
+  (`volt-core` `apps/leftovers.rs`) scans and removes over `FileSystem`, `KnownFolders` and the
+  Executor; the registry it reads and deletes through is the executor's own ports. It trusts only
+  evidence recorded before the uninstall, and exact name matches are never ticked.
+  - Confidence. High is the recorded `InstallLocation` or a key the entry named. Medium is the
+    uninstaller or icon folder, or an exact product or publisher+product name under AppData or
+    Software. Low is a publisher-named folder or key, and a publisher-named find is capped at Low
+    when another installed app has the same publisher.
+  - Never offered: anything under the Windows folder; the roots of Program Files, ProgramData, the
+    profile and AppData and anything above them; anything equal to, inside or holding another
+    installed app's recorded folder or key; Volt's folder; links or junctions, ancestors
+    included; registry keys outside `Software\<vendor>` or under Microsoft, Classes, Policies,
+    Windows, Clients or Volt. A key the entry named must be at least vendor\product deep.
+  - Machine-wide keys are shown but locked ("needs administrator helper"). A per-user key tree over
+    60 keys, or holding more data than the journal records, is locked as "cannot record".
+  - Removal. Folders go through `FileSystem::move_to_trash` with the parent as root, after
+    re-inspecting and re-checking the exclusions. Each key tree is one journal batch labelled
+    `apps.leftovers` (`DeleteRegistryKey` per key, deepest first, `apply_or_rollback`). One activity
+    record, `summary.leftovers`, lists up to 8 removed items.
+- **App updates.** `UpdateManager` (`volt_core::apps/updates.rs`) reads winget's table, because
+  `winget upgrade` has no JSON form. It lists nothing on its own: the page calls it only when the
+  user presses the button, and the card says the feature uses the network. The `Winget` port takes
+  a `WingetCommand` with a fixed argument list built from a validated `PackageId`; `WinWinget`
+  starts `winget.exe` from the per-user WindowsApps folder, never through a shell. No argument
+  accepts an agreement: if winget wants source terms accepted, the page says so and tells the user
+  to run `winget upgrade` in a terminal. Each update is one winget call, so the administrator prompt
+  comes from winget's installer, not Volt's helper. The queue lives in the page, like the uninstall
+  queue. Updates are activity records labelled `apps.update` with no undo entry, and the record says
+  Volt cannot undo them. Phrases: `updates.problem.*`, `updates.fix.*`, `updates.fail.*`,
+  `summary.update.*` and `err.updates.*`. Screenshot: `docs/design/apps-updates-light.png`.
 
 ### Design system
 
