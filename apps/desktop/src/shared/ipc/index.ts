@@ -36,6 +36,7 @@ import {
   type LargeFilesTrashResult,
   type MemoryAreaView,
   type MemoryCleanResult,
+  type MemoryPointView,
   type MemoryState,
   type MetricsView,
   type ProcessListView,
@@ -110,6 +111,7 @@ export type {
   MemoryCleanResult,
   MemoryListsView,
   MemoryOperationView,
+  MemoryPointView,
   MemoryState,
   MemoryView,
   MetricsView,
@@ -549,6 +551,44 @@ export async function getMemoryState(): Promise<MemoryState> {
  */
 export async function cleanMemory(areas: MemoryAreaView[]): Promise<MemoryCleanResult> {
   return call(() => commands.cleanMemory(areas));
+}
+
+/**
+ * Memory by list over the last minutes of this window (oldest first, one reading a second, at most
+ * five minutes). Empty right after the window opened. Reads only. Follow it with
+ * `onMemoryTrend` (register the listener first, then call this, and drop duplicates by
+ * `takenAt`).
+ */
+export async function getMemoryHistory(): Promise<MemoryPointView[]> {
+  return call(() => commands.memoryHistory());
+}
+
+/**
+ * Calls `handler` with each new reading of memory by list, about once a second while the window is
+ * open. Returns the unlisten function.
+ */
+export function onMemoryTrend(handler: (point: MemoryPointView) => void): Promise<() => void> {
+  return events.memoryTrendUpdated.listen((event) => handler(event.payload));
+}
+
+/** The executable names protected from memory trimming (lower case, sorted). Reads only. */
+export async function getMemoryExclusions(): Promise<string[]> {
+  return call(() => commands.memoryExclusions());
+}
+
+/**
+ * Protects a program from memory trimming by executable name (`game.exe`; a path or a name
+ * without `.exe` is accepted and normalised). Resolves with the whole list. An empty or
+ * impossible name rejects with an `invalidInput` error. Takes effect on the next Boost, memory
+ * clean or tray Boost.
+ */
+export async function addMemoryExclusion(name: string): Promise<string[]> {
+  return call(() => commands.addMemoryExclusion(name));
+}
+
+/** Stops protecting a program. Resolves with the whole list. */
+export async function removeMemoryExclusion(name: string): Promise<string[]> {
+  return call(() => commands.removeMemoryExclusion(name));
 }
 
 /**

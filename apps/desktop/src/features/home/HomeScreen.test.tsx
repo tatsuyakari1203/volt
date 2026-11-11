@@ -551,6 +551,7 @@ function boostResult(over: Partial<BoostResult> = {}): BoostResult {
         status: 'done',
         processesTrimmed: 41,
         processesSkipped: 3,
+        processesExcluded: 0,
         detail: null,
       },
     ],

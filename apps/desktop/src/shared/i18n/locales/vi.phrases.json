@@ -126,6 +126,7 @@
   "summary.memory.head.admin": "Đã dọn bộ nhớ với quyền quản trị (không thể hoàn tác)",
   "summary.memory.headDone.admin": "Đã dọn bộ nhớ với quyền quản trị (không thể hoàn tác): {areas}",
   "summary.memory.trimmed": "{area} ({count} tiến trình)",
+  "summary.memory.trimmedExcluded": "{area} ({count} tiến trình, {excluded} giữ nguyên vì nằm trong danh sách loại trừ)",
   "summary.memory.areaFailed": "{area} ({class})",
   "summary.memory.couldNot": "không dọn được {areas}",
   "summary.memory.free": "bộ nhớ trống từ {before} đến {after}, standby từ {standbyBefore} đến {standbyAfter}",

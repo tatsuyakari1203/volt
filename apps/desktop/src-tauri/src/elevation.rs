@@ -141,6 +141,14 @@ pub fn clean_memory_elevated_of(
             message: "choose at least one memory operation".to_owned(),
         });
     }
+    // Trimming working sets needs no administrator rights, and the helper does not know the
+    // exclusion list: it would trim a protected program. The page never sends it here.
+    if areas.contains(&MemoryAreaView::WorkingSets) {
+        return Err(IpcError::InvalidInput {
+            message: "trimming working sets does not need administrator rights: run it without                       them so the exclusion list applies"
+                .to_owned(),
+        });
+    }
     let selected: Vec<_> = areas.iter().map(|area| area.to_core()).collect();
     // Not under the core's exclusive gate: the prompt can stay open for as long as the user takes,
     // and tweaks must not wait for it. The elevator itself runs one request at a time.

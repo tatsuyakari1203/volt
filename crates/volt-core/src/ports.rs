@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::command::Commands;
 use crate::error::PortError;
+use crate::exclusions::ExclusionList;
 use crate::registry::Registry;
 use crate::service::ServiceStartType;
 use crate::time::Timestamp;
@@ -263,6 +264,8 @@ pub struct PurgeOutcome {
     pub processes_trimmed: u32,
     /// Processes that could not be opened (protected or owned by another user) and were left.
     pub processes_skipped: u32,
+    /// Processes that were left alone because they are on the exclusion list.
+    pub processes_excluded: u32,
 }
 
 /// Port: memory. Purging is not an undoable operation: it only releases reclaimable memory.
@@ -278,7 +281,16 @@ pub trait Memory: Send + Sync {
 
     /// Purges a memory area. A missing privilege is [`PortError::AccessDenied`] and a call this
     /// Windows build does not have is [`PortError::Unsupported`]; neither changes anything.
+    ///
+    /// For [`MemoryArea::WorkingSets`] this trims every process, with nothing protected. The
+    /// [`MemoryCleaner`](crate::MemoryCleaner) never calls it for that area: it calls
+    /// [`Memory::trim_working_sets`] with the user's exclusion list.
     fn purge(&self, area: MemoryArea) -> Result<PurgeOutcome, PortError>;
+
+    /// Trims the working set of every process the user can open, except the processes `protected`
+    /// names (matched by image name). A protected process is never opened and is counted in
+    /// [`PurgeOutcome::processes_excluded`].
+    fn trim_working_sets(&self, protected: &ExclusionList) -> Result<PurgeOutcome, PortError>;
 }
 
 /// The ports an operation may touch, bundled for the executor.

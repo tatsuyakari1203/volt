@@ -17,6 +17,12 @@ const ipc = vi.hoisted(() => ({
   cleanMemory: vi.fn(),
   getElevationStatus: vi.fn(),
   cleanMemoryElevated: vi.fn(),
+  getMemoryHistory: vi.fn(),
+  onMemoryTrend: vi.fn(),
+  getMemoryExclusions: vi.fn(),
+  addMemoryExclusion: vi.fn(),
+  removeMemoryExclusion: vi.fn(),
+  listProcesses: vi.fn(),
 }));
 vi.mock('../../shared/ipc', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../shared/ipc')>()),
@@ -58,6 +64,7 @@ const report: MemoryCleanResult = {
       status: 'done',
       processesTrimmed: 41,
       processesSkipped: 3,
+      processesExcluded: 0,
       detail: null,
     },
   ],
@@ -71,6 +78,15 @@ beforeEach(() => {
   // Outside the Volt window the status cannot be read: administrator actions stay locked.
   ipc.getElevationStatus.mockReset();
   ipc.getElevationStatus.mockRejectedValue(new IpcUnavailableError());
+  ipc.getMemoryHistory.mockReset();
+  ipc.getMemoryHistory.mockResolvedValue([]);
+  ipc.onMemoryTrend.mockReset();
+  ipc.onMemoryTrend.mockResolvedValue(() => {});
+  ipc.getMemoryExclusions.mockReset();
+  ipc.getMemoryExclusions.mockResolvedValue([]);
+  ipc.addMemoryExclusion.mockReset();
+  ipc.removeMemoryExclusion.mockReset();
+  ipc.listProcesses.mockReset();
 });
 
 describe('MemoryScreen', () => {
@@ -286,6 +302,7 @@ describe('memory messages', () => {
       area: 'standbyList',
       processesTrimmed: 0,
       processesSkipped: 0,
+      processesExcluded: 0,
       detail: null,
     } as const;
     expect(describeArea({ ...base, status: 'needsAdministrator' })).toMatch(/administrator/);

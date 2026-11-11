@@ -69,6 +69,7 @@ pub mod clean;
 pub mod command;
 pub mod elevation;
 pub mod error;
+pub mod exclusions;
 pub mod executor;
 pub mod health;
 pub mod journal;
@@ -86,6 +87,7 @@ pub mod service;
 pub mod settings;
 pub mod startup;
 pub mod time;
+pub mod trend;
 pub mod tweak;
 
 #[cfg(any(test, feature = "fakes"))]
@@ -119,6 +121,7 @@ pub use elevation::{
     decode_reply, decode_request, encode_reply, encode_request,
 };
 pub use error::{ExecError, PlanError, PortError, RevertError};
+pub use exclusions::{EXCLUSIONS_SETTINGS_KEY, ExclusionList, MAX_EXCLUSIONS};
 pub use executor::{
     ApplyReport, Executor, ItemOutcome, ItemStatus, ReconcileOutcome, ReconcileReport, Resolution,
     RevertOutcome, RevertReport,
@@ -163,6 +166,7 @@ pub use startup::{
     StartupListing, StartupManager, StartupOrigin, StartupScope, StartupSources, StartupState,
 };
 pub use time::{Clock, SystemClock, Timestamp};
+pub use trend::{MemoryHistory, MemoryPoint};
 pub use tweak::{
     ApplyOutcome, BatchRevert, Catalogue, CatalogueError, CatalogueIssue, Category, IssueKind,
     RESET_LABEL_SUFFIX, RestartRequirement, StepPreview, Tweak, TweakApplyReport, TweakEngine,

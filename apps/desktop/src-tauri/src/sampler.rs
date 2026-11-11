@@ -22,10 +22,11 @@ use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Manager as _, Runtime};
 use tauri_specta::Event as _;
-use volt_core::{Clock, MetricsSnapshot, MetricsSource, MetricsTracker, SystemClock};
-use volt_win::WinMetrics;
+use volt_core::{Clock, Memory, MetricsSnapshot, MetricsSource, MetricsTracker, SystemClock};
+use volt_win::{WinMemory, WinMetrics};
 
 use crate::metrics::{MetricsUpdated, MetricsView};
+use crate::trend::{MemoryPointView, MemoryTrend, MemoryTrendUpdated, TrendSource};
 use crate::window::MAIN_WINDOW;
 
 /// Time between two samples.
@@ -336,12 +337,27 @@ impl Sampler {
 }
 
 /// Builds the real sampler: Windows metrics, a one second interval, snapshots emitted as the
-/// typed `MetricsUpdated` event, and the main window as the thing it serves.
-pub(crate) fn real<R: Runtime>(app: &AppHandle<R>) -> Sampler {
+/// typed `MetricsUpdated` event, and the main window as the thing it serves. Each read also
+/// records memory by list into `trend` (see [`crate::trend`]) and emits it as
+/// `MemoryTrendUpdated`; both live and die with the sampler thread, like the counters.
+pub(crate) fn real<R: Runtime>(app: &AppHandle<R>, trend: Arc<MemoryTrend>) -> Sampler {
     let emitter = app.clone();
     let probe = app.clone();
+    let trend_emitter = app.clone();
     Sampler::new(
-        Arc::new(|| Box::new(WinMetrics::new())),
+        Arc::new(move || {
+            let announcer = trend_emitter.clone();
+            Box::new(TrendSource::new(
+                Box::new(WinMetrics::new()),
+                Arc::new(WinMemory::new()) as Arc<dyn Memory>,
+                Arc::new(SystemClock),
+                Arc::clone(&trend),
+                Arc::new(move |point| {
+                    // A failed emit only means the chart misses one point.
+                    let _ = MemoryTrendUpdated(MemoryPointView::from(point)).emit(&announcer);
+                }),
+            ))
+        }),
         Arc::new(move |snapshot| {
             // A failed emit only means the UI misses one reading; the next one follows.
             let _ = MetricsUpdated(MetricsView::from(snapshot)).emit(&emitter);
@@ -458,6 +474,57 @@ mod tests {
     fn a_zero_interval_does_not_panic_or_spin_on_the_grid() {
         let now = Instant::now();
         assert_eq!(next_deadline(now, now, Duration::ZERO), now);
+    }
+
+    #[test]
+    fn memory_by_list_is_read_only_while_the_window_exists_and_is_dropped_with_it() {
+        use volt_core::fakes::FakeMemory;
+
+        use crate::trend::{MemoryTrend, TrendSource};
+
+        let fake = Arc::new(FakeMetrics::constant(typical_sample()));
+        let memory = Arc::new(FakeMemory::new());
+        let trend = Arc::new(MemoryTrend::default());
+        let window = Arc::new(AtomicBool::new(false));
+        let sampler = {
+            let (fake, memory, trend, window) = (
+                Arc::clone(&fake),
+                Arc::clone(&memory),
+                Arc::clone(&trend),
+                Arc::clone(&window),
+            );
+            Sampler::new(
+                Arc::new(move || {
+                    Box::new(TrendSource::new(
+                        Box::new(Shared2(Arc::clone(&fake))),
+                        Arc::clone(&memory) as Arc<dyn Memory>,
+                        Arc::new(SystemClock),
+                        Arc::clone(&trend),
+                        Arc::new(|_| {}),
+                    ))
+                }),
+                Arc::new(|_| {}),
+                Arc::new(move || window.load(Ordering::SeqCst)),
+                Arc::new(FixedClock),
+                TICK,
+            )
+        };
+        // No window: nothing is read or kept.
+        sampler.set_window_open(|| false);
+        thread::sleep(TICK * 8);
+        assert!(trend.points().is_empty());
+
+        window.store(true, Ordering::SeqCst);
+        sampler.set_window_open(|| true);
+        assert!(wait_until(|| trend.points().len() >= 2));
+
+        window.store(false, Ordering::SeqCst);
+        sampler.set_window_open(|| false);
+        sampler.stop_and_wait();
+        assert!(
+            trend.points().is_empty(),
+            "a closed window keeps no readings"
+        );
     }
 
     #[test]

@@ -152,6 +152,9 @@ pub struct AreaResult {
     pub processes_trimmed: u32,
     /// Working sets only: how many processes could not be opened and were left alone.
     pub processes_skipped: u32,
+    /// Working sets only: how many processes were left alone because they are on the exclusion
+    /// list.
+    pub processes_excluded: u32,
     /// What went wrong, when `status` is `failed` or `unsupported`.
     pub detail: Option<String>,
 }
@@ -244,6 +247,7 @@ pub(crate) fn area_result(
         status,
         processes_trimmed: outcome.processes_trimmed,
         processes_skipped: outcome.processes_skipped,
+        processes_excluded: outcome.processes_excluded,
         detail,
     })
 }

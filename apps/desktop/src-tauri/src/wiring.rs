@@ -486,8 +486,11 @@ fn build_core_inner(
     .with_activity_log(activity.clone())
     .with_settings(settings.clone());
 
-    let memory_cleaner =
-        MemoryCleaner::new(ports.memory.clone(), clock.clone()).with_activity_log(activity.clone());
+    // The exclusion list is read from the settings at the start of every working-set trim, so
+    // Boost, the Memory page and the tray all honour it.
+    let memory_cleaner = MemoryCleaner::new(ports.memory.clone(), clock.clone())
+        .with_activity_log(activity.clone())
+        .with_exclusions(settings.clone());
 
     // Volt's own id lets the monitor protect Volt and the WebView it started.
     let logical_cpus = std::thread::available_parallelism()

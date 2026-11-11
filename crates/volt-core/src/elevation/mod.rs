@@ -232,6 +232,9 @@ impl From<&MemoryPurgeReply> for MemoryCleanReport {
                         } => Ok(PurgeOutcome {
                             processes_trimmed: *processes_trimmed,
                             processes_skipped: *processes_skipped,
+                            // The helper never sees the exclusion list: the app does not send
+                            // working-set trims to it.
+                            processes_excluded: 0,
                         }),
                         AreaStatus::Failed { error } => Err(error.clone()),
                     },

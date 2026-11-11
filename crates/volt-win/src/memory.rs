@@ -2,7 +2,7 @@
 //!
 //! - **Reading** the lists needs no rights: `NtQuerySystemInformation(SystemMemoryListInformation)`.
 //! - **Trimming working sets** needs no administrator rights. It opens every process the user may
-//!   open with `PROCESS_SET_QUOTA` and calls `SetProcessWorkingSetSize(-1, -1)` on it. Processes
+//!   open (except the ones on the exclusion list, which it never opens) with `PROCESS_SET_QUOTA` and calls `SetProcessWorkingSetSize(-1, -1)` on it. Processes
 //!   that cannot be opened (protected, other users', system) are counted and left alone.
 //! - **The three list purges and the modified-list flush** are `NtSetSystemInformation` commands
 //!   that need `SeProfileSingleProcessPrivilege`, which only an elevated token holds.
@@ -36,7 +36,8 @@
 use std::ffi::c_void;
 
 use volt_core::{
-    Availability, Memory, MemoryArea, MemoryLists, MemoryStatus, PortError, PurgeOutcome,
+    Availability, ExclusionList, Memory, MemoryArea, MemoryLists, MemoryStatus, PortError,
+    Processes, PurgeOutcome,
 };
 use windows::Wdk::System::SystemInformation::{NtQuerySystemInformation, SYSTEM_INFORMATION_CLASS};
 use windows::Win32::Foundation::{
@@ -51,13 +52,13 @@ use windows::Win32::Security::{
     TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY, TokenPrivileges,
 };
 use windows::Win32::System::Memory::SetSystemFileCacheSize;
-use windows::Win32::System::ProcessStatus::EnumProcesses;
 use windows::Win32::System::Threading::{
     GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_SET_QUOTA, SetProcessWorkingSetSize,
 };
 use windows::core::PCWSTR;
 
 use crate::metrics::read_memory;
+use crate::processes::WinProcesses;
 
 /// `SystemMemoryListInformation` (phnt `ntexapi.h`).
 const SYSTEM_MEMORY_LIST_INFORMATION_CLASS: i32 = 80;
@@ -301,28 +302,6 @@ fn lists_from_raw(total_bytes: u64, raw: &RawMemoryLists) -> MemoryLists {
     )
 }
 
-/// The ids of the running processes.
-fn process_ids() -> Result<Vec<u32>, PortError> {
-    let mut capacity = 1024usize;
-    loop {
-        let mut ids = vec![0u32; capacity];
-        let bytes = u32::try_from(capacity * size_of::<u32>())
-            .map_err(|_| PortError::Other("too many processes".into()))?;
-        let mut needed = 0u32;
-        // SAFETY: `ids` holds `bytes` writable bytes and `needed` is a valid out pointer; both
-        // live for the call.
-        unsafe { EnumProcesses(ids.as_mut_ptr(), bytes, &raw mut needed) }
-            .map_err(|e| PortError::Other(format!("EnumProcesses: {e}")))?;
-        if needed < bytes {
-            let count = usize::try_from(needed).unwrap_or(0) / size_of::<u32>();
-            ids.truncate(count);
-            return Ok(ids);
-        }
-        // The buffer was full: there may be more processes. Try a larger one.
-        capacity *= 2;
-    }
-}
-
 /// Trims the working set of one process: opens it with `PROCESS_SET_QUOTA` only and asks Windows
 /// to move its pages out of the working set (`SetProcessWorkingSetSize(-1, -1)`). The pages go to
 /// the standby or modified list and come back on demand. A process that cannot be opened is an
@@ -338,15 +317,20 @@ pub(crate) fn trim_working_set(pid: u32) -> Result<(), PortError> {
         .map_err(|e| PortError::Other(format!("cannot trim process {pid}: {e}")))
 }
 
-/// Trims every process the user can open.
-fn trim_all_working_sets() -> Result<PurgeOutcome, PortError> {
+/// Trims every process the user can open, except the ones `protected` names. The processes come
+/// from the system process list (which has their image names); a protected one is never opened.
+fn trim_all_working_sets(protected: &ExclusionList) -> Result<PurgeOutcome, PortError> {
     let mut outcome = PurgeOutcome::default();
-    for pid in process_ids()? {
+    for process in WinProcesses::new().list()? {
         // 0 is the idle pseudo process and 4 is the System process: neither can be opened.
-        if pid == 0 || pid == 4 {
+        if process.pid == 0 || process.pid == 4 {
             continue;
         }
-        match trim_working_set(pid) {
+        if protected.protects(&process.name) {
+            outcome.processes_excluded += 1;
+            continue;
+        }
+        match trim_working_set(process.pid) {
             Ok(()) => outcome.processes_trimmed += 1,
             Err(_) => outcome.processes_skipped += 1,
         }
@@ -407,12 +391,16 @@ impl Memory for WinMemory {
         }
     }
 
+    fn trim_working_sets(&self, protected: &ExclusionList) -> Result<PurgeOutcome, PortError> {
+        trim_all_working_sets(protected)
+    }
+
     fn purge(&self, area: MemoryArea) -> Result<PurgeOutcome, PortError> {
         if let Some(name) = privilege_for(area) {
             enable_privilege(name)?;
         }
         match area {
-            MemoryArea::WorkingSets => trim_all_working_sets(),
+            MemoryArea::WorkingSets => trim_all_working_sets(&ExclusionList::new()),
             MemoryArea::FileCache => trim_file_cache().map(|()| PurgeOutcome::default()),
             other => match list_command(other) {
                 Some(command) => {

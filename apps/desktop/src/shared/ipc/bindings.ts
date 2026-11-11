@@ -454,6 +454,52 @@ async cleanMemory(areas: MemoryAreaView[]) : Promise<Result<MemoryCleanResult, I
 }
 },
 /**
+ * Tauri command: the readings of the current run, oldest first (empty when the window was just
+ * opened). The chart loads these, then follows `memoryTrendUpdated`.
+ */
+async memoryHistory() : Promise<Result<MemoryPointView[], IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("memory_history") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: the programs protected from memory trimming.
+ */
+async memoryExclusions() : Promise<Result<string[], IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("memory_exclusions") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: protects a program (by executable name) from memory trimming. Resolves with
+ * the new list.
+ */
+async addMemoryExclusion(name: string) : Promise<Result<string[], IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("add_memory_exclusion", { name }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: stops protecting a program. Resolves with the new list.
+ */
+async removeMemoryExclusion(name: string) : Promise<Result<string[], IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("remove_memory_exclusion", { name }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Tauri command: whether administrator actions can be used now, and if not, why. Reads only; it
  * never starts the helper and never shows a prompt.
  */
@@ -604,12 +650,14 @@ appReady: AppReady,
 boostFinished: BoostFinished,
 cleanScanProgress: CleanScanProgress,
 largeFilesProgress: LargeFilesProgress,
+memoryTrendUpdated: MemoryTrendUpdated,
 metricsUpdated: MetricsUpdated
 }>({
 appReady: "app-ready",
 boostFinished: "boost-finished",
 cleanScanProgress: "clean-scan-progress",
 largeFilesProgress: "large-files-progress",
+memoryTrendUpdated: "memory-trend-updated",
 metricsUpdated: "metrics-updated"
 })
 
@@ -920,6 +968,11 @@ processesTrimmed: number;
  * Working sets only: how many processes could not be opened and were left alone.
  */
 processesSkipped: number; 
+/**
+ * Working sets only: how many processes were left alone because they are on the exclusion
+ * list.
+ */
+processesExcluded: number; 
 /**
  * What went wrong, when `status` is `failed` or `unsupported`.
  */
@@ -1940,6 +1993,18 @@ state: OperationState;
  */
 reason: string | null }
 /**
+ * One reading of memory by list, as the UI sees it.
+ */
+export type MemoryPointView = { 
+/**
+ * When it was taken, ISO 8601 in UTC.
+ */
+takenAt: string; 
+/**
+ * Memory by list at that time.
+ */
+lists: MemoryListsView }
+/**
  * What the Memory page shows when it opens.
  */
 export type MemoryState = { 
@@ -1955,6 +2020,12 @@ problem: string | null;
  * The operations in the order a run performs them, each with whether it can run.
  */
 operations: MemoryOperationView[] }
+/**
+ * Event emitted about once a second while the window is open, with the latest reading of memory
+ * by list. Generated as `events.memoryTrendUpdated`. Nothing is emitted while the app sits in
+ * the tray.
+ */
+export type MemoryTrendUpdated = MemoryPointView
 /**
  * Physical memory.
  */
