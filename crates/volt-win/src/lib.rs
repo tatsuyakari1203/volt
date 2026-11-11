@@ -41,6 +41,7 @@ mod services;
 mod startup_sources;
 mod version;
 mod wide;
+mod winget;
 
 pub use apps::{WinPackagedApps, WinUninstaller};
 pub use autostart_services::WinAutoStartServices;
@@ -58,3 +59,4 @@ pub use registry::WinRegistry;
 pub use services::WinServices;
 pub use startup_sources::{WinLogonTasks, WinShortcuts};
 pub use version::WinFilePublisher;
+pub use winget::WinWinget;

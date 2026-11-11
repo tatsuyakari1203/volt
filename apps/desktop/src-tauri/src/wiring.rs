@@ -23,13 +23,13 @@ use volt_core::{
     LargeFilesFinder, LeftoverCleaner, LogonTasks, MemoryCleaner, OwnInstall, PortError, Ports,
     ProcessMonitor, ProcessTuner, Processes, Profiles, ReconcileReport, RecycleBinManager,
     Resolution, RulesError, Settings, ShortcutResolver, StartupManager, StartupSources,
-    SystemClock, TidyFinder, TweakEngine,
+    SystemClock, TidyFinder, TweakEngine, UpdateManager,
 };
 use volt_store::{CorruptionRecovery, OpenOutcome, Store, StoreError};
 use volt_win::{
     WinAutoStartServices, WinCommands, WinElevator, WinEnvironment, WinFilePublisher,
     WinFileSystem, WinKnownFolders, WinLogonTasks, WinMemory, WinPackagedApps, WinProcesses,
-    WinRecycleBin, WinRegistry, WinServices, WinShortcuts, WinUninstaller,
+    WinRecycleBin, WinRegistry, WinServices, WinShortcuts, WinUninstaller, WinWinget,
 };
 
 use crate::IpcError;
@@ -130,6 +130,7 @@ pub struct AppCore {
     apps: Option<AppManager>,
     automation: Option<Automation>,
     profiles: Option<Profiles>,
+    updates: Option<UpdateManager>,
 }
 
 impl fmt::Debug for AppCore {
@@ -178,6 +179,7 @@ impl AppCore {
             apps: None,
             automation: None,
             profiles: None,
+            updates: None,
         }
     }
 
@@ -380,6 +382,21 @@ impl AppCore {
         self.apps
             .as_ref()
             .ok_or_else(|| IpcError::unsupported(&volt_core::Phrase::new("err.appsUnavailable")))
+    }
+
+    /// The same core with the app updates manager attached. The real app does in [`init`];
+    /// [`build_core`] never does, so a test cannot run winget by accident.
+    #[must_use]
+    pub fn with_updates(mut self, manager: UpdateManager) -> Self {
+        self.updates = Some(manager);
+        self
+    }
+
+    /// The app updates manager, or the error the update commands return without one.
+    pub fn updates(&self) -> Result<&UpdateManager, IpcError> {
+        self.updates
+            .as_ref()
+            .ok_or_else(|| IpcError::unsupported(&volt_core::Phrase::new("err.updatesUnavailable")))
     }
 
     /// The same core with the startup apps manager attached. [`build_core_with`] does this;
@@ -846,10 +863,15 @@ fn build_real_core(app: &AppHandle) -> Result<AppCore, InitError> {
         core.engine.clone(),
         process_list,
     );
+    // winget is run only when the Apps page asks for updates, and every update it installs is
+    // written to the activity log.
+    let updates = UpdateManager::new(Arc::new(WinWinget::new()), Arc::new(SystemClock))
+        .with_activity_log(core.activity.clone());
     Ok(core
         .with_recycle_bin(bin)
         .with_elevator(elevator)
         .with_apps(apps)
         .with_automation(automation)
-        .with_profiles(profiles))
+        .with_profiles(profiles)
+        .with_updates(updates))
 }

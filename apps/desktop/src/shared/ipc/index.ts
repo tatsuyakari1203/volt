@@ -79,6 +79,8 @@ import {
   type UndoPreview,
   type UndoResult,
   type UninstallResult,
+  type UpdateCheckView,
+  type UpdateResultView,
 } from './bindings';
 
 export type {
@@ -96,6 +98,7 @@ export type {
   AppReady,
   AppSourceView,
   AppTriggerView,
+  AppUpdateView,
   AppView,
   AreaResult,
   AreaStatus,
@@ -248,6 +251,8 @@ export type {
   UndoStatus,
   UninstallOutcomeView,
   UninstallResult,
+  UpdateCheckView,
+  UpdateResultView,
 } from './bindings';
 
 /** Thrown by the wrappers below when a command returns an error; carries the typed value. */
@@ -1036,4 +1041,22 @@ export async function scanLeftovers(id: string): Promise<LeftoverScanView> {
  */
 export async function removeLeftovers(id: string, ids: string[]): Promise<LeftoverRemovalView> {
   return call(() => commands.removeLeftovers(id, ids));
+}
+
+/**
+ * Asks winget which apps have an update. This uses the network and runs only when the user presses
+ * the button. Reads only: nothing is installed. A missing or broken winget, or source terms the
+ * user has not accepted, come back as `problem` with a suggested fix, not as an error.
+ */
+export async function checkAppUpdates(): Promise<UpdateCheckView> {
+  return call(() => commands.checkAppUpdates());
+}
+
+/**
+ * Updates one app with winget and waits for it. The id comes from checkAppUpdates; a command is
+ * never passed. A package that needs administrator rights shows the Windows prompt from winget's
+ * installer. Volt cannot undo it; it is written to the activity log.
+ */
+export async function updateApp(id: string): Promise<UpdateResultView> {
+  return call(() => commands.updateApp(id));
 }

@@ -937,6 +937,30 @@ async undoProfileSwitch() : Promise<Result<SwitchResultView, IpcError>> {
 }
 },
 /**
+ * Tauri command: asks winget which apps have an update. This uses the network and runs only when
+ * the user presses the button. Reads only.
+ */
+async checkAppUpdates() : Promise<Result<UpdateCheckView, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("check_app_updates") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: updates one app with winget and waits for it. A package that needs
+ * administrator rights shows the Windows prompt from winget's installer. Volt cannot undo it.
+ */
+async updateApp(id: string) : Promise<Result<UpdateResultView, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("update_app", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Tauri command: runs Boost as saved and returns the before and after report.
  */
 async boost() : Promise<Result<BoostResult, IpcError>> {
@@ -1298,6 +1322,30 @@ exe: string;
  * Whether the earlier profile returns when the app exits.
  */
 returnOnExit: boolean }
+/**
+ * One update winget offers.
+ */
+export type AppUpdateView = { 
+/**
+ * The winget package id; pass it to `updateApp`.
+ */
+id: string; 
+/**
+ * The name shown to the user.
+ */
+name: string; 
+/**
+ * The installed version.
+ */
+current: string; 
+/**
+ * The version winget offers.
+ */
+available: string; 
+/**
+ * The winget source (`winget`, `msstore`), when known.
+ */
+source: string | null }
 /**
  * One installed app.
  */
@@ -5019,6 +5067,98 @@ leftoversAvailable: boolean;
  * The list as it is now.
  */
 listing: AppListView }
+/**
+ * What a check for updates found.
+ */
+export type UpdateCheckView = { 
+/**
+ * The updates; empty when there are none or when `problem` is set.
+ */
+updates: AppUpdateView[]; 
+/**
+ * Rows winget printed that were cut short and are left out.
+ */
+skipped: number; 
+/**
+ * Why no list could be made.
+ */
+problem: UpdateProblemView | null }
+/**
+ * How updating one app ended.
+ */
+export type UpdateOutcomeView = 
+/**
+ * Updated.
+ */
+"updated" | 
+/**
+ * Updated; Windows needs a restart to finish.
+ */
+"needsRestart" | 
+/**
+ * Not updated.
+ */
+"failed"
+/**
+ * Why no list could be made, with what the user can do about it.
+ */
+export type UpdateProblemView = { 
+/**
+ * What went wrong, in English.
+ */
+message: string; 
+/**
+ * `message` as a phrase.
+ */
+messagePhrase: PhraseView; 
+/**
+ * What to do about it, in English.
+ */
+fix: string; 
+/**
+ * `fix` as a phrase.
+ */
+fixPhrase: PhraseView; 
+/**
+ * Whether the user has to accept winget's source terms (Volt never does).
+ */
+agreements: boolean }
+/**
+ * What updating one app did.
+ */
+export type UpdateResultView = { 
+/**
+ * The package id.
+ */
+id: string; 
+/**
+ * Its name.
+ */
+name: string; 
+/**
+ * The version before.
+ */
+from: string; 
+/**
+ * The version offered.
+ */
+to: string; 
+/**
+ * How it ended.
+ */
+outcome: UpdateOutcomeView; 
+/**
+ * Why it failed, in English, when it did.
+ */
+reason: string | null; 
+/**
+ * `reason` as a phrase.
+ */
+reasonPhrase: PhraseView | null; 
+/**
+ * Whether it was written to the activity log (as a change Volt cannot undo).
+ */
+recorded: boolean }
 
 /** tauri-specta globals **/
 
