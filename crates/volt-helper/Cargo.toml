@@ -33,7 +33,11 @@ elevated-ci = ["volt-win/elevated-ci"]
 
 [dependencies]
 volt-core.workspace = true
+volt-store.workspace = true
 volt-win.workspace = true
+log.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 volt-core = { workspace = true, features = ["fakes"] }
+tempfile.workspace = true

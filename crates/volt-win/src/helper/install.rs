@@ -68,6 +68,24 @@ pub const WRITE_RIGHTS: u32 = FILE_WRITE_DATA
     | GENERIC_WRITE
     | MAXIMUM_ALLOWED;
 
+const KEY_SET_VALUE: u32 = 0x0000_0002;
+const KEY_CREATE_SUB_KEY: u32 = 0x0000_0004;
+const KEY_CREATE_LINK: u32 = 0x0000_0020;
+
+/// Every right that lets a principal change, replace, delete or re-permission a registry key:
+/// set a value, create a subkey or a link, and the standard and generic write rights. (The file
+/// rights above share some bit positions with these but not all, so a key is judged by its own
+/// list.)
+pub const KEY_WRITE_RIGHTS: u32 = KEY_SET_VALUE
+    | KEY_CREATE_SUB_KEY
+    | KEY_CREATE_LINK
+    | DELETE
+    | WRITE_DAC
+    | WRITE_OWNER
+    | GENERIC_ALL
+    | GENERIC_WRITE
+    | MAXIMUM_ALLOWED;
+
 /// Whether `sid` is one of the principals that may own and change the install folder.
 #[must_use]
 pub fn is_trusted_principal(sid: &str) -> bool {
@@ -89,7 +107,7 @@ pub enum Weakness {
     },
 }
 
-/// Checks one object's security. Pure: it only looks at `info`.
+/// Checks one file or folder's security. Pure: it only looks at `info`.
 ///
 /// Deny entries are ignored (a grant is judged on its own, which is the stricter reading), and so
 /// are entries that apply to children only. A NULL DACL grants everyone everything.
@@ -97,6 +115,15 @@ pub enum Weakness {
 /// # Errors
 /// The first [`Weakness`] found.
 pub fn check_security(info: &SecurityInfo) -> Result<(), Weakness> {
+    check_security_for(info, WRITE_RIGHTS)
+}
+
+/// [`check_security`] for an object whose write rights are `write_rights` (a registry key has
+/// its own, [`KEY_WRITE_RIGHTS`]).
+///
+/// # Errors
+/// The first [`Weakness`] found.
+pub fn check_security_for(info: &SecurityInfo, write_rights: u32) -> Result<(), Weakness> {
     if !is_trusted_principal(&info.owner) {
         return Err(Weakness::UntrustedOwner(info.owner.clone()));
     }
@@ -116,7 +143,7 @@ pub fn check_security(info: &SecurityInfo) -> Result<(), Weakness> {
         if *allow
             && flags & INHERIT_ONLY_ACE == 0
             && !is_trusted_principal(sid)
-            && mask & WRITE_RIGHTS != 0
+            && mask & write_rights != 0
         {
             return Err(Weakness::Writable {
                 sid: sid.clone(),

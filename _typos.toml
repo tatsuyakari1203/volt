@@ -10,8 +10,9 @@ FOF_NOERRORUI = "FOF_NOERRORUI"
 FOF_SILENT = "FOF_SILENT"
 
 [default]
-# SDDL ACE trustee aliases (BA = built-in Administrators), used in the helper pipe security descriptor.
-extend-ignore-re = ['\(A;;[0-9A-Za-z]+;;;BA\)']
+# SDDL ACE trustee aliases (BA = built-in Administrators), used in the helper pipe and state folder
+# security descriptors (the second field is the optional ACE flags, such as OICI).
+extend-ignore-re = ['\(A;[A-Z]*;[0-9A-Za-z]+;;;BA\)']
 
 [default.extend-words]
 # NSIS instruction StrCpy, used in the installer hooks.

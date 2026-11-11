@@ -119,10 +119,15 @@ pub use clean::{
     RuleSelection, RulesError, ScanError, ScanFailure, ScanObserver, SelectionError, SkipReason,
 };
 pub use command::{Command, CommandOutput, Commands, MAX_TIMEOUT_SECS};
+pub use elevation::confirm::{
+    ConfirmAction, ConfirmGate, ConfirmRequest, Confirmer, DENIAL_BLOCK, DENIALS_BEFORE_LOCKOUT,
+    Decision, Verdict,
+};
 pub use elevation::{
     AreaResult, AreaStatus, CatalogueHashes, ElevationError, ElevationStatus, Elevator, ErrorCode,
-    HelloReply, MAX_REPLY_BYTES, MAX_REQUEST_BYTES, MemoryPurgeReply, PROTOCOL_VERSION, Reply,
-    ReplyBody, Request, RequestEnvelope, RequestSequencer, UnavailableReason, catalogue_hash,
+    HISTORY_MAX_RECORDS, HelloReply, HistoryReply, MAX_REPLY_BYTES, MAX_REQUEST_BYTES,
+    MemoryPurgeReply, PROTOCOL_VERSION, Reply, ReplyBody, Request, RequestEnvelope,
+    RequestSequencer, TweakApplyReply, TweakRevertReply, UnavailableReason, catalogue_hash,
     decode_reply, decode_request, encode_reply, encode_request,
 };
 pub use error::{ExecError, PlanError, PortError, RevertError};

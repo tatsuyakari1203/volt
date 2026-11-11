@@ -12,6 +12,7 @@
 //! with Rust variant names (`risk = "safe"`, `hive = "HKCU"`,
 //! `value = { dword = 1 }`): the serde aliases on those enums exist for that.
 
+mod admin_lint;
 mod catalogue;
 mod definition;
 mod engine;

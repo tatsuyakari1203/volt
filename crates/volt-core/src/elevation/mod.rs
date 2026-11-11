@@ -7,9 +7,10 @@
 //! # The protocol
 //!
 //! One request or reply per pipe message, as JSON. A request is a [`RequestEnvelope`]: a `u64`
-//! id and a [`Request`] from a CLOSED set (`hello`, `memory_purge`, `bye`). It carries no path,
-//! command, registry location or service name, so the helper has nothing to be talked into
-//! running. The rules that make it hard to abuse, all enforced by [`decode_request`] and
+//! id and a [`Request`] from a CLOSED set (`hello`, `memory_purge`, `tweak_apply`,
+//! `tweak_revert`, `history`, `bye`). It carries no path, command, registry location or service
+//! name (a tweak is named by its catalogue id and nothing else), so the helper has nothing to be
+//! talked into running. The rules that make it hard to abuse, all enforced by [`decode_request`] and
 //! [`RequestSequencer`]:
 //!
 //! - a request is at most [`MAX_REQUEST_BYTES`] (1 KiB);
@@ -30,10 +31,13 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+use crate::activity::ActivityRecord;
 use crate::error::PortError;
 use crate::memory::{AreaReport, MemoryCleanReport};
 use crate::ports::{MemoryArea, MemoryLists, PurgeOutcome};
+use crate::tweak::ApplyOutcome;
 
+pub mod confirm;
 #[cfg(any(test, feature = "fakes"))]
 pub mod fakes;
 #[cfg(test)]
@@ -72,12 +76,43 @@ pub enum Request {
         /// The areas, each at most once.
         areas: Vec<MemoryArea>,
     },
+    /// Applies one administrator tweak of the helper's own catalogue, named by its id. A change
+    /// that persists, so the helper asks for confirmation on its own before it acts.
+    TweakApply {
+        /// The tweak id.
+        tweak: String,
+    },
+    /// Reverts what the helper applied for this tweak, from the helper's own journal. Confirmed
+    /// like an apply.
+    TweakRevert {
+        /// The tweak id.
+        tweak: String,
+    },
+    /// Reads the helper's activity log, oldest first, so the UI can mirror it by pull: records
+    /// with an id above `after` (0 for all), at most `limit` of them (the helper may send fewer
+    /// to fit a reply).
+    History {
+        /// The last record id the UI already holds.
+        after: u64,
+        /// The most records to send.
+        limit: u32,
+    },
     /// Ends the session: the helper replies and exits.
     Bye {},
 }
 
 /// The request types of this version, as they appear in the `type` field.
-const REQUEST_TYPES: [&str; 3] = ["hello", "memory_purge", "bye"];
+const REQUEST_TYPES: [&str; 6] = [
+    "hello",
+    "memory_purge",
+    "tweak_apply",
+    "tweak_revert",
+    "history",
+    "bye",
+];
+
+/// The most records one `history` reply may carry, whatever `limit` asks for.
+pub const HISTORY_MAX_RECORDS: u32 = 20;
 
 /// A reply with the id of the request it answers (0 when the request had no readable id).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -96,6 +131,12 @@ pub enum ReplyBody {
     Hello(HelloReply),
     /// Answer to `memory_purge`.
     MemoryPurge(MemoryPurgeReply),
+    /// Answer to `tweak_apply`.
+    TweakApply(TweakApplyReply),
+    /// Answer to `tweak_revert`.
+    TweakRevert(TweakRevertReply),
+    /// Answer to `history`.
+    History(HistoryReply),
     /// Answer to `bye`.
     Bye {},
     /// The request was refused.
@@ -137,6 +178,40 @@ pub fn catalogue_hash(text: &str) -> String {
         let _ = write!(hex, "{byte:02x}");
     }
     hex
+}
+
+/// Answer to `tweak_apply`: how the apply ended. Failures that changed nothing come back as an
+/// error code instead.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TweakApplyReply {
+    /// The tweak id.
+    pub tweak: String,
+    /// How the apply ended.
+    pub outcome: ApplyOutcome,
+}
+
+/// Answer to `tweak_revert`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TweakRevertReply {
+    /// The tweak id.
+    pub tweak: String,
+    /// How many journal batches were reverted.
+    pub batches: u32,
+    /// Whether everything that was attempted was restored.
+    pub complete: bool,
+}
+
+/// Answer to `history`: records of the helper's activity log, oldest first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryReply {
+    /// Identifies the helper's store. The UI keys what it mirrors by (`store`, record id) and
+    /// keeps one cursor per store: a store that was recreated has a new identifier, and its
+    /// older rows stay visible without Undo.
+    pub store: String,
+    /// The records after the requested id.
+    pub records: Vec<ActivityRecord>,
+    /// Whether the log holds more records after the last one sent.
+    pub more: bool,
 }
 
 /// How one area ended.
@@ -277,6 +352,27 @@ pub enum ErrorCode {
     /// The helper failed in a way that is not the request's fault.
     #[error("internal error")]
     Internal,
+    /// The tweak id is not an administrator tweak of the helper's catalogue.
+    #[error("unknown administrator tweak")]
+    UnknownTweak,
+    /// The change needs a confirmation and nobody accepted it (it was declined, or the helper
+    /// has no way to ask). Nothing was changed.
+    #[error("not confirmed")]
+    NotConfirmed,
+    /// The same request was declined lately (or confirmations are locked for this session), so it
+    /// was refused without asking. Nothing was changed.
+    #[error("blocked after a declined confirmation")]
+    Blocked,
+    /// There is no change of this tweak that the helper's journal can revert.
+    #[error("nothing to revert")]
+    NothingToRevert,
+    /// The tweak could not be carried out (a step could not be read, the journal refused, a
+    /// step failed). The details are in the helper's activity log.
+    #[error("the tweak could not be carried out")]
+    TweakFailed,
+    /// The helper cannot serve this kind of request (its state could not be opened).
+    #[error("not available in this helper")]
+    Unavailable,
 }
 
 impl ErrorCode {
@@ -287,7 +383,15 @@ impl ErrorCode {
     pub fn closes_connection(self) -> bool {
         !matches!(
             self,
-            Self::HelloRequired | Self::InvalidRequest | Self::RateLimited
+            Self::HelloRequired
+                | Self::InvalidRequest
+                | Self::RateLimited
+                | Self::UnknownTweak
+                | Self::NotConfirmed
+                | Self::Blocked
+                | Self::NothingToRevert
+                | Self::TweakFailed
+                | Self::Unavailable
         )
     }
 }
@@ -496,6 +600,16 @@ pub trait Elevator: Send + Sync {
 
     /// Purges memory areas in the helper.
     fn memory_purge(&self, areas: &[MemoryArea]) -> Result<MemoryPurgeReply, ElevationError>;
+
+    /// Applies the administrator tweak `tweak` in the helper, which confirms it on its own first.
+    /// A refusal ([`ErrorCode::NotConfirmed`], [`ErrorCode::Blocked`]) changed nothing.
+    fn tweak_apply(&self, tweak: &str) -> Result<TweakApplyReply, ElevationError>;
+
+    /// Reverts the helper's own record of the tweak, confirmed like an apply.
+    fn tweak_revert(&self, tweak: &str) -> Result<TweakRevertReply, ElevationError>;
+
+    /// Reads the helper's activity log after the record `after` (0 for the start).
+    fn history(&self, after: u64, limit: u32) -> Result<HistoryReply, ElevationError>;
 
     /// Ends the session. The next call starts a new one (and may prompt again).
     fn bye(&self);

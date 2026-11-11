@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use rusqlite::{Connection, ErrorCode};
-use volt_core::{Clock, PortError, SystemClock};
+use volt_core::{Clock, PortError, Settings, SystemClock};
 
 use crate::error::StoreError;
 use crate::migrations::{MIGRATIONS, MigrateError, migrate};
@@ -109,6 +109,35 @@ impl Store {
     pub(crate) fn conn(&self) -> MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(PoisonError::into_inner)
     }
+
+    /// The identifier of this database: 32 lower-case hex digits made when the database was
+    /// created and kept in its settings. A copy that is replaced by a fresh database gets a new
+    /// one, so a reader that mirrors rows by (store id, row id) can tell a recreated store from
+    /// the old one and never mixes their rows.
+    ///
+    /// # Errors
+    /// The database's error when it cannot be read or written.
+    pub fn store_id(&self) -> Result<String, PortError> {
+        const KEY: &str = "store_id";
+        if let Some(existing) = Settings::get(self, KEY)?
+            && let Some(text) = existing.as_str()
+            && is_store_id(text)
+        {
+            return Ok(text.to_owned());
+        }
+        // SQLite's own generator, seeded by the operating system.
+        let fresh: String = self
+            .conn()
+            .query_row("SELECT lower(hex(randomblob(16)))", [], |row| row.get(0))
+            .map_err(|e| db_error(&e))?;
+        Settings::set(self, KEY, &serde_json::Value::String(fresh.clone()))?;
+        Ok(fresh)
+    }
+}
+
+/// 32 lower-case hex digits.
+fn is_store_id(text: &str) -> bool {
+    text.len() == 32 && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// Opens, configures, verifies and migrates the database file.
@@ -141,6 +170,9 @@ fn configure(conn: &Connection) -> rusqlite::Result<()> {
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     conn.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0))?;
     conn.pragma_update(None, "synchronous", "FULL")?;
+    // Transient tables stay in memory: no temporary file is ever made (the elevated helper has no
+    // temporary folder, its environment is scrubbed).
+    conn.pragma_update(None, "temp_store", "MEMORY")?;
     Ok(())
 }
 

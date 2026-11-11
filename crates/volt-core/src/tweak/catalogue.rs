@@ -69,6 +69,9 @@ pub enum IssueKind {
         /// Index of the earlier step.
         first_step: usize,
     },
+    /// A step that the elevated helper must never run: an administrator tweak may only change
+    /// machine-wide registry values and services (see [`Catalogue::administrator_issues`]).
+    AdministratorStep(String),
 }
 
 impl fmt::Display for IssueKind {
@@ -98,6 +101,7 @@ impl fmt::Display for IssueKind {
                 f,
                 "changes the same thing as steps[{first_step}]; merge them into one step"
             ),
+            Self::AdministratorStep(message) => f.write_str(message),
         }
     }
 }

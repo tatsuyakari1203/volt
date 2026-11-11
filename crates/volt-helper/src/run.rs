@@ -14,6 +14,7 @@ use volt_win::helper::identity::{
 use volt_win::helper::install::verify_install;
 
 use crate::serve::{ExitReason, Helper, Limits};
+use crate::state::{HelperState, StateFailure};
 
 /// The UI executable the helper is bound to: the sibling in the verified install folder.
 pub const UI_IMAGE_NAME: &str = "volt-desktop.exe";
@@ -39,6 +40,11 @@ pub mod exit {
     pub const PIPE: u8 = 7;
     /// The pipe failed while serving.
     pub const FAILED: u8 = 8;
+    /// The state folder is refused (a non-administrator can write to it) or cannot be made, or the
+    /// helper's store cannot be opened.
+    pub const STATE: u8 = 9;
+    /// Another helper holds the single-helper lock.
+    pub const LOCKED: u8 = 10;
 }
 
 /// Runs the helper for the argument list `argv` (the program name first) and returns the process
@@ -70,11 +76,21 @@ pub fn run(argv: &[String]) -> u8 {
         Ok(bound) => bound,
         Err(code) => return code,
     };
+    // The state comes before the pipe: a second helper never gets as far as serving, and one that
+    // cannot trust its own journal serves nothing.
+    let Ok(own) = inspect_current() else {
+        return exit::HARDENING;
+    };
+    let state = match HelperState::open(&layout, &own.token.user_sid) {
+        Ok(state) => state,
+        Err(StateFailure::Locked) => return exit::LOCKED,
+        Err(_) => return exit::STATE,
+    };
     let Ok(helper) = Helper::bind(&parsed.pipe, bound) else {
         return exit::PIPE;
     };
     match helper
-        .serve(crate::production_session(), &Limits::default())
+        .serve(crate::production_session(&state), &Limits::default())
         .exit
     {
         ExitReason::Failed(_) => exit::FAILED,
@@ -154,6 +170,8 @@ mod tests {
             exit::OTHER_USER,
             exit::PIPE,
             exit::FAILED,
+            exit::STATE,
+            exit::LOCKED,
         ];
         let mut sorted = codes.to_vec();
         sorted.sort_unstable();

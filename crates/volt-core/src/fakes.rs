@@ -1403,6 +1403,20 @@ impl ActivityLog for FakeActivityLog {
             .collect())
     }
 
+    fn list_after(
+        &self,
+        after: Option<ActivityId>,
+        limit: usize,
+    ) -> Result<Vec<ActivityRecord>, PortError> {
+        Ok(lock(&self.state)
+            .records
+            .iter()
+            .filter(|record| after.is_none_or(|cursor| record.id > cursor))
+            .take(limit)
+            .cloned()
+            .collect())
+    }
+
     fn prune(&self, retention: Retention, now: Timestamp) -> Result<u64, PortError> {
         let mut state = lock(&self.state);
         let cutoff = now.as_unix_millis().saturating_sub(retention.max_age_ms);
