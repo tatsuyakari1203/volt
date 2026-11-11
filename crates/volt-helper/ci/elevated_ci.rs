@@ -110,7 +110,13 @@ impl Report {
 
     fn markdown(&self) -> String {
         let cell = |text: &str| text.replace('|', "\\|").replace('\n', " ");
-        let mut md = String::from("## Elevated helper, real run\n\n### Checks\n\n");
+        let mut md = String::from(
+            "## Elevated helper, real run\n\n\
+             Scope: the runner's user already holds a full administrator token, so `runas` starts \
+             the helper without crossing a consent prompt. The rights of the launch handle seen \
+             here are those of an elevated-to-elevated launch; a launch from a filtered \
+             (medium-integrity) token is not measured by this job.\n\n### Checks\n\n",
+        );
         md.push_str("| Check | Result | Detail |\n| --- | --- | --- |\n");
         for (name, ok, detail) in &self.checks {
             let _ = writeln!(
