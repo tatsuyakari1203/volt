@@ -48,7 +48,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # The runner context is not available in `env:` above, so the folder is set here.
       - name: Choose the report folder
@@ -59,7 +59,7 @@ jobs:
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       - name: Build the release helper
         run: pwsh scripts/build-helper.ps1
@@ -115,7 +115,7 @@ jobs:
           if (Test-Path $report) { Get-Content $report | Add-Content $env:GITHUB_STEP_SUMMARY }
           else { 'The harness wrote no report.' | Add-Content $env:GITHUB_STEP_SUMMARY }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: elevated-helper-report
