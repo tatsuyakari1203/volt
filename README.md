@@ -23,8 +23,11 @@ journaled and reversible.
 ## Install
 
 Download `Volt_<version>_x64-setup.exe` and its `.sha256` file from the
-[Releases page](https://github.com/tatsuyakari1203/volt/releases). The installer is per-user: it
-needs no administrator rights and installs under your own profile.
+[Releases page](https://github.com/tatsuyakari1203/volt/releases). The installer offers two
+modes. **Just me** needs no administrator rights and installs under your own profile. **All users**
+asks for administrator rights, installs into `C:\Program Files\Volt` and is the only mode that can
+use the administrator features (they ask Windows for your consent when you use them). An
+administrator gets All users preselected.
 
 **The build is not code-signed yet.** Windows SmartScreen will likely show "Windows protected your
 PC" with the publisher "Unknown". That means the file has no signature and no download reputation,

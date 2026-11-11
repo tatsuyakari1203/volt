@@ -621,7 +621,7 @@ that UI over a private named pipe. Tested without elevation:
   is no boundary to protect. The message follows the Windows display language, since the settings
   store is not open yet.
 
-Not built yet: the installer change, the confirmation desktop and the helper's own store. The
+Not built yet: the confirmation desktop and the helper's own store. The
 rest of this page works unelevated and does not depend on the helper, except where it says so.
 
 ### The UI half of the helper
@@ -636,7 +636,7 @@ rest of this page works unelevated and does not depend on the helper, except whe
   executable and the helper pass `verify_install` (Program Files\Volt, ACLs, reparse points), the
   helper exists, and the token is an administrator (consent prompt or none), not a standard user.
   Each failure is a distinct `UnavailableReason`. Per-user, portable and development copies stay
-  locked with a reason until the installer change.
+  locked with a reason: only the all-users installer puts the helper next to the UI.
 - **Trust.** Before the first request `server_is(process handle)` and a trusted pipe owner
   (Administrators or SYSTEM) are required (`Untrusted` otherwise). The hello reply must match the
   protocol and both catalogue hashes (`Mismatch` otherwise).
@@ -677,6 +677,21 @@ limited by paths to the helper's code. It is not a required check.
   launch to hello 347 to 444 ms; the purge works after hardening, twice on one helper.
 - Not measured: a launch from a filtered medium-integrity token (handle rights across the UAC
   boundary), the private-desktop dialog and the real ACLs of the machine cleaning roots.
+
+### The installer
+
+The NSIS installer (install mode `both`, hooks in `apps/desktop/src-tauri/installer-hooks.nsh`) is the
+stock Tauri one plus those hooks. **All users** installs only into `Program Files\Volt`, resets the
+ACL of everything it wrote to the one inherited from Program Files and puts `volt-helper.exe` next to
+`volt-desktop.exe`. **Just me** installs under the user's profile and deletes the helper again, so a
+folder the user can write to never holds it. Before an all-users update or uninstall the installer
+gives a running helper 5 seconds to leave by itself, then ends every process named `volt-helper.exe`.
+`scripts/build-installer.ps1` builds the release helper (`scripts/build-helper.ps1`) and bundles it
+through the `tauri.helper.conf.json` overlay; the base configuration has no helper, so debug builds
+and `pnpm tauri dev` need none. The "Installer" job of the elevated CI workflow installs and removes
+the real installer on the hosted runner and checks the layout, the ACLs, the availability answer and
+that the installed helper passes its install self-check (`scripts/installer-checks.ps1`). The consent
+prompt and the launch from a filtered token are still unmeasured.
 
 ### Window lifecycle and tray
 
@@ -1307,7 +1322,7 @@ method are in privacy.md, and `scripts/observe-webview2.ps1` repeats the observa
 
 ## Release
 
-`.github/workflows/release.yml` builds an NSIS installer (per user, no administrator rights) on a
+`.github/workflows/release.yml` builds an NSIS installer (install mode `both`: All users into Program Files\Volt with the helper, or Just me without it; see "The installer" under the helper) on a
 `v*` tag or a manual dispatch; pull requests that touch the workflow or the bundle configuration
 build the artifact only. A tag creates a draft GitHub release with the installer and a SHA-256
 file; nothing is published automatically. There is no signing and no updater. The version comes

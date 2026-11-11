@@ -9,6 +9,11 @@
 //! `runas`, server identity, pipe owner, hello, purge, bye) and the real launch call. It records
 //! the measurements the decision asks for and runs the negative cases for real.
 //!
+//! The installer job runs two more modes against a REAL installation made by the release installer:
+//! `installed` (all-users install: availability, byte-identical helper, the installed helper started
+//! for real) and `per-user` (a per-user install: the availability reason). Neither needs to be the
+//! installed UI executable, so the installed `volt-desktop.exe` is never replaced.
+//!
 //! It REFUSES to run anywhere else: it needs `GITHUB_ACTIONS=true`, `RUNNER_ENVIRONMENT=github-hosted`
 //! and `VOLT_ELEVATED_CI=1`, which only the workflow sets. Never run it on a developer machine.
 
@@ -57,8 +62,14 @@ fn main() -> ExitCode {
             None => ExitCode::from(2),
         },
         Some("rogue") => ExitCode::from(args.get(2).map_or(2, |pipe| rogue(pipe))),
+        Some("installed") => ExitCode::from(installed(&args[2..])),
+        Some("per-user") => ExitCode::from(per_user(&args[2..])),
         _ => {
             eprintln!("usage: volt-desktop.exe run --out <folder>");
+            eprintln!(
+                "       volt-elevated-ci installed --out <folder> --ui <exe> --built <helper>"
+            );
+            eprintln!("       volt-elevated-ci per-user --out <folder> --ui <exe>");
             ExitCode::from(2)
         }
     }
@@ -218,13 +229,134 @@ fn run(out: &Path) -> u8 {
             real_session(&mut report);
             bound_client_only(&mut report, &image, &me);
             negative_cases(&mut report, &image, &me);
-            abandoned_helper(&mut report, &image, &me);
+            abandoned_helper(&mut report, &image.with_file_name(HELPER_IMAGE_NAME), &me);
         }
         Err(error) => report.check("identify the harness process", false, error),
     }
-    let _ = std::fs::write(out.join("elevated-helper-report.md"), report.markdown());
-    let _ = std::fs::write(out.join("elevated-helper-report.json"), report.json());
+    finish(&report, out, "elevated-helper-report")
+}
+
+/// Writes the report in both forms and returns the exit code.
+fn finish(report: &Report, out: &Path, stem: &str) -> u8 {
+    let _ = std::fs::write(out.join(format!("{stem}.md")), report.markdown());
+    let _ = std::fs::write(out.join(format!("{stem}.json")), report.json());
     u8::from(!report.all_passed())
+}
+
+/// The value after `name` in `args`.
+fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
+    args.iter()
+        .position(|arg| arg == name)
+        .and_then(|index| args.get(index + 1))
+        .map(String::as_str)
+}
+
+// ---------------------------------------------------------------------------------------------
+// Real installations made by the release installer
+
+/// An all-users installation: `--ui` is the installed `volt-desktop.exe`, `--built` the release
+/// helper that `scripts/build-helper.ps1` made. Nothing here replaces or starts the installed UI.
+fn installed(args: &[String]) -> u8 {
+    let (Some(out), Some(ui), Some(built)) = (
+        flag(args, "--out"),
+        flag(args, "--ui"),
+        flag(args, "--built"),
+    ) else {
+        eprintln!("usage: volt-elevated-ci installed --out <folder> --ui <exe> --built <helper>");
+        return 2;
+    };
+    let (out, ui, built) = (Path::new(out), Path::new(ui), Path::new(built));
+    let _ = std::fs::create_dir_all(out);
+    let helper = ui.with_file_name(HELPER_IMAGE_NAME);
+    let mut report = Report::default();
+    report.fact("installed UI", ui.display().to_string());
+    report.fact("installed helper", helper.display().to_string());
+
+    let status = status_for(ui);
+    report.check(
+        "the availability check says Available against the installed folder",
+        status == ElevationStatus::Available,
+        format!("{status:?}"),
+    );
+
+    match (std::fs::read(&helper), std::fs::read(built)) {
+        (Ok(installed), Ok(built)) => report.check(
+            "the installed helper is byte-identical to the one that was built",
+            installed == built && !installed.is_empty(),
+            format!(
+                "installed {} bytes, built {} bytes",
+                installed.len(),
+                built.len()
+            ),
+        ),
+        (installed, built) => report.check(
+            "the installed helper is byte-identical to the one that was built",
+            false,
+            format!(
+                "installed: {:?}, built: {:?}",
+                installed.err().map(|e| e.to_string()),
+                built.err().map(|e| e.to_string())
+            ),
+        ),
+    }
+
+    match inspect_current() {
+        Ok(me) => installed_helper(&mut report, &helper, &me),
+        Err(error) => report.check("identify the harness process", false, error),
+    }
+    finish(&report, out, "installed-report")
+}
+
+/// The installed helper started for real through `runas`, bound to this harness. This harness is
+/// not the installed UI executable, so the helper must get through its own install self-check on
+/// the folder the installer made (a failed check exits with the install code) and then refuse to
+/// serve a UI that is not the installed `volt-desktop.exe` (the bound-UI code). Replacing the
+/// installed UI with the harness is not an option, and the full serving path is proven by the
+/// other job with this same helper binary.
+fn installed_helper(report: &mut Report, helper: &Path, me: &ProcessFacts) {
+    let started = Instant::now();
+    let result = exit_code_within(helper, &valid_args(me), Duration::from_secs(30));
+    report.check(
+        "the installed helper passes its install self-check and refuses a UI that is not the installed one",
+        result == Ok(Some(u32::from(exit::BOUND_UI))),
+        format!(
+            "exit {result:?} after {} (install self-check failure would be {}, bound UI refusal is {})",
+            millis(started.elapsed()),
+            exit::INSTALL,
+            exit::BOUND_UI
+        ),
+    );
+}
+
+/// A per-user installation: `--ui` is the installed `volt-desktop.exe` under the user's profile.
+/// The availability check must give the per-user reason, whether or not a helper file sits next to
+/// it, and it starts nothing.
+fn per_user(args: &[String]) -> u8 {
+    let (Some(out), Some(ui)) = (flag(args, "--out"), flag(args, "--ui")) else {
+        eprintln!("usage: volt-elevated-ci per-user --out <folder> --ui <exe>");
+        return 2;
+    };
+    let (out, ui) = (Path::new(out), Path::new(ui));
+    let _ = std::fs::create_dir_all(out);
+    let helper_present = ui.with_file_name(HELPER_IMAGE_NAME).exists();
+    let mut report = Report::default();
+    report.fact("installed UI", ui.display().to_string());
+    report.fact("a helper file sits next to it", helper_present.to_string());
+    let status = status_for(ui);
+    report.check(
+        "the availability check gives the per-user reason",
+        status
+            == ElevationStatus::Unavailable {
+                reason: UnavailableReason::NotAllUsersInstall,
+            },
+        format!("{status:?} (helper file present: {helper_present})"),
+    );
+    let stem = if helper_present {
+        "per-user-with-helper-report"
+    } else {
+        "per-user-report"
+    };
+    finish(&report, out, stem)
 }
 
 fn describe_evidence(report: &mut Report, label: &str, evidence: &ConnectionEvidence) {
@@ -651,10 +783,9 @@ fn negative_cases(report: &mut Report, image: &Path, me: &ProcessFacts) {
 /// A helper whose UI never connects ends by itself after its connection deadline (about 30 s)
 /// instead of waiting for the idle limit. The harness stays alive, so this is the deadline and not
 /// the end of the bound process.
-fn abandoned_helper(report: &mut Report, image: &Path, me: &ProcessFacts) {
-    let helper = image.with_file_name(HELPER_IMAGE_NAME);
+fn abandoned_helper(report: &mut Report, helper: &Path, me: &ProcessFacts) {
     let started = Instant::now();
-    let exit_code = exit_code_within(&helper, &valid_args(me), Duration::from_secs(60));
+    let exit_code = exit_code_within(helper, &valid_args(me), Duration::from_secs(60));
     let elapsed = started.elapsed();
     report.check(
         "a helper whose UI never connects ends by itself near the connection deadline",
@@ -772,6 +903,19 @@ mod tests {
             ("RUNNER_ENVIRONMENT", "github-hosted"),
         ];
         assert!(check_environment(env(&no_switch)).is_err());
+    }
+
+    #[test]
+    fn a_flag_takes_the_word_after_it() {
+        let args: Vec<String> = ["--out", "report", "--ui", r"C:\Program Files\Volt\x.exe"]
+            .iter()
+            .map(|word| (*word).to_owned())
+            .collect();
+        assert_eq!(flag(&args, "--out"), Some("report"));
+        assert_eq!(flag(&args, "--ui"), Some(r"C:\Program Files\Volt\x.exe"));
+        assert_eq!(flag(&args, "--built"), None);
+        // A flag with nothing after it has no value.
+        assert_eq!(flag(&args[..1], "--out"), None);
     }
 
     #[test]
