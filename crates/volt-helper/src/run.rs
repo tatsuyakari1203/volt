@@ -21,7 +21,8 @@ pub const UI_IMAGE_NAME: &str = "volt-desktop.exe";
 /// The process exit codes. 0 is a normal end; every other code is a refusal to serve, and none of
 /// them leaves anything changed.
 pub mod exit {
-    /// The session ended normally (bye, disconnect, idle or the hard cap).
+    /// The session ended normally (bye, disconnect, the UI's end, no connection in time, idle or
+    /// the hard cap).
     pub const OK: u8 = 0;
     /// The command line is not the one accepted shape.
     pub const USAGE: u8 = 2;

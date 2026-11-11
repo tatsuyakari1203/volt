@@ -41,6 +41,7 @@ fn session(memory: &Arc<FakeMemory>) -> Session {
 
 fn limits(idle_ms: u64, hard_ms: u64) -> Limits {
     Limits {
+        connect_deadline: Duration::from_secs(60),
         idle: Duration::from_millis(idle_ms),
         hard_cap: Duration::from_millis(hard_ms),
         write_timeout: Duration::from_secs(5),
@@ -368,4 +369,68 @@ fn a_client_with_the_wrong_creation_time_or_image_is_refused() {
         assert_eq!(report.refused_clients, 1, "{bound:?}");
         assert_eq!(report.served_requests, 0);
     }
+}
+
+#[test]
+fn the_helper_ends_when_the_bound_ui_never_connects() {
+    // A stranger does not count as the UI: it is refused, and the deadline still runs.
+    let helper = Running::start(
+        me(),
+        Limits {
+            connect_deadline: Duration::from_millis(700),
+            ..limits(60_000, 60_000)
+        },
+    );
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_volt-helper"))
+        .args(["probe", "--pipe", helper.name.as_str()])
+        .output()
+        .expect("run the probe");
+    assert_eq!(output.status.code(), Some(1));
+    let (report, elapsed) = helper.finish();
+    assert_eq!(report.exit, ExitReason::NoConnection);
+    assert_eq!(report.refused_clients, 1);
+    assert_eq!(report.served_requests, 0);
+    assert!(elapsed >= Duration::from_millis(600), "{elapsed:?}");
+    assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+}
+
+#[test]
+fn the_connection_deadline_does_not_cut_a_session_that_has_begun() {
+    let helper = Running::start(
+        me(),
+        Limits {
+            connect_deadline: Duration::from_millis(300),
+            ..limits(1500, 60_000)
+        },
+    );
+    let mut client = helper.connect();
+    client.hello();
+    thread::sleep(Duration::from_millis(600));
+    let purge = client.send(Request::MemoryPurge {
+        areas: vec![MemoryArea::StandbyList],
+    });
+    assert!(matches!(purge.body, ReplyBody::MemoryPurge(_)));
+    client.send(Request::Bye {});
+    drop(client);
+    let (report, _) = helper.finish();
+    assert_eq!(report.exit, ExitReason::Bye);
+}
+
+#[test]
+fn the_helper_ends_at_once_when_the_bound_ui_process_exits() {
+    // A throwaway child plays the UI: the probe waits on its pipe for a while.
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_volt-helper"))
+        .args(["sleep-selftest"])
+        .spawn()
+        .expect("start the child");
+    let facts = volt_win::helper::identity::inspect_process(child.id()).expect("child facts");
+    let helper = Running::start(facts.identity, limits(60_000, 60_000));
+    // Not yet connected, the child alive: the helper waits.
+    thread::sleep(Duration::from_millis(500));
+    assert!(!helper.thread.is_finished());
+    child.kill().expect("end the child");
+    child.wait().expect("reaped");
+    let (report, elapsed) = helper.finish();
+    assert_eq!(report.exit, ExitReason::UiExited);
+    assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
 }

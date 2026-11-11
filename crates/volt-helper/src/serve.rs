@@ -4,29 +4,38 @@
 //!
 //! 1. waits for a connection and checks the client (the bound UI process, same user, same session,
 //!    Medium integrity or above). Any other client is disconnected, counted in
-//!    [`ServeReport::refused_clients`], and the helper keeps listening;
+//!    [`ServeReport::refused_clients`], and the helper keeps listening. If the bound UI has not
+//!    connected within [`Limits::connect_deadline`] of the start, the helper stops;
 //! 2. serves the bound client's requests through a [`Session`], one message at a time;
-//! 3. stops, and with it the whole helper, when that client says `bye`, closes the pipe or exits,
+//! 3. stops, and with it the whole helper, when that client says `bye`, closes the pipe or exits
+//!    (the bound process is polled every [`POLL`], so its end is seen even with no call pending),
 //!    when the helper has gone [`Limits::idle`] without a valid request (a refused request or a
 //!    refused client never extends this), or when [`Limits::hard_cap`] has passed since it started.
 //!
-//! All waiting is a pipe call with a timeout, so there is no watchdog thread and nothing that has
-//! to be killed from outside: the clocks are just the timeouts of the calls.
+//! All waiting is a pipe call with a timeout of at most [`POLL`], so there is no watchdog thread
+//! and nothing that has to be killed from outside: the clocks are just the timeouts of the calls.
 
 use std::time::{Duration, Instant};
 
 use volt_core::MAX_REQUEST_BYTES;
 use volt_win::helper::args::PipeName;
 use volt_win::helper::identity::{
-    ClientRefusal, ProcessIdentity, TokenFacts, check_client, inspect_current, inspect_process,
+    ClientRefusal, ProcessHandle, ProcessIdentity, TokenFacts, check_client, inspect_current,
+    inspect_process,
 };
 use volt_win::helper::pipe::{IoError, PipeServer};
 
 use crate::session::Session;
 
+/// The longest a single wait lasts, so that the end of the bound UI process is noticed this soon.
+pub const POLL: Duration = Duration::from_millis(250);
+
 /// The helper's clocks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
+    /// Exit this long after the start if the bound UI has not connected (a refused stranger does
+    /// not count): a helper that was launched and then abandoned must not linger.
+    pub connect_deadline: Duration,
     /// Exit after this long without a valid request.
     pub idle: Duration,
     /// Exit this long after the start, whatever happens.
@@ -38,9 +47,10 @@ pub struct Limits {
 }
 
 impl Default for Limits {
-    /// 10 idle minutes, 60 minutes at most.
+    /// 30 seconds to connect, 10 idle minutes, 60 minutes at most.
     fn default() -> Self {
         Self {
+            connect_deadline: Duration::from_secs(30),
             idle: Duration::from_secs(10 * 60),
             hard_cap: Duration::from_secs(60 * 60),
             write_timeout: Duration::from_secs(30),
@@ -54,8 +64,12 @@ impl Default for Limits {
 pub enum ExitReason {
     /// The bound client sent `bye`.
     Bye,
-    /// The bound client closed the pipe (or its process ended).
+    /// The bound client closed the pipe.
     ClientDisconnected,
+    /// The bound UI process ended.
+    UiExited,
+    /// The bound UI did not connect within [`Limits::connect_deadline`].
+    NoConnection,
     /// No valid request for [`Limits::idle`].
     Idle,
     /// [`Limits::hard_cap`] passed.
@@ -83,6 +97,10 @@ pub struct Helper {
     server: PipeServer,
     own: TokenFacts,
     bound: ProcessIdentity,
+    /// The bound UI process, held from the bind on so that its end can be seen. `None` when it
+    /// cannot be held or is not the named process (a reused id): the connection deadline and the
+    /// pipe still end the helper then.
+    ui: Option<ProcessHandle>,
 }
 
 impl Helper {
@@ -93,8 +111,24 @@ impl Helper {
     /// name is taken, for example).
     pub fn bind(pipe: &PipeName, bound: ProcessIdentity) -> Result<Self, String> {
         let own = inspect_current()?.token;
+        // The id could have been reused since the caller checked it: the process must still be
+        // the one that was named.
+        let ui = ProcessHandle::open(bound.pid).ok().filter(|_| {
+            inspect_process(bound.pid)
+                .is_ok_and(|facts| facts.identity.created_at_100ns == bound.created_at_100ns)
+        });
         let server = PipeServer::create(pipe, &own.user_sid)?;
-        Ok(Self { server, own, bound })
+        Ok(Self {
+            server,
+            own,
+            bound,
+            ui,
+        })
+    }
+
+    /// Whether the bound UI process has ended.
+    fn ui_has_exited(&self) -> bool {
+        self.ui.as_ref().is_some_and(ProcessHandle::has_exited)
     }
 
     /// Whether the connected client is the one to serve.
@@ -121,7 +155,13 @@ impl Helper {
         };
 
         loop {
-            let (deadline, expired) = next_deadline(last_valid, limits, hard_deadline);
+            let (idle_deadline, idle_expired) = next_deadline(last_valid, limits, hard_deadline);
+            let connect_deadline = started + limits.connect_deadline;
+            let (deadline, expired) = if connect_deadline < idle_deadline {
+                (connect_deadline, ExitReason::NoConnection)
+            } else {
+                (idle_deadline, idle_expired)
+            };
             // A pipe call that finds its work already waiting completes at once, whatever its
             // timeout, so a peer that keeps one step ahead would never let a timeout fire. The
             // clocks are therefore also checked here, before every call.
@@ -129,12 +169,14 @@ impl Helper {
                 report.exit = expired;
                 return report;
             }
-            match self.server.accept(Some(remaining(deadline))) {
+            if self.ui_has_exited() {
+                report.exit = ExitReason::UiExited;
+                return report;
+            }
+            match self.server.accept(Some(slice(deadline))) {
                 Ok(()) => {}
-                Err(IoError::Timeout) => {
-                    report.exit = expired;
-                    return report;
-                }
+                // Only the end of a slice: the loop checks the clocks and the UI and waits again.
+                Err(IoError::Timeout) => continue,
                 // A client came and went before it could be looked at: keep listening.
                 Err(IoError::Closed) => {
                     self.server.disconnect();
@@ -180,12 +222,15 @@ impl Helper {
             if Instant::now() >= deadline {
                 return expired;
             }
+            if self.ui_has_exited() {
+                return ExitReason::UiExited;
+            }
             let message = match self
                 .server
-                .read_message(MAX_REQUEST_BYTES, Some(remaining(deadline)))
+                .read_message(MAX_REQUEST_BYTES, Some(slice(deadline)))
             {
                 Ok(message) => message,
-                Err(IoError::Timeout) => return expired,
+                Err(IoError::Timeout) => continue,
                 Err(IoError::Closed) => return ExitReason::ClientDisconnected,
                 Err(IoError::TooLarge) => {
                     return self.refuse_and_close(&Session::too_large().reply, limits);
@@ -238,8 +283,9 @@ fn next_deadline(
     }
 }
 
-fn remaining(deadline: Instant) -> Duration {
-    deadline.saturating_duration_since(Instant::now())
+/// How long to wait in one call: what is left, at most [`POLL`].
+fn slice(deadline: Instant) -> Duration {
+    deadline.saturating_duration_since(Instant::now()).min(POLL)
 }
 
 #[cfg(test)]
@@ -269,6 +315,7 @@ mod tests {
     #[test]
     fn the_default_clocks_are_the_decisions() {
         let limits = Limits::default();
+        assert_eq!(limits.connect_deadline, Duration::from_secs(30));
         assert_eq!(limits.idle, Duration::from_secs(600));
         assert_eq!(limits.hard_cap, Duration::from_secs(3600));
     }

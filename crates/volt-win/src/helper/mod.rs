@@ -27,6 +27,7 @@ pub mod identity;
 pub mod install;
 pub mod launch;
 pub mod pipe;
+pub mod uac;
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 

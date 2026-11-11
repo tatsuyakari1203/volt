@@ -22,8 +22,8 @@ use windows::Win32::Security::{
     TokenSessionId, TokenUser,
 };
 use windows::Win32::System::Threading::{
-    GetCurrentProcess, GetCurrentProcessId, GetProcessId, GetProcessTimes, OpenProcess,
-    OpenProcessToken, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    GetCurrentProcess, GetCurrentProcessId, GetExitCodeProcess, GetProcessId, GetProcessTimes,
+    OpenProcess, OpenProcessToken, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
     QueryFullProcessImageNameW, WaitForSingleObject,
 };
 use windows::core::PWSTR;
@@ -334,6 +334,9 @@ pub fn inspect_current() -> Result<ProcessFacts, String> {
     inspect_process(unsafe { GetCurrentProcessId() })
 }
 
+/// The exit code a running process reports (`STILL_ACTIVE`).
+const STILL_ACTIVE_CODE: u32 = 259;
+
 /// A process handle that can be compared with the server end of a pipe.
 #[derive(Debug)]
 pub struct ProcessHandle(OwnedHandle);
@@ -359,12 +362,18 @@ impl ProcessHandle {
         self.0.raw()
     }
 
-    /// Whether the process has exited. A handle that cannot be waited on (it lacks the
-    /// synchronise right) reports `false`: the caller then relies on the pipe to notice.
+    /// Whether the process has exited. A handle without the synchronise right cannot be waited
+    /// on, so the exit code is read as well (it is `STILL_ACTIVE` while the process runs).
     #[must_use]
     pub fn has_exited(&self) -> bool {
         // SAFETY: a valid process handle; a zero timeout only polls.
-        unsafe { WaitForSingleObject(self.0.raw(), 0) == WAIT_OBJECT_0 }
+        if unsafe { WaitForSingleObject(self.0.raw(), 0) } == WAIT_OBJECT_0 {
+            return true;
+        }
+        let mut code = 0_u32;
+        // SAFETY: a valid process handle with query access and a valid out pointer.
+        unsafe { GetExitCodeProcess(self.0.raw(), &raw mut code) }.is_ok()
+            && code != STILL_ACTIVE_CODE
     }
 
     /// The id of the process this handle refers to.

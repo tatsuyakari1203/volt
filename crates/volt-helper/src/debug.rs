@@ -5,6 +5,7 @@
 //!
 //! - `harden-selftest`: hardens THIS process (unelevated, it is a throwaway child of a test) and
 //!   prints what is left, so a test can check the real hardening without hardening itself.
+//! - `sleep-selftest`: does nothing for two minutes, so a test has a process to end.
 //! - `probe --pipe NAME`: connects to the pipe as a client, says hello and prints whether it was
 //!   served, so a test has a second process that is not the one the helper is bound to.
 
@@ -23,6 +24,11 @@ pub fn run(argv: &[String]) -> Option<u8> {
     match argv.get(1).map(String::as_str) {
         Some("harden-selftest") => Some(harden_selftest()),
         Some("probe") => Some(probe(argv)),
+        Some("sleep-selftest") => {
+            // A stand-in for the UI process in a test that ends it from outside.
+            std::thread::sleep(Duration::from_secs(120));
+            Some(0)
+        }
         _ => None,
     }
 }
