@@ -20,6 +20,7 @@ $ErrorActionPreference = 'Stop'
 $markers = @(
     'volt-ci-accepting-confirmer',
     'ci-voltest-marker',
+    'ci-voltest-open',
     'SOFTWARE\VoltTest\Ci'
 )
 

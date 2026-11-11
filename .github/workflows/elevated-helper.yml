@@ -150,6 +150,12 @@ jobs:
           VOLT_ELEVATED_CI: "1"
         run: |
           Copy-Item target/debug/volt-helper.exe (Join-Path $env:ProgramFiles 'Volt\volt-helper.exe') -Force
+          # A throwaway key that Users can write to: a tweak that writes through it must be refused.
+          $open = 'HKLM:\SOFTWARE\VoltTest\Open'
+          New-Item $open -Force | Out-Null
+          $acl = Get-Acl $open
+          $acl.AddAccessRule((New-Object System.Security.AccessControl.RegistryAccessRule('BUILTIN\Users', 'SetValue', 'Allow')))
+          Set-Acl $open $acl
           $exe = Join-Path $env:ProgramFiles 'Volt\volt-desktop.exe'
           & $exe tweaks --out $env:REPORT_DIR 2>&1 | Tee-Object -FilePath (Join-Path $env:REPORT_DIR 'harness-tweaks.log')
           exit $LASTEXITCODE

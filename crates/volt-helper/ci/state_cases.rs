@@ -46,6 +46,8 @@ const USERS: &str = "*S-1-5-32-545";
 const INHERITED: u8 = 0x10;
 /// The harness build's test-only tweak (see `ci/ci-tweak.toml`).
 const CI_TWEAK: &str = "ci-voltest-marker";
+/// The test-only tweak whose key the workflow made writable for Users.
+const OPEN_KEY_TWEAK: &str = "ci-voltest-open";
 /// A real administrator tweak of the product catalogue that the refusal case asks for.
 const REAL_TWEAK: &str = "turn-off-error-reporting";
 
@@ -367,7 +369,11 @@ fn marker() -> RegistryValueRef {
 
 /// Removes the throwaway keys, whatever is left of them.
 fn clean_up(registry: WinRegistry) {
-    for subkey in [r"SOFTWARE\VoltTest\Ci", r"SOFTWARE\VoltTest"] {
+    for subkey in [
+        r"SOFTWARE\VoltTest\Ci",
+        r"SOFTWARE\VoltTest\Open",
+        r"SOFTWARE\VoltTest",
+    ] {
         let _ = registry.delete_key(&RegistryKeyRef::new(
             RegistryHive::LocalMachine,
             subkey,
@@ -527,6 +533,55 @@ pub(crate) fn tweaks_phase(report: &mut Report, image: &Path, me: &ProcessFacts)
         format!("{nothing:?}"),
     );
 
+    open_key_refused(report, &elevator, registry);
+
     elevator.bye();
     clean_up(registry);
+}
+
+/// A key on the path that a non-administrator can write: the workflow made `SOFTWARE\VoltTest\Open`
+/// writable for Users. The confirmed apply must still change nothing, because the helper refuses to
+/// write through that key.
+fn open_key_refused(report: &mut Report, elevator: &WinElevator, registry: WinRegistry) {
+    let open = RegistryValueRef::new(
+        RegistryHive::LocalMachine,
+        r"SOFTWARE\VoltTest\Open",
+        "Marker",
+    );
+    let prepared = registry
+        .key_exists(
+            RegistryHive::LocalMachine,
+            r"SOFTWARE\VoltTest\Open",
+            RegistryView::Native,
+        )
+        .unwrap_or(false);
+    report.check(
+        "the key that Users can write to was prepared by the workflow",
+        prepared,
+        format!("{prepared}"),
+    );
+    let answer = elevator.tweak_apply(OPEN_KEY_TWEAK);
+    report.check(
+        "a confirmed apply through a key that Users can write to is refused, and rolled back",
+        answer
+            .as_ref()
+            .is_ok_and(|reply| reply.outcome == volt_core::ApplyOutcome::RolledBack),
+        format!("{answer:?}"),
+    );
+    report.check(
+        "nothing was written below that key",
+        registry.read_value(&open) == Ok(None),
+        format!("{:?}", registry.read_value(&open)),
+    );
+    let history = elevator.history(0, 20);
+    report.check(
+        "the failed step is in the helper's activity log",
+        history.as_ref().is_ok_and(|reply| {
+            reply.records.iter().any(|record| {
+                record.label.as_deref() == Some(OPEN_KEY_TWEAK)
+                    && record.outcome == ActivityOutcome::Failed
+            })
+        }),
+        format!("{:?}", history.as_ref().map(|reply| reply.records.len())),
+    );
 }
