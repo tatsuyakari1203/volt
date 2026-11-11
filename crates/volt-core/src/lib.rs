@@ -106,9 +106,11 @@ pub use activity::{
 };
 pub use apps::{
     AppDate, AppListing, AppLocation, AppManager, AppProblem, AppSource, CommandRefusal,
-    HiddenReason, InstalledApp, OwnInstall, PackagedApp, PackagedApps, StopWaiting,
-    UNINSTALL_LABEL, UninstallCommand, UninstallError, UninstallOutcome, UninstallReport,
-    Uninstaller, UninstallerExit, Waited,
+    Confidence, HiddenReason, InstalledApp, LEFTOVERS_LABEL, Leftover, LeftoverCleaner,
+    LeftoverError, LeftoverKind, LeftoverLock, LeftoverRemoval, LeftoverRemoved, LeftoverScan,
+    LeftoverSkip, OwnInstall, PackagedApp, PackagedApps, StopWaiting, UNINSTALL_LABEL,
+    UninstallCommand, UninstallError, UninstallOutcome, UninstallReport, Uninstaller,
+    UninstallerExit, Waited,
 };
 pub use automation::{
     Automation, AutomationConfig, AutomationState, AutomationStatus, CleaningOutcome, Environment,

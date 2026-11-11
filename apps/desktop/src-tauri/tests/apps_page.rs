@@ -12,20 +12,23 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use tempfile::TempDir;
 use volt_core::apps::fakes::FakePackages;
+use volt_core::clean::Location;
+use volt_core::clean::fakes::FakeKnownFolders;
 use volt_core::fakes::FakeSystem;
 use volt_core::{
-    AppLocation, AppManager, PortError, Registry, RegistryHive, RegistryKeyRef, RegistryValue,
-    StopWaiting, SystemClock, UninstallCommand, Uninstaller, UninstallerExit,
+    AppLocation, AppManager, Executor, LeftoverCleaner, PortError, Registry, RegistryHive,
+    RegistryKeyRef, RegistryValue, StopWaiting, SystemClock, UninstallCommand, Uninstaller,
+    UninstallerExit,
 };
 use volt_desktop_lib::IpcError;
 use volt_desktop_lib::api::list_activity;
 use volt_desktop_lib::apps::{
-    AppSourceView, HiddenReasonView, UninstallOutcomeView, list_apps_of, stop_waiting_of,
-    uninstall_app_of,
+    AppSourceView, ConfidenceView, HiddenReasonView, LeftoverKindView, UninstallOutcomeView,
+    list_apps_of, remove_leftovers_of, scan_leftovers_of, stop_waiting_of, uninstall_app_of,
 };
 use volt_desktop_lib::catalogue::EMBEDDED_CATALOGUE;
 use volt_desktop_lib::wiring::{AppCore, build_core};
-use volt_win::WinRegistry;
+use volt_win::{WinFileSystem, WinRegistry};
 
 /// A throwaway key under `HKCU\Software\VoltTest`, removed on drop.
 struct Sandbox {
@@ -40,7 +43,11 @@ impl Sandbox {
             .map_or(0, |d| d.as_nanos());
         Self {
             root: format!(r"Software\VoltTest\Apps-{}-{nanos}", std::process::id()),
-            dir: TempDir::new().expect("temp dir"),
+            // Under the target folder, not the system temp folder: on a CI runner that one is
+            // spelled with an 8.3 short name, which the leftover scan refuses on purpose.
+            dir: tempfile::Builder::new()
+                .tempdir_in(env!("CARGO_TARGET_TMPDIR"))
+                .expect("temp dir"),
         }
     }
 
@@ -65,6 +72,48 @@ impl Sandbox {
                 volt_core::RegistryView::Native,
             )
             .expect("read")
+    }
+
+    /// A core whose apps manager reads the sandbox and can look for leftovers over the real
+    /// registry and file system, with the user's folders pointed into the temp dir.
+    fn core_with_leftovers(&self) -> AppCore {
+        let home = self.dir.path();
+        let system = FakeSystem::new();
+        let core = build_core(system.ports(), &home.join("volt.db"), EMBEDDED_CATALOGUE)
+            .expect("core builds");
+        let mut ports = system.ports();
+        ports.registry = Arc::new(WinRegistry::new());
+        ports.file_system = Arc::new(WinFileSystem::new());
+        let folders = Arc::new(FakeKnownFolders::new());
+        folders.set(Location::UserProfile, home.join("profile"));
+        folders.set(Location::LocalAppData, home.join("profile").join("Local"));
+        folders.set(
+            Location::RoamingAppData,
+            home.join("profile").join("Roaming"),
+        );
+        folders.set(Location::LocalLow, home.join("profile").join("LocalLow"));
+        folders.set(Location::ProgramData, home.join("ProgramData"));
+        folders.set(Location::Windows, home.join("Windows"));
+        folders.set_system_folders(vec![home.join("Windows"), home.join("ProgramData")]);
+        let cleaner = LeftoverCleaner::new(
+            ports.file_system.clone(),
+            folders,
+            Executor::new(ports, core.journal.clone(), Arc::new(SystemClock))
+                .with_activity_log(core.activity.clone()),
+            Arc::new(SystemClock),
+        )
+        .with_activity_log(core.activity.clone());
+        let manager = AppManager::new(
+            Arc::new(WinRegistry::new()),
+            Arc::new(SandboxUninstaller {
+                root: self.root.clone(),
+            }),
+            Arc::new(SystemClock),
+        )
+        .with_locations(AppLocation::sandboxed_in_hkcu(&self.root))
+        .with_activity_log(core.activity.clone())
+        .with_leftovers(cleaner);
+        core.with_apps(manager)
     }
 
     /// A core over fakes (never the real machine) with the apps manager reading the sandbox.
@@ -310,6 +359,95 @@ fn a_core_without_the_apps_manager_answers_unsupported() {
         uninstall_app_of(&core, "win32:m64:x", false),
         Err(IpcError::Unsupported { .. })
     ));
+}
+
+/// The leftover scan and removal over the real registry (a throwaway key) and the real file
+/// system (a temp folder), with the user's folders pointed into the temp dir. Only the registry
+/// key is removed here: moving a folder would reach the real Recycle Bin.
+#[test]
+fn leftovers_of_a_removed_app_are_found_from_its_entry_and_a_chosen_key_is_removed_through_the_journal()
+ {
+    let sandbox = Sandbox::new();
+    let home = sandbox.dir.path();
+    let install = home.join("Programs").join("Mine");
+    std::fs::create_dir_all(install.join("data")).expect("install folder");
+    std::fs::write(install.join("data").join("a.bin"), [0_u8; 1500]).expect("file");
+    let settings_path = format!(r"{}\data\Settings", sandbox.root);
+    let settings = RegistryKeyRef::new(
+        RegistryHive::CurrentUser,
+        settings_path.clone(),
+        volt_core::RegistryView::Native,
+    );
+    let registry = WinRegistry::new();
+    registry
+        .write_value(&settings.value("Theme"), &sz("dark"))
+        .expect("arrange a key");
+    sandbox.entry(
+        "user",
+        "Mine",
+        &[
+            ("DisplayName", sz("Mine")),
+            ("UninstallString", sz(r"C:\Vendor\remove-mine.exe")),
+            ("InstallLocation", sz(&install.display().to_string())),
+            ("SettingsKey", sz(&format!(r"HKCU\{settings_path}"))),
+        ],
+    );
+
+    let core = sandbox.core_with_leftovers();
+
+    // Nothing is known about an app Volt did not remove.
+    assert!(matches!(
+        scan_leftovers_of(&core, "win32:user:Mine"),
+        Err(IpcError::NotFound { .. })
+    ));
+    let result = uninstall_app_of(&core, "win32:user:Mine", false).expect("runs");
+    assert_eq!(result.outcome, UninstallOutcomeView::Removed);
+    assert!(result.leftovers_available);
+
+    let scan = scan_leftovers_of(&core, "win32:user:Mine").expect("scan");
+    assert_eq!(scan.app_name, "Mine");
+    let folder = scan
+        .items
+        .iter()
+        .find(|item| item.kind == LeftoverKindView::Folder)
+        .expect("the install folder");
+    assert_eq!(folder.confidence, ConfidenceView::High);
+    assert!(folder.selected_by_default);
+    assert!((folder.size_bytes - 1500.0).abs() < f64::EPSILON);
+    let key = scan
+        .items
+        .iter()
+        .find(|item| item.kind == LeftoverKindView::RegistryKey)
+        .expect("the key the entry named");
+    assert_eq!(key.confidence, ConfidenceView::High);
+    assert!(key.locked.is_none());
+
+    assert!(matches!(
+        remove_leftovers_of(&core, "win32:user:Mine", &[]),
+        Err(IpcError::InvalidInput { .. })
+    ));
+    let removal = remove_leftovers_of(&core, "win32:user:Mine", std::slice::from_ref(&key.id))
+        .expect("removes the key");
+    assert_eq!(removal.removed.len(), 1);
+    assert!(removal.skipped.is_empty());
+    assert!(
+        !registry
+            .key_exists(settings.hive, &settings.subkey, settings.view)
+            .expect("read")
+    );
+    assert!(
+        install.join("data").join("a.bin").exists(),
+        "the folder was not chosen"
+    );
+    let batches = core
+        .journal
+        .batches_with_label(volt_core::LEFTOVERS_LABEL)
+        .expect("journal");
+    assert_eq!(
+        batches.len(),
+        1,
+        "the removal is a batch the Undo page can revert"
+    );
 }
 
 /// Reads the real machine's apps (the three registry places and the packaged apps) and prints

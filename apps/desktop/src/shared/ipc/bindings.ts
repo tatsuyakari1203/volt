@@ -818,6 +818,31 @@ async setAutomationConfig(config: AutomationConfigView) : Promise<Result<Automat
 }
 },
 /**
+ * Tauri command: looks for what the uninstaller of an app removed in this session left behind.
+ * Reads only. Each find has a confidence level and the evidence in words.
+ */
+async scanLeftovers(id: string) : Promise<Result<LeftoverScanView, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("scan_leftovers", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: removes the chosen leftovers of an app: folders go to the Recycle Bin and
+ * per-user registry keys are saved in the undo journal first. The UI shows a preview with sizes
+ * and asks first.
+ */
+async removeLeftovers(id: string, ids: string[]) : Promise<Result<LeftoverRemovalView, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("remove_leftovers", { id, ids }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Tauri command: runs Boost as saved and returns the before and after report.
  */
 async boost() : Promise<Result<BoostResult, IpcError>> {
@@ -1716,6 +1741,22 @@ removed: number;
  */
 kept: number }
 /**
+ * How sure Volt is that a find belongs to the removed app. Mirrors [`volt_core::Confidence`].
+ */
+export type ConfidenceView = 
+/**
+ * A record made before the uninstall points exactly there.
+ */
+"high" | 
+/**
+ * The names fit exactly, or an indirect record points there.
+ */
+"medium" | 
+/**
+ * Shared, or only the name fits.
+ */
+"low"
+/**
  * How [`export_configuration`] ended.
  */
 export type ConfigExportResult = 
@@ -2586,6 +2627,138 @@ files: LargeFileView[];
  * Whether the activity record could not be written (the move itself is unaffected).
  */
 historyIncomplete: boolean }
+/**
+ * What a leftover is. Mirrors [`volt_core::LeftoverKind`].
+ */
+export type LeftoverKindView = 
+/**
+ * A folder, which goes to the Recycle Bin.
+ */
+"folder" | 
+/**
+ * A registry key, which is saved in the undo journal first.
+ */
+"registryKey"
+/**
+ * What removing the chosen leftovers did.
+ */
+export type LeftoverRemovalView = { 
+/**
+ * What was removed.
+ */
+removed: LeftoverRemovedView[]; 
+/**
+ * What was chosen and left alone.
+ */
+skipped: LeftoverSkippedView[]; 
+/**
+ * The bytes of the folders that went to the Recycle Bin.
+ */
+removedBytes: number; 
+/**
+ * Whether the activity record could not be written.
+ */
+historyIncomplete: boolean }
+/**
+ * One leftover that was removed.
+ */
+export type LeftoverRemovedView = { 
+/**
+ * The find's id.
+ */
+id: string; 
+/**
+ * Folder or registry key.
+ */
+kind: LeftoverKindView; 
+/**
+ * The path or the key.
+ */
+location: string; 
+/**
+ * A folder's size in bytes.
+ */
+sizeBytes: number }
+/**
+ * What the scan for leftovers found.
+ */
+export type LeftoverScanView = { 
+/**
+ * The app the scan is for.
+ */
+appName: string; 
+/**
+ * The finds, the most certain first.
+ */
+items: LeftoverView[]; 
+/**
+ * Something could not be read, or a size is only what was counted before Volt stopped.
+ */
+incomplete: boolean }
+/**
+ * One leftover that was chosen and not removed.
+ */
+export type LeftoverSkippedView = { 
+/**
+ * The find's id.
+ */
+id: string; 
+/**
+ * Why it was left, in English.
+ */
+reason: string; 
+/**
+ * `reason` as a phrase.
+ */
+reasonPhrase: PhraseView }
+/**
+ * One folder or registry key the uninstaller seems to have left behind.
+ */
+export type LeftoverView = { 
+/**
+ * Identity within the app; pass it to `removeLeftovers`.
+ */
+id: string; 
+/**
+ * Folder or registry key.
+ */
+kind: LeftoverKindView; 
+/**
+ * The path or the key.
+ */
+location: string; 
+/**
+ * How sure Volt is.
+ */
+confidence: ConfidenceView; 
+/**
+ * Whether the page selects it at first (high confidence and removable).
+ */
+selectedByDefault: boolean; 
+/**
+ * Why Volt thinks it belongs to the app, one English sentence per piece of evidence.
+ */
+evidence: string[]; 
+/**
+ * The same sentences as phrases, for the window to write in its own language.
+ */
+evidencePhrases: PhraseView[]; 
+/**
+ * A folder's size in bytes (0 for a key).
+ */
+sizeBytes: number; 
+/**
+ * The files of a folder, or the keys of a registry tree.
+ */
+items: number; 
+/**
+ * Why it cannot be removed from here, when so (machine-wide keys need the helper).
+ */
+locked: string | null; 
+/**
+ * `locked` as a phrase.
+ */
+lockedPhrase: PhraseView | null }
 /**
  * One memory cleaning operation. Mirrors [`volt_core::MemoryArea`].
  */
@@ -4258,6 +4431,11 @@ exitCode: number | null;
  * Whether it was written to the activity log (as a change that cannot be undone).
  */
 recorded: boolean; 
+/**
+ * Whether Volt kept what the app's entry said about where it lived, so the page can offer
+ * to look for what the uninstaller left behind (`scanLeftovers`).
+ */
+leftoversAvailable: boolean; 
 /**
  * The list as it is now.
  */

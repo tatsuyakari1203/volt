@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 
 use super::command::UninstallCommand;
+use super::leftovers::{FolderOrigin, Footprint, RecordedFolder};
 use super::{AppDate, AppSource, HiddenReason, InstalledApp, OwnInstall, Removal};
 use crate::error::PortError;
 use crate::registry::{
@@ -207,6 +208,7 @@ fn app_of(
     if own.is_volt(&name, folders.iter().flatten().map(String::as_str)) {
         return None;
     }
+    let footprint = footprint_of(&name, &values, command.as_ref());
     let hidden = if values.flag("SystemComponent") {
         Some(HiddenReason::SystemComponent)
     } else if is_update(key_name, &values) {
@@ -235,5 +237,84 @@ fn app_of(
         installed: install_date(&values),
         hidden,
         removal,
+        footprint: Some(footprint),
     })
+}
+
+/// What the entry says about where the app lives, kept for the leftover scan after an uninstall.
+fn footprint_of(
+    name: &str,
+    values: &Values,
+    command: Option<&Result<UninstallCommand, super::CommandRefusal>>,
+) -> Footprint {
+    let mut folders = Vec::new();
+    let mut note = |raw: Option<String>, origin| {
+        if let Some(raw) = raw {
+            folders.push(RecordedFolder { raw, origin });
+        }
+    };
+    note(
+        values.text("InstallLocation"),
+        FolderOrigin::InstallLocation,
+    );
+    note(
+        command
+            .and_then(|parsed| parsed.as_ref().ok())
+            .and_then(|parsed| parsed.program_folder().map(str::to_owned)),
+        FolderOrigin::Uninstaller,
+    );
+    note(
+        values
+            .text("DisplayIcon")
+            .and_then(|icon| icon_folder(&icon)),
+        FolderOrigin::Icon,
+    );
+    let mut keys: Vec<RegistryKeyRef> = values
+        .0
+        .values()
+        .filter_map(|value| match value {
+            RegistryValue::Sz(text) | RegistryValue::ExpandSz(text) => registry_path(text),
+            _ => None,
+        })
+        .collect();
+    keys.sort_by_key(ToString::to_string);
+    keys.dedup();
+    Footprint {
+        name: name.to_owned(),
+        publisher: values.text("Publisher"),
+        folders,
+        keys,
+    }
+}
+
+/// The folder of a `DisplayIcon` value: a quoted path with an icon index, or a bare path.
+fn icon_folder(icon: &str) -> Option<String> {
+    let icon = icon.trim();
+    let path = if let Some(rest) = icon.strip_prefix('"') {
+        rest.split_once('"')?.0
+    } else {
+        match icon.rsplit_once(',') {
+            Some((path, index)) if index.trim().trim_start_matches('-').parse::<u32>().is_ok() => {
+                path
+            }
+            _ => icon,
+        }
+    };
+    path.trim()
+        .rsplit_once(['\\', '/'])
+        .map(|(folder, _)| folder.to_owned())
+        .filter(|folder| !folder.is_empty())
+}
+
+/// A registry key written as text (`HKCU\Software\X`), when it is in a hive Volt looks at.
+fn registry_path(text: &str) -> Option<RegistryKeyRef> {
+    let (root, rest) = text.trim().split_once('\\')?;
+    let hive = match root.to_ascii_uppercase().as_str() {
+        "HKCU" | "HKEY_CURRENT_USER" => RegistryHive::CurrentUser,
+        "HKLM" | "HKEY_LOCAL_MACHINE" => RegistryHive::LocalMachine,
+        _ => return None,
+    };
+    let rest = rest.trim_matches('\\');
+    (!rest.is_empty() && rest.len() <= 260 && !rest.chars().any(char::is_control))
+        .then(|| RegistryKeyRef::new(hive, rest, RegistryView::Native))
 }

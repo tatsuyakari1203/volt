@@ -294,15 +294,13 @@ fn value_bytes(value: &RegistryValue) -> usize {
     }
 }
 
-/// Reads a key with its values; `None` when it does not exist.
-pub(crate) fn read_key_contents(
+/// Reads the values directly in `key`. The flag is `false` when some value could not be read or
+/// the key holds more than Volt records.
+fn read_values(
     registry: &dyn Registry,
     key: &RegistryKeyRef,
-) -> Result<Option<RegistryKeyContents>, PortError> {
-    if !registry.key_exists(key.hive, &key.subkey, key.view)? {
-        return Ok(None);
-    }
-    let mut complete = registry.list_subkeys(key)?.is_empty();
+) -> Result<(Vec<(String, RegistryValue)>, bool), PortError> {
+    let mut complete = true;
     let mut values = Vec::new();
     let mut bytes = 0_usize;
     for named in registry.list_values(key)? {
@@ -318,7 +316,31 @@ pub(crate) fn read_key_contents(
         }
         values.push((named.name, value));
     }
-    Ok(Some(RegistryKeyContents { values, complete }))
+    Ok((values, complete))
+}
+
+/// Reads a key with its values; `None` when it does not exist.
+pub(crate) fn read_key_contents(
+    registry: &dyn Registry,
+    key: &RegistryKeyRef,
+) -> Result<Option<RegistryKeyContents>, PortError> {
+    if !registry.key_exists(key.hive, &key.subkey, key.view)? {
+        return Ok(None);
+    }
+    let no_subkeys = registry.list_subkeys(key)?.is_empty();
+    let (values, readable) = read_values(registry, key)?;
+    Ok(Some(RegistryKeyContents {
+        values,
+        complete: no_subkeys && readable,
+    }))
+}
+
+/// Whether every value directly in `key` can be recorded, whatever subkeys it has.
+pub(crate) fn values_recordable(
+    registry: &dyn Registry,
+    key: &RegistryKeyRef,
+) -> Result<bool, PortError> {
+    read_values(registry, key).map(|(_, complete)| complete)
 }
 
 /// How many levels of `key`'s path do not exist yet, counted from the key itself upwards: `0`

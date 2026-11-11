@@ -10,6 +10,8 @@ const ipc = vi.hoisted(() => ({
   listApps: vi.fn(),
   uninstallApp: vi.fn(),
   stopWaitingForUninstaller: vi.fn(),
+  scanLeftovers: vi.fn(),
+  removeLeftovers: vi.fn(),
 }));
 vi.mock('../../shared/ipc', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../shared/ipc')>()),
@@ -76,6 +78,7 @@ function result(
     outcome: 'removed',
     exitCode: 0,
     recorded: true,
+    leftoversAvailable: false,
     listing: sample,
     ...over,
   };
@@ -101,6 +104,8 @@ beforeEach(() => {
   ipc.listApps.mockReset();
   ipc.uninstallApp.mockReset();
   ipc.stopWaitingForUninstaller.mockReset();
+  ipc.scanLeftovers.mockReset();
+  ipc.removeLeftovers.mockReset();
   ipc.stopWaitingForUninstaller.mockResolvedValue(undefined);
   ipc.listApps.mockResolvedValue(sample);
 });
@@ -277,6 +282,31 @@ describe('uninstalling', () => {
     ).toBeTruthy();
     await user.click(within(queue).getByRole('button', { name: 'Done' }));
     expect(screen.queryByRole('region', { name: 'Uninstalling' })).toBeNull();
+  });
+
+  it('offers a leftover scan only for an app that was removed and kept its record, and never starts it by itself', async () => {
+    const user = userEvent.setup();
+    ipc.uninstallApp
+      .mockResolvedValueOnce(
+        result({ id: 'win32:m64:a', name: 'Alpha Editor', leftoversAvailable: true }),
+      )
+      .mockResolvedValueOnce(result({ id: 'win32:m64:b', name: 'Beta Player' }));
+    ipc.scanLeftovers.mockResolvedValue({ appName: 'Alpha Editor', items: [], incomplete: false });
+    renderScreen();
+    await tick(user, 'Alpha Editor', 'Beta Player');
+    await user.click(screen.getByRole('button', { name: 'Uninstall 2 apps' }));
+    await user.click(
+      within(screen.getByRole('dialog')).getByRole('button', { name: 'Uninstall 2 apps' }),
+    );
+    const queue = screen.getByRole('region', { name: 'Uninstalling' });
+    await within(queue).findByText('Finished');
+    expect(ipc.scanLeftovers).not.toHaveBeenCalled();
+    const buttons = within(queue).getAllByRole('button', { name: 'Look for leftovers' });
+    expect(buttons).toHaveLength(1);
+
+    await user.click(buttons[0] as HTMLElement);
+    expect(await screen.findByRole('dialog', { name: 'Leftovers of Alpha Editor' })).toBeTruthy();
+    expect(ipc.scanLeftovers).toHaveBeenCalledWith('win32:m64:a');
   });
 
   it('stops after the uninstaller that is running and skips the rest', async () => {

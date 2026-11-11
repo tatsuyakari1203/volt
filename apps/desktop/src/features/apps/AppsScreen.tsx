@@ -22,6 +22,7 @@ import {
   selectedApps,
   visibleApps,
 } from './apps';
+import { LeftoversDialog } from './LeftoversDialog';
 import { QueuePanel } from './QueuePanel';
 import { forgetQueue, type PendingApp, readRememberedQueue } from './queueMemory';
 import { UninstallDialog } from './UninstallDialog';
@@ -101,6 +102,7 @@ export function AppsScreen() {
   const [showSystem, setShowSystem] = useState(false);
   const [ticked, setTicked] = useState<ReadonlySet<string>>(new Set());
   const [confirming, setConfirming] = useState(false);
+  const [leftoversOf, setLeftoversOf] = useState<{ id: string; name: string } | null>(null);
   const alive = useRef(true);
 
   const onListing = useCallback((list: AppListView) => setLoad({ status: 'ready', list }), []);
@@ -280,6 +282,7 @@ export function AppsScreen() {
                 onStop={stop}
                 onStopWaiting={stopWaiting}
                 onDone={dismiss}
+                onLeftovers={(item) => setLeftoversOf({ id: item.id, name: item.name })}
               />
             ) : (
               <Card
@@ -316,6 +319,7 @@ export function AppsScreen() {
         onCancel={() => setConfirming(false)}
         onConfirm={confirm}
       />
+      <LeftoversDialog app={leftoversOf} onClose={() => setLeftoversOf(null)} />
     </>
   );
 }
