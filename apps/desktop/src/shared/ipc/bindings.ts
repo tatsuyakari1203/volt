@@ -379,9 +379,9 @@ async emptyRecycleBin() : Promise<Result<EmptyBinResult, IpcError>> {
  * Tauri command: scans a folder (the system drive when no folder is given) for its biggest files.
  * Read-only and off the main thread; emits `largeFilesProgress`; `cancelLargeFilesScan` stops it.
  */
-async scanLargeFiles(root: string | null) : Promise<Result<LargeFilesResult, IpcError>> {
+async scanLargeFiles(root: string | null, filter: LargeFilesFilter | null) : Promise<Result<LargeFilesResult, IpcError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("scan_large_files", { root }) };
+    return { status: "ok", data: await TAURI_INVOKE("scan_large_files", { root, filter }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1975,6 +1975,20 @@ modifiedMs: number | null;
  * Its type group.
  */
 group: FileGroupView }
+/**
+ * What a scan keeps, besides the size order. The filter is applied while the folder is walked, so
+ * it finds the biggest files of that kind or age even when bigger files of other kinds exist.
+ * The list is still bounded at [`DEFAULT_MAX_FILES`] files, so memory stays flat.
+ */
+export type LargeFilesFilter = { 
+/**
+ * Only files of this type; `null` for all.
+ */
+group: FileGroupView | null; 
+/**
+ * Only files not changed for this many days; `null` for any age.
+ */
+minAgeDays: number | null }
 /**
  * How far a scan is.
  */

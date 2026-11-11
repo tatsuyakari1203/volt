@@ -239,3 +239,53 @@ fn never_trashes_through_a_link() {
     assert!(f.fs.trashed().is_empty());
     assert_eq!(result.skipped[0].1, CleanSkipReason::Refused);
 }
+
+#[test]
+fn leaves_out_files_with_the_system_attribute_wherever_they_are() {
+    let f = fixture();
+    f.fs.add_system_file(abs("data/deep/hidden.bin"), 900);
+    f.fs.add_file(abs("data/ok.bin"), 5);
+    let scan = f.finder.scan(&abs("data"), 10, &Quiet).expect("scan");
+    assert_eq!(paths(&scan), vec![abs("data/ok.bin")]);
+    assert_eq!(scan.excluded, 1);
+}
+
+#[test]
+fn a_filter_finds_files_beyond_the_biggest_overall() {
+    let f = fixture();
+    // Three big videos would fill a list of 3; the small archive still shows.
+    for n in 0..3 {
+        f.fs.add_file(abs(&format!("data/v{n}.mkv")), 1000 + n);
+    }
+    f.fs.add_file(abs("data/small.zip"), 1);
+    f.fs.add_file(abs("data/small.txt"), 2);
+    let filter = ScanFilter {
+        group: Some(FileGroup::Archive),
+        min_age_days: None,
+    };
+    let scan = f
+        .finder
+        .scan_filtered(&abs("data"), 3, &filter, &Quiet)
+        .expect("scan");
+    assert_eq!(paths(&scan), vec![abs("data/small.zip")]);
+    assert_eq!(scan.files_seen, 5);
+}
+
+#[test]
+fn an_age_filter_needs_a_known_old_enough_modification_time() {
+    let f = fixture();
+    let old = Timestamp::from_unix_millis(NOW - 40 * 86_400_000);
+    let new = Timestamp::from_unix_millis(NOW - 86_400_000);
+    f.fs.add_file_at(abs("data/old.bin"), 1, old);
+    f.fs.add_file_at(abs("data/new.bin"), 9, new);
+    f.fs.add_file(abs("data/unknown.bin"), 8);
+    let filter = ScanFilter {
+        group: None,
+        min_age_days: Some(30),
+    };
+    let scan = f
+        .finder
+        .scan_filtered(&abs("data"), 10, &filter, &Quiet)
+        .expect("scan");
+    assert_eq!(paths(&scan), vec![abs("data/old.bin")]);
+}

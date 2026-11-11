@@ -373,6 +373,7 @@ struct FakeEntry {
     kind: EntryKind,
     size_bytes: u64,
     modified: Option<Timestamp>,
+    system: bool,
 }
 
 impl FakeEntry {
@@ -381,6 +382,7 @@ impl FakeEntry {
             kind: self.kind,
             size_bytes: self.size_bytes,
             modified: self.modified,
+            system: self.system,
         }
     }
 }
@@ -439,6 +441,7 @@ impl FakeFileSystem {
                     kind: EntryKind::Directory,
                     size_bytes: 0,
                     modified: None,
+                    system: false,
                 });
         }
         state.entries.insert(path, entry);
@@ -452,6 +455,7 @@ impl FakeFileSystem {
                 kind: EntryKind::File,
                 size_bytes,
                 modified: None,
+                system: false,
             },
         );
     }
@@ -464,6 +468,20 @@ impl FakeFileSystem {
                 kind: EntryKind::File,
                 size_bytes,
                 modified: Some(modified),
+                system: false,
+            },
+        );
+    }
+
+    /// Adds a file that has the system attribute.
+    pub fn add_system_file(&self, path: impl Into<PathBuf>, size_bytes: u64) {
+        self.insert(
+            path.into(),
+            FakeEntry {
+                kind: EntryKind::File,
+                size_bytes,
+                modified: None,
+                system: true,
             },
         );
     }
@@ -476,6 +494,7 @@ impl FakeFileSystem {
                 kind: EntryKind::Directory,
                 size_bytes: 0,
                 modified,
+                system: false,
             },
         );
     }
@@ -488,6 +507,7 @@ impl FakeFileSystem {
                 kind: EntryKind::ReparsePoint,
                 size_bytes: 0,
                 modified: None,
+                system: false,
             },
         );
     }
@@ -1641,7 +1661,8 @@ mod tests {
             Ok(Some(EntryInfo {
                 kind: EntryKind::File,
                 size_bytes: 7,
-                modified: Some(modified)
+                modified: Some(modified),
+                system: false,
             }))
         );
         assert_eq!(fs.inspect(Path::new("C:/D/missing")), Ok(None));

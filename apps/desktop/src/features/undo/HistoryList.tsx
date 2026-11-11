@@ -1,5 +1,5 @@
 import { Ban, Check, Layers, TriangleAlert, Undo2 } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { memo, type ReactNode, useMemo } from 'react';
 import { type MessageKey, say, t, tNodes } from '../../shared/i18n';
 import type { ActivityItem, ChangeState } from '../../shared/ipc';
 import { Button, cx, ListRow } from '../../shared/ui';
@@ -75,7 +75,14 @@ export function HistoryList({ entries, busy, onUndoEntry, onUndoBatch }: History
     >
       {entries.map((entry) =>
         entry.kind === 'row' ? (
-          <Row key={entry.item.id} item={entry.item} busy={busy} onUndo={onUndoEntry} showTitle />
+          <Row
+            key={entry.item.id}
+            item={entry.item}
+            loading={busy !== null && busy === rowKey(entry.item)}
+            blocked={isBlocked(entry.item, busy)}
+            onUndo={onUndoEntry}
+            showTitle
+          />
         ) : (
           <li key={`batch-${entry.batch}-${entry.items[0]?.id}`}>
             <div className="flex items-center gap-3 bg-surface-sunken px-4 py-2.5">
@@ -103,7 +110,13 @@ export function HistoryList({ entries, busy, onUndoEntry, onUndoBatch }: History
               className="divide-y divide-line border-t border-line"
             >
               {entry.items.map((item) => (
-                <Row key={item.id} item={item} busy={busy} onUndo={onUndoEntry} />
+                <Row
+                  key={item.id}
+                  item={item}
+                  loading={busy !== null && busy === rowKey(item)}
+                  blocked={isBlocked(item, busy)}
+                  onUndo={onUndoEntry}
+                />
               ))}
             </ul>
           </li>
@@ -113,19 +126,35 @@ export function HistoryList({ entries, busy, onUndoEntry, onUndoBatch }: History
   );
 }
 
-function Row({
+function rowKey(item: ActivityItem): string | null {
+  return item.entry === null ? null : `entry:${item.entry}`;
+}
+
+/** Whether another undo is running, so this row's button is off. Rows without a button never are. */
+function isBlocked(item: ActivityItem, busy: string | null): boolean {
+  return item.state === 'canUndo' && busy !== null && busy !== rowKey(item);
+}
+
+/**
+ * One record. Memoised and given plain values, so a state change on the screen (an undo running,
+ * a notice) redraws only the rows whose own values changed, not the whole history.
+ */
+const Row = memo(function Row({
   item,
-  busy,
+  loading,
+  blocked,
   onUndo,
   showTitle = false,
 }: {
   item: ActivityItem;
-  busy: string | null;
+  loading: boolean;
+  blocked: boolean;
   onUndo: (item: ActivityItem) => void;
   /** Name what the record is about. A row inside a batch is named by the batch heading. */
   showTitle?: boolean;
 }) {
-  const key = item.entry === null ? null : `entry:${item.entry}`;
+  const key = rowKey(item);
+  const time = useMemo(() => formatTime(item.time), [item.time]);
   return (
     <ListRow
       title={
@@ -140,7 +169,7 @@ function Row({
       description={
         <>
           <span className="block">
-            <time dateTime={item.time}>{formatTime(item.time)}</time>
+            <time dateTime={item.time}>{time}</time>
             {` · ${sourceLabel(item.source)}`}
           </span>
           <span className="mt-0.5 block break-words text-fg">
@@ -169,8 +198,8 @@ function Row({
             aria-label={t('undo.row.undo.label', {
               summary: say(item.summaryPhrase, item.summary),
             })}
-            loading={busy === key}
-            disabled={busy !== null && busy !== key}
+            loading={loading}
+            disabled={blocked}
             onClick={() => onUndo(item)}
           >
             {t('common.undo')}
@@ -179,4 +208,4 @@ function Row({
       }
     />
   );
-}
+});

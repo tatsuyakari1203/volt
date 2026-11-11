@@ -23,7 +23,7 @@ use tauri_plugin_dialog::DialogExt as _;
 use tauri_specta::Event as _;
 use volt_core::{
     DEFAULT_MAX_FILES, FileGroup, LargeFile, LargeFilesError, LargeFilesFinder, LargeFilesObserver,
-    LargeFilesScan, Source,
+    LargeFilesScan, ScanFilter, Source,
 };
 
 use crate::IpcError;
@@ -46,6 +46,16 @@ pub enum FileGroupView {
     Installer,
     /// Everything else.
     Other,
+}
+
+fn group_of_view(group: FileGroupView) -> FileGroup {
+    match group {
+        FileGroupView::Video => FileGroup::Video,
+        FileGroupView::Archive => FileGroup::Archive,
+        FileGroupView::DiskImage => FileGroup::DiskImage,
+        FileGroupView::Installer => FileGroup::Installer,
+        FileGroupView::Other => FileGroup::Other,
+    }
 }
 
 fn group_view(group: FileGroup) -> FileGroupView {
@@ -239,6 +249,18 @@ fn default_root() -> PathBuf {
     PathBuf::from(format!("{}\\", drive.trim_end_matches(['\\', '/'])))
 }
 
+/// What a scan keeps, besides the size order. The filter is applied while the folder is walked, so
+/// it finds the biggest files of that kind or age even when bigger files of other kinds exist.
+/// The list is still bounded at [`DEFAULT_MAX_FILES`] files, so memory stays flat.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LargeFilesFilter {
+    /// Only files of this type; `null` for all.
+    pub group: Option<FileGroupView>,
+    /// Only files not changed for this many days; `null` for any age.
+    pub min_age_days: Option<u32>,
+}
+
 /// Scans `root` (the system drive when `None`) read-only, keeps the scan under a new id and
 /// returns the biggest files. `on_progress` is called every so often.
 ///
@@ -250,6 +272,19 @@ pub fn scan_with(
     root: Option<&str>,
     on_progress: &dyn Fn(LargeFilesProgress),
 ) -> Result<LargeFilesResult, IpcError> {
+    scan_filtered_with(core, root, LargeFilesFilter::default(), on_progress)
+}
+
+/// Like [`scan_with`], keeping only the files that pass `filter`.
+///
+/// # Errors
+/// As [`scan_with`].
+pub fn scan_filtered_with(
+    core: &AppCore,
+    root: Option<&str>,
+    filter: LargeFilesFilter,
+    on_progress: &dyn Fn(LargeFilesProgress),
+) -> Result<LargeFilesResult, IpcError> {
     let finder = finder(core)?;
     let session = core.large_files_session();
     let _running = session.begin()?;
@@ -258,7 +293,11 @@ pub fn scan_with(
         session,
         on_progress,
     };
-    let scan = match finder.scan(&root, DEFAULT_MAX_FILES, &observer) {
+    let core_filter = ScanFilter {
+        group: filter.group.map(group_of_view),
+        min_age_days: filter.min_age_days.filter(|days| *days > 0),
+    };
+    let scan = match finder.scan_filtered(&root, DEFAULT_MAX_FILES, &core_filter, &observer) {
         Ok(scan) => scan,
         Err(LargeFilesError::Cancelled) => {
             return Ok(LargeFilesResult {
@@ -398,12 +437,18 @@ pub(crate) async fn scan_large_files(
     app: AppHandle,
     state: State<'_, AppState>,
     root: Option<String>,
+    filter: Option<LargeFilesFilter>,
 ) -> Result<LargeFilesResult, IpcError> {
     blocking(&state, move |core| {
-        scan_with(core, root.as_deref(), &|progress| {
-            // A missed progress event only means the counter does not move.
-            let _ = progress.emit(&app);
-        })
+        scan_filtered_with(
+            core,
+            root.as_deref(),
+            filter.unwrap_or_default(),
+            &|progress| {
+                // A missed progress event only means the counter does not move.
+                let _ = progress.emit(&app);
+            },
+        )
     })
     .await
 }

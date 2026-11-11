@@ -1,5 +1,5 @@
 import { localeTag, t, tn } from '../../shared/i18n';
-import type { FileGroupView, LargeFileView } from '../../shared/ipc';
+import type { FileGroupView, LargeFilesFilter, LargeFileView } from '../../shared/ipc';
 import { formatSize } from '../../shared/text/size';
 
 const DAY_MS = 86_400_000;
@@ -27,6 +27,12 @@ export function splitPath(path: string): { name: string; folder: string } {
   return cut < 0
     ? { name: path, folder: '' }
     : { name: path.slice(cut + 1), folder: path.slice(0, cut) };
+}
+
+/** The filter the scan is asked to apply while it walks the folder; `null` when there is none. */
+export function scanFilter(group: GroupFilter, age: AgeFilter): LargeFilesFilter | null {
+  if (group === 'all' && age === 0) return null;
+  return { group: group === 'all' ? null : group, minAgeDays: age === 0 ? null : age };
 }
 
 /** The listed files that pass both filters, in the order the scan gave (biggest first). */

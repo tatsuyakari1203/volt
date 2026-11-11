@@ -20,6 +20,7 @@ import {
   formatDate,
   GROUP_FILTERS,
   type GroupFilter,
+  scanFilter,
   selectedFiles,
   selectionLabel,
   splitPath,
@@ -96,7 +97,7 @@ export function LargeFilesView({ onMoved }: { onMoved?: () => void }) {
     }
   };
 
-  const startScan = async () => {
+  const startScan = async (nextGroup: GroupFilter = group, nextAge: AgeFilter = age) => {
     setPhase('scanning');
     setFilesSeen(null);
     setCancelling(false);
@@ -111,7 +112,8 @@ export function LargeFilesView({ onMoved }: { onMoved?: () => void }) {
       // No progress without the event bridge; the scan itself still works.
     }
     try {
-      const found = await scanLargeFiles(root);
+      // The filter goes to the scan itself, so it finds files beyond the 200 biggest.
+      const found = await scanLargeFiles(root, scanFilter(nextGroup, nextAge));
       if (!alive.current) return;
       if (!found.cancelled) {
         setScan(found);
@@ -275,7 +277,12 @@ export function LargeFilesView({ onMoved }: { onMoved?: () => void }) {
               <select
                 className={SELECT_CLASS}
                 value={group}
-                onChange={(event) => setGroup(event.target.value as GroupFilter)}
+                disabled={busy}
+                onChange={(event) => {
+                  const next = event.target.value as GroupFilter;
+                  setGroup(next);
+                  void startScan(next, age);
+                }}
               >
                 {GROUP_FILTERS.map((value) => (
                   <option key={value} value={value}>
@@ -289,7 +296,12 @@ export function LargeFilesView({ onMoved }: { onMoved?: () => void }) {
               <select
                 className={SELECT_CLASS}
                 value={age}
-                onChange={(event) => setAge(Number(event.target.value) as AgeFilter)}
+                disabled={busy}
+                onChange={(event) => {
+                  const next = Number(event.target.value) as AgeFilter;
+                  setAge(next);
+                  void startScan(group, next);
+                }}
               >
                 {AGE_FILTERS.map((value) => (
                   <option key={value} value={value}>
@@ -301,10 +313,13 @@ export function LargeFilesView({ onMoved }: { onMoved?: () => void }) {
               </select>
             </label>
           </div>
+          <p className="text-caption text-muted">{t('large.filter.hint')}</p>
 
           {visible.length === 0 ? (
             <Card className="text-center text-muted">
-              {scan.files.length === 0 ? t('large.none') : t('large.noMatch')}
+              {scan.files.length === 0 && group === 'all' && age === 0
+                ? t('large.none')
+                : t('large.noMatch')}
             </Card>
           ) : (
             <>

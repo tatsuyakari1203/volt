@@ -105,7 +105,7 @@ describe('Large files view', () => {
     await user.click(screen.getByRole('button', { name: 'Choose drive or folder...' }));
     await screen.findByText('D:\\Media');
     await user.click(screen.getByRole('button', { name: 'Scan' }));
-    expect(ipc.scanLargeFiles).toHaveBeenCalledWith('D:\\Media');
+    expect(ipc.scanLargeFiles).toHaveBeenCalledWith('D:\\Media', null);
     const list = await screen.findByRole('list', { name: 'Biggest files' });
     expect(within(list).getAllByRole('checkbox')).toHaveLength(3);
     for (const box of within(list).getAllByRole('checkbox'))
@@ -121,18 +121,32 @@ describe('Large files view', () => {
   it('scans the system drive by default', async () => {
     const user = await openLargeFiles();
     await user.click(screen.getByRole('button', { name: 'Scan' }));
-    expect(ipc.scanLargeFiles).toHaveBeenCalledWith(null);
+    expect(ipc.scanLargeFiles).toHaveBeenCalledWith(null, null);
   });
 
-  it('filters by type', async () => {
+  it('scans again with the filter, so it finds files beyond the biggest', async () => {
     const user = await openLargeFiles();
     await user.click(screen.getByRole('button', { name: 'Scan' }));
     await screen.findByRole('list', { name: 'Biggest files' });
+    ipc.scanLargeFiles.mockResolvedValue({ ...scanned, scanId: 'large-2', files: [files[1]] });
     await user.selectOptions(screen.getByLabelText('Type'), 'archive');
-    const list = screen.getByRole('list', { name: 'Biggest files' });
+    await waitFor(() =>
+      expect(ipc.scanLargeFiles).toHaveBeenLastCalledWith(null, {
+        group: 'archive',
+        minAgeDays: null,
+      }),
+    );
+    const list = await screen.findByRole('list', { name: 'Biggest files' });
     expect(within(list).getAllByRole('checkbox')).toHaveLength(1);
+    ipc.scanLargeFiles.mockResolvedValue({ ...scanned, scanId: 'large-3', files: [] });
     await user.selectOptions(screen.getByLabelText('Last changed'), '30');
-    expect(screen.getByText('No file matches these filters.')).toBeTruthy();
+    await waitFor(() =>
+      expect(ipc.scanLargeFiles).toHaveBeenLastCalledWith(null, {
+        group: 'archive',
+        minAgeDays: 30,
+      }),
+    );
+    expect(await screen.findByText('No file matches these filters.')).toBeTruthy();
   });
 
   it('opens the folder of a file', async () => {

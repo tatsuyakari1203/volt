@@ -613,6 +613,7 @@
   "large.skippedNote": "Không đọc được {unreadable} mục và không theo {links} liên kết.",
   "large.filter.type": "Loại",
   "large.filter.age": "Thay đổi lần cuối",
+  "large.filter.hint": "Đổi bộ lọc sẽ quét lại, nên có thể tìm thấy cả những tệp không nằm trong nhóm lớn nhất. Tệp hệ thống không bao giờ được liệt kê.",
   "large.group.all": "Mọi loại",
   "large.group.video": "Video",
   "large.group.archive": "Tệp nén",

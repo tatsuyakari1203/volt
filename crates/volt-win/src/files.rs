@@ -20,6 +20,7 @@ use windows::core::PCWSTR;
 use crate::error::{from_hresult, from_io};
 
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+const FILE_ATTRIBUTE_SYSTEM: u32 = 0x4;
 const ERROR_ACCESS_DENIED: u32 = 5;
 const ERROR_SHARING_VIOLATION: u32 = 32;
 const ERROR_LOCK_VIOLATION: u32 = 33;
@@ -57,6 +58,7 @@ fn entry_info(meta: &fs::Metadata) -> EntryInfo {
             0
         },
         modified: meta.modified().ok().map(timestamp_of),
+        system: meta.file_attributes() & FILE_ATTRIBUTE_SYSTEM != 0,
     }
 }
 

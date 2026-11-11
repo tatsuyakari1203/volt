@@ -5,8 +5,14 @@
 //! never follows a junction or symbolic link, and keeps only the biggest
 //! `max_files` files while it goes, so memory stays flat on any disk. Left out
 //! on purpose: the system folders ([`KnownFolders::system_folders`]), the page,
-//! hibernation and swap files, the Recycle Bin and `System Volume Information`,
-//! and anything that cannot be read (counted, not listed).
+//! hibernation and swap files, files with the system attribute, the Recycle Bin
+//! and `System Volume Information`, and anything that cannot be read (counted,
+//! not listed).
+//!
+//! A [`ScanFilter`] (type, age) is applied while walking, before a file competes
+//! for a place in the list, so a filter finds the biggest files of that kind
+//! even when bigger files of other kinds exist. The list stays bounded at
+//! `max_files` entries either way.
 //!
 //! Trashing goes through the same port call as the clean engine
 //! ([`FileSystem::move_to_trash`]), re-checks each file right before, never
@@ -93,6 +99,28 @@ impl FileGroup {
         }
     }
 }
+
+/// What a scan keeps: all files by default.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ScanFilter {
+    /// Only files of this type.
+    pub group: Option<FileGroup>,
+    /// Only files not changed for this many days, counted from the scan start.
+    /// A file with no known modification time never passes.
+    pub min_age_days: Option<u32>,
+}
+
+impl ScanFilter {
+    /// The oldest "last changed" time a file may have to pass, if age matters.
+    fn cutoff(&self, now: Timestamp) -> Option<i64> {
+        self.min_age_days.map(|days| {
+            now.as_unix_millis()
+                .saturating_sub(i64::from(days) * DAY_MS)
+        })
+    }
+}
+
+const DAY_MS: i64 = 86_400_000;
 
 /// One file of the result.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -259,6 +287,21 @@ impl LargeFilesFinder {
         max_files: usize,
         observer: &dyn LargeFilesObserver,
     ) -> Result<LargeFilesScan, LargeFilesError> {
+        self.scan_filtered(root, max_files, &ScanFilter::default(), observer)
+    }
+
+    /// Like [`scan`](Self::scan), keeping only the files that pass `filter`.
+    /// `files_seen` still counts every listed file, not only the matches.
+    ///
+    /// # Errors
+    /// See [`LargeFilesError`]; nothing is changed in any case.
+    pub fn scan_filtered(
+        &self,
+        root: &Path,
+        max_files: usize,
+        filter: &ScanFilter,
+        observer: &dyn LargeFilesObserver,
+    ) -> Result<LargeFilesScan, LargeFilesError> {
         if !root.is_absolute() {
             return Err(LargeFilesError::NotAbsolute);
         }
@@ -286,6 +329,7 @@ impl LargeFilesFinder {
             links: 0,
             excluded: 0,
         };
+        let cutoff = filter.cutoff(scan.scanned_at);
         let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
         let mut pending = vec![root.to_path_buf()];
         while let Some(dir) = pending.pop() {
@@ -308,12 +352,19 @@ impl LargeFilesFinder {
                 let name = entry.name.to_string_lossy().to_lowercase();
                 match info.kind {
                     EntryKind::File => {
-                        if SYSTEM_FILES.contains(&name.as_str()) {
+                        if info.system || SYSTEM_FILES.contains(&name.as_str()) {
                             scan.excluded += 1;
                             continue;
                         }
                         scan.files_seen += 1;
-                        if max_files == 0 {
+                        if max_files == 0
+                            || cutoff.is_some_and(|cut| {
+                                info.modified.is_none_or(|m| m.as_unix_millis() > cut)
+                            })
+                            || filter
+                                .group
+                                .is_some_and(|wanted| wanted != FileGroup::of(&entry.name))
+                        {
                             continue;
                         }
                         if heap.len() >= max_files

@@ -158,66 +158,122 @@ export function UndoScreen() {
       });
   };
 
-  /** Runs an undo, reports how it ended and reads the list again. */
-  const runUndo = async (
-    key: string,
-    scope: 'change' | 'batch',
-    run: () => Promise<UndoResult>,
-  ) => {
-    setBusy(key);
-    setNotice(null);
-    let outcome: Notice;
-    try {
-      outcome = describeUndo(await run(), scope);
-    } catch (error) {
-      outcome = describeUndoFailure(error);
-    }
-    // The journal may have changed even when the command failed, so the list is read again.
-    await refresh();
-    if (!alive.current) return;
-    setNotice(outcome);
-    setBusy(null);
-  };
-
-  const undoOne = async (item: ActivityItem) => {
-    if (item.entry === null) return;
-    const entry = item.entry;
-    // The core says whether a later change to the same setting would be overwritten; if so, the
-    // user confirms first.
-    setBusy(`entry:${entry}`);
-    setNotice(null);
-    let preview: UndoPreview;
-    try {
-      preview = await previewUndoEntry(entry);
-    } catch (error) {
-      if (alive.current) {
-        setBusy(null);
-        setNotice({
-          tone: 'problem',
-          message: t('undo.previewFailed', { error: describeError(error) }),
-          details: [],
-        });
+  /**
+   * Runs an undo, reports how it ended and reads the list again. When the core refuses because a
+   * later change appeared after the preview, `reopen` shows the warning again with the new
+   * overwrites; the notice is shown only when it cannot (it returns `false`).
+   */
+  const runUndo = useCallback(
+    async (
+      key: string,
+      scope: 'change' | 'batch',
+      run: () => Promise<UndoResult>,
+      reopen: () => Promise<boolean>,
+    ) => {
+      setBusy(key);
+      setNotice(null);
+      let outcome: Notice;
+      let refused = false;
+      try {
+        const result = await run();
+        refused = result.status === 'needsAcknowledgement';
+        outcome = describeUndo(result, scope);
+      } catch (error) {
+        outcome = describeUndoFailure(error);
       }
-      return;
-    }
-    if (!alive.current) return;
-    if (preview.overwrites.length > 0) {
+      // The journal may have changed even when the command failed, so the list is read again.
+      await refresh();
+      if (!alive.current) return;
+      if (refused && (await reopen())) {
+        if (alive.current) setBusy(null);
+        return;
+      }
+      if (!alive.current) return;
+      setNotice(outcome);
       setBusy(null);
+    },
+    [refresh],
+  );
+
+  /** Reads a fresh preview of one change and opens the warning with it. `false` when it fails. */
+  const reopenEntry = useCallback(async (entry: string): Promise<boolean> => {
+    try {
+      const preview = await previewUndoEntry(entry);
+      if (!alive.current) return true;
       setConfirmingEntry({ entry, preview });
-      return;
+      return true;
+    } catch {
+      return false;
     }
-    await runUndo(`entry:${entry}`, 'change', () => undoEntry(entry, []));
-  };
+  }, []);
+
+  const undoOne = useCallback(
+    async (item: ActivityItem) => {
+      if (item.entry === null) return;
+      const entry = item.entry;
+      // The core says whether a later change to the same setting would be overwritten; if so, the
+      // user confirms first.
+      setBusy(`entry:${entry}`);
+      setNotice(null);
+      let preview: UndoPreview;
+      try {
+        preview = await previewUndoEntry(entry);
+      } catch (error) {
+        if (alive.current) {
+          setBusy(null);
+          setNotice({
+            tone: 'problem',
+            message: t('undo.previewFailed', { error: describeError(error) }),
+            details: [],
+          });
+        }
+        return;
+      }
+      if (!alive.current) return;
+      if (preview.overwrites.length > 0) {
+        setBusy(null);
+        setConfirmingEntry({ entry, preview });
+        return;
+      }
+      await runUndo(
+        `entry:${entry}`,
+        'change',
+        () => undoEntry(entry, []),
+        () => reopenEntry(entry),
+      );
+    },
+    [runUndo, reopenEntry],
+  );
+
+  const onUndoEntry = useCallback((item: ActivityItem) => void undoOne(item), [undoOne]);
+  const onUndoBatch = useCallback(
+    (batch: string, title: string) => setConfirming({ batch, title }),
+    [],
+  );
 
   const confirmEntry = (target: EntryTarget) => {
     setConfirmingEntry(null);
     const shown = target.preview.overwrites.map((found) => found.laterEntry);
-    void runUndo(`entry:${target.entry}`, 'change', () => undoEntry(target.entry, shown));
+    void runUndo(
+      `entry:${target.entry}`,
+      'change',
+      () => undoEntry(target.entry, shown),
+      () => reopenEntry(target.entry),
+    );
   };
 
   const confirmBatch = (target: BatchTarget, shown: string[]) => {
     setConfirming(null);
-    void runUndo(`batch:${target.batch}`, 'batch', () => undoBatch(target.batch, shown));
+    // The dialog reads its own preview when it opens, so opening it again is enough.
+    void runUndo(
+      `batch:${target.batch}`,
+      'batch',
+      () => undoBatch(target.batch, shown),
+      async () => {
+        setConfirming({ batch: target.batch, title: target.title });
+        return true;
+      },
+    );
   };
 
   const save = async () => {
@@ -340,8 +396,8 @@ export function UndoScreen() {
             <HistoryList
               entries={entries}
               busy={busy}
-              onUndoEntry={(item) => void undoOne(item)}
-              onUndoBatch={(batch, title) => setConfirming({ batch, title })}
+              onUndoEntry={onUndoEntry}
+              onUndoBatch={onUndoBatch}
             />
             {nextCursor ? (
               <div className="flex flex-col items-center gap-2">
