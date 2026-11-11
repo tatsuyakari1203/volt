@@ -41,7 +41,6 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  REPORT_DIR: ${{ runner.temp }}\volt-elevated-ci
 
 jobs:
   elevated-helper:
@@ -50,6 +49,12 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+
+      # The runner context is not available in `env:` above, so the folder is set here.
+      - name: Choose the report folder
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'volt-elevated-ci'
+          "REPORT_DIR=$dir" | Add-Content -Path $env:GITHUB_ENV
 
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install
