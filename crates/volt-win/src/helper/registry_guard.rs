@@ -6,8 +6,9 @@
 //! every write the helper walks the whole path, key by key from the hive, and requires of EVERY
 //! key on it (see the decision on the helper):
 //!
-//! - it is not a symbolic link (the key is opened as a link, never followed, and a link key is
-//!   recognised by its `SymbolicLinkValue`);
+//! - it is not a symbolic link, except the system's own `HKLM\SYSTEM\CurrentControlSet` (a key is
+//!   opened as a link, never followed, and a link key is recognised by its `SymbolicLinkValue`;
+//!   that one link is followed to its control set after its own checks);
 //! - its owner is SYSTEM, Administrators or `TrustedInstaller`;
 //! - no entry of its DACL grants a right to change it (set a value, create a subkey or a link,
 //!   delete, change the DACL or the owner) to anyone else.
@@ -42,6 +43,13 @@ const READ_CONTROL: u32 = 0x0002_0000;
 
 /// The value that makes a key a symbolic link.
 const LINK_VALUE: &str = "SymbolicLinkValue";
+
+/// The one symbolic link that Windows itself keeps on a machine key path, and that a tweak may go
+/// through: `HKLM\SYSTEM\CurrentControlSet` leads to the numbered control set in use. It is made by
+/// the system at boot below a key that only SYSTEM and Administrators can change, so it is checked
+/// like any other key and its target must be a control set of the same hive
+/// (see [`is_control_set_target`]); every other link is refused.
+const CONTROL_SET_LINK: &str = r"HKLM\SYSTEM\CurrentControlSet";
 
 /// Why a registry path is refused for writing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,12 +159,14 @@ pub(crate) struct KeyFacts {
     pub(crate) security: SecurityInfo,
 }
 
-/// Opens the key `name` below `parent` WITHOUT following a link and reads its facts. `Ok(None)` when
-/// the key does not exist.
+/// Opens the key `name` below `parent` and reads its facts. A link is not followed (the link key
+/// itself is opened) unless `follow_link` is set, which only the walk of the one control set link
+/// asks for. `Ok(None)` when the key does not exist.
 fn open_and_read(
     parent: HKEY,
     name: &str,
     view: RegistryView,
+    follow_link: bool,
 ) -> Result<Option<(Key, KeyFacts)>, String> {
     let wide = to_wide_nul(name, "registry key name").map_err(|error| error.to_string())?;
     let mut handle = HKEY::default();
@@ -166,7 +176,11 @@ fn open_and_read(
         RegOpenKeyExW(
             parent,
             PCWSTR(wide.as_ptr()),
-            Some(REG_OPTION_OPEN_LINK.0),
+            Some(if follow_link {
+                0
+            } else {
+                REG_OPTION_OPEN_LINK.0
+            }),
             REG_SAM_FLAGS(KEY_QUERY_VALUE.0 | READ_CONTROL) | view_flags(view),
             &raw mut handle,
         )
@@ -178,6 +192,8 @@ fn open_and_read(
         return Err(format!("open: Win32 error {}", status.0));
     }
     let key = Key(handle);
+    // A followed key is the target, which is not a link unless it is a chain of links: the check
+    // is the same either way.
     let is_link = is_link(&key)?;
     let security = acl::of_registry_key(key.0)?;
     Ok(Some((key, KeyFacts { is_link, security })))
@@ -211,6 +227,50 @@ fn is_link(key: &Key) -> Result<bool, String> {
     Err(format!("read the link value: Win32 error {}", status.0))
 }
 
+/// The target of an open link key (opened as a link): the text of its `SymbolicLinkValue`.
+fn link_target(key: &Key) -> Result<String, String> {
+    let name = to_wide_nul(LINK_VALUE, "value name").map_err(|error| error.to_string())?;
+    let mut buffer = [0u8; 512];
+    let mut size = u32::try_from(buffer.len()).unwrap_or(0);
+    let mut kind = REG_VALUE_TYPE(0);
+    // SAFETY: `key` is open with KEY_QUERY_VALUE, `name` is NUL-terminated UTF-16 outliving the
+    // call, `buffer` is writable for `size` bytes and `size` and `kind` are valid out pointers.
+    let status = unsafe {
+        RegQueryValueExW(
+            key.0,
+            PCWSTR(name.as_ptr()),
+            None,
+            Some(&raw mut kind),
+            Some(buffer.as_mut_ptr()),
+            Some(&raw mut size),
+        )
+    };
+    if status != ERROR_SUCCESS || kind != REG_LINK {
+        return Err(format!("read the link target: Win32 error {}", status.0));
+    }
+    let bytes = buffer
+        .get(..usize::try_from(size).unwrap_or(0))
+        .unwrap_or_default();
+    let units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect();
+    Ok(String::from_utf16_lossy(&units))
+}
+
+/// Whether `target` is a numbered control set of the machine hive: `\Registry\Machine\SYSTEM\ControlSet`
+/// and three digits, nothing after it. Pure.
+fn is_control_set_target(target: &str) -> bool {
+    const PREFIX: &str = r"\Registry\Machine\SYSTEM\ControlSet";
+    target.len() == PREFIX.len() + 3
+        && target
+            .get(..PREFIX.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(PREFIX))
+        && target
+            .get(PREFIX.len()..)
+            .is_some_and(|tail| tail.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// Walks `subkey` below `root` (a predefined or open key; `label` names it in messages), checking
 /// every key that exists with [`judge_key`].
 ///
@@ -234,15 +294,37 @@ pub(crate) fn walk(
         path.push('\\');
         path.push_str(component);
         let at = parent.as_ref().map_or(root, |key| key.0);
-        let found =
-            open_and_read(at, component, view).map_err(|reason| KeyRefusal::Unreadable {
-                path: path.clone(),
-                reason,
-            })?;
+        let unreadable = |reason: String| KeyRefusal::Unreadable {
+            path: path.clone(),
+            reason,
+        };
+        let found = open_and_read(at, component, view, false).map_err(unreadable)?;
         let Some((key, facts)) = found else {
             // The rest does not exist yet: it is created below a key that was just checked.
             return Ok(());
         };
+        if facts.is_link
+            && root == HKEY_LOCAL_MACHINE
+            && path.eq_ignore_ascii_case(CONTROL_SET_LINK)
+        {
+            // The system's own link: the link key must itself be sound and lead to a control set,
+            // and the walk goes on through its target, which is judged like any other key.
+            judge_key(&path, false, &facts.security)?;
+            let target = link_target(&key).map_err(unreadable)?;
+            if !is_control_set_target(&target) {
+                return Err(KeyRefusal::SymbolicLink { path });
+            }
+            let followed = open_and_read(at, component, view, true).map_err(unreadable)?;
+            let Some((target_key, target_facts)) = followed else {
+                return Err(KeyRefusal::Unreadable {
+                    path,
+                    reason: "the control set it leads to cannot be opened".to_owned(),
+                });
+            };
+            judge_key(&path, target_facts.is_link, &target_facts.security)?;
+            parent = Some(target_key);
+            continue;
+        }
         judge_key(&path, facts.is_link, &facts.security)?;
         parent = Some(key);
     }
@@ -525,6 +607,43 @@ mod tests {
     }
 
     #[test]
+    fn only_a_numbered_control_set_of_the_machine_hive_is_a_link_target_that_is_followed() {
+        assert!(is_control_set_target(
+            r"\Registry\Machine\SYSTEM\ControlSet001"
+        ));
+        assert!(is_control_set_target(
+            r"\REGISTRY\MACHINE\System\ControlSet002"
+        ));
+        for bad in [
+            "",
+            r"\Registry\Machine\SYSTEM\ControlSet",
+            r"\Registry\Machine\SYSTEM\ControlSet0011",
+            r"\Registry\Machine\SYSTEM\ControlSet001\Control",
+            r"\Registry\Machine\SYSTEM\ControlSet00a",
+            r"\Registry\Machine\SOFTWARE\Evil",
+            r"\Registry\User\S-1-5-21-1\ControlSet001",
+        ] {
+            assert!(!is_control_set_target(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn the_paths_of_the_shipped_machine_tweaks_are_not_refused_on_this_machine() {
+        // Reads only. `HKLM\SYSTEM\CurrentControlSet` is itself a symbolic link (to the numbered
+        // control set), yet a tweak such as turn-off-fast-startup must be able to write below it.
+        for subkey in [
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Power",
+            r"SOFTWARE\Policies\Microsoft\Edge",
+        ] {
+            assert_eq!(
+                check_key_path(RegistryHive::LocalMachine, subkey, RegistryView::Native),
+                Ok(()),
+                "{subkey}"
+            );
+        }
+    }
+
+    #[test]
     fn the_guarded_port_writes_nothing_outside_hklm() {
         // A real HKCU value under the throwaway test key: the port must refuse before any write.
         let target = RegistryValueRef::new(
@@ -719,11 +838,11 @@ mod tests {
 
         // Facts read off the link key itself: it is a link, and so a path through it is refused
         // at the link, before anything about its rights matters.
-        let (_, link_facts) = open_and_read(key.handle, "link", RegistryView::Native)
+        let (_, link_facts) = open_and_read(key.handle, "link", RegistryView::Native, false)
             .expect("readable")
             .expect("exists");
         assert!(link_facts.is_link);
-        let (_, plain_facts) = open_and_read(key.handle, "target", RegistryView::Native)
+        let (_, plain_facts) = open_and_read(key.handle, "target", RegistryView::Native, false)
             .expect("readable")
             .expect("exists");
         assert!(!plain_facts.is_link);
