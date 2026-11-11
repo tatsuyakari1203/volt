@@ -90,6 +90,7 @@ pub mod registry;
 pub mod service;
 pub mod settings;
 pub mod startup;
+pub mod tidy;
 pub mod time;
 pub mod trend;
 pub mod tuning;
@@ -157,8 +158,8 @@ pub use operation::{Operation, PriorState};
 pub use phrase::{Arg, Phrase, class_phrase};
 pub use plan::{OperationRequest, Plan, PlanItem, Preview};
 pub use ports::{
-    Availability, DirEntry, EntryInfo, EntryKind, FileStat, FileSystem, Memory, MemoryArea,
-    MemoryLists, MemoryStatus, Ports, ProcessInfo, Processes, PurgeOutcome, Services,
+    Availability, DirEntry, EntryInfo, EntryKind, FileIdentity, FileStat, FileSystem, Memory,
+    MemoryArea, MemoryLists, MemoryStatus, Ports, ProcessInfo, Processes, PurgeOutcome, Services,
 };
 pub use process::{
     EndError, EndReport, EndStatus, Endability, PROCESS_END_LABEL, ProcessEnd, ProcessGroup,
@@ -174,6 +175,11 @@ pub use startup::{
     ChangeOutcome, FilePublisher, LogonTask, LogonTasks, NoPublisher, ScheduledTaskEntry,
     ShortcutResolver, ShortcutTarget, SourceProblem, StartupChange, StartupEntry, StartupError,
     StartupListing, StartupManager, StartupOrigin, StartupScope, StartupSources, StartupState,
+};
+pub use tidy::{
+    BrokenShortcut, ContentHash, DEFAULT_MIN_DUPLICATE_BYTES, DuplicateFile, DuplicateGroup,
+    DuplicatePick, EmptyFolder, TidyFinder, TidyMoved, TidyObserver, TidyOptions, TidyProgress,
+    TidyScan, TidyStage, TidyTrash,
 };
 pub use time::{Clock, SystemClock, Timestamp};
 pub use trend::{MemoryHistory, MemoryPoint};

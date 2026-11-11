@@ -223,7 +223,7 @@ fn finder(core: &AppCore) -> Result<&LargeFilesFinder, IpcError> {
         .ok_or_else(|| IpcError::unsupported(&Phrase::new("err.largeFilesUnavailable")))
 }
 
-fn scan_error(error: &LargeFilesError) -> IpcError {
+pub(crate) fn scan_error(error: &LargeFilesError) -> IpcError {
     match error {
         LargeFilesError::NotFound => IpcError::not_found(&Phrase::new("err.large.notFound")),
         LargeFilesError::SystemFoldersUnavailable(class) => IpcError::unsupported(
@@ -386,7 +386,7 @@ pub fn trash_with(
 }
 
 /// The arguments that make Explorer open a file's folder with the file selected.
-fn explorer_select_argument(path: &Path) -> String {
+pub(crate) fn explorer_select_argument(path: &Path) -> String {
     format!("/select,\"{}\"", path.display())
 }
 
@@ -412,7 +412,7 @@ pub fn reveal_with(core: &AppCore, scan_id: &str, index: u32) -> Result<(), IpcE
 }
 
 #[cfg(windows)]
-fn open_in_explorer(path: &Path) -> Result<(), IpcError> {
+pub(crate) fn open_in_explorer(path: &Path) -> Result<(), IpcError> {
     use std::os::windows::process::CommandExt as _;
     std::process::Command::new("explorer.exe")
         .raw_arg(explorer_select_argument(path))
@@ -424,7 +424,7 @@ fn open_in_explorer(path: &Path) -> Result<(), IpcError> {
 }
 
 #[cfg(not(windows))]
-fn open_in_explorer(path: &Path) -> Result<(), IpcError> {
+pub(crate) fn open_in_explorer(path: &Path) -> Result<(), IpcError> {
     let _ = explorer_select_argument(path);
     Err(IpcError::unsupported(&Phrase::new("err.openFolderWindows")))
 }
