@@ -241,6 +241,8 @@
   "err.tweak.nothingToRevert": "tinh chỉnh `{tweak}`: nhật ký hoàn tác không có thay đổi nào để hoàn tác",
   "err.tweak.nothingToReset": "không thể đặt tinh chỉnh `{tweak}` về mặc định của Windows",
   "err.tweak.appliedByVolt": "tinh chỉnh `{tweak}` do Volt áp dụng: hãy hoàn tác thay vì đặt lại",
+  "err.config.notVolt": "đây không phải tệp cấu hình của Volt",
+  "err.config.nothingPending": "không có cấu hình nào đang chờ nhập",
   "err.tweak.notDrifted": "tinh chỉnh `{tweak}` chưa thay đổi kể từ khi Volt áp dụng",
   "err.uninstall.notFound": "ứng dụng này không còn được cài",
   "err.uninstall.notUninstallable": "Volt không gỡ được ứng dụng này",

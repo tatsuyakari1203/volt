@@ -40,6 +40,7 @@ use crate::api::{
     warn_if_history_incomplete, write_export,
 };
 use crate::commands::blocking;
+use crate::ipc::ErrorClass;
 use crate::phrase::PhraseView;
 use crate::wiring::{AppCore, AppState};
 
@@ -205,8 +206,11 @@ fn current_settings(core: &AppCore) -> Result<BTreeMap<String, serde_json::Value
 }
 
 fn to_value<T: Serialize>(value: &T) -> Result<serde_json::Value, IpcError> {
-    serde_json::to_value(value).map_err(|error| IpcError::Other {
-        message: format!("a setting could not be written: {error}"),
+    serde_json::to_value(value).map_err(|error| {
+        IpcError::plain(
+            ErrorClass::Other,
+            format!("a setting could not be written: {error}"),
+        )
     })
 }
 
@@ -334,9 +338,7 @@ pub fn export_configuration_text(core: &AppCore) -> Result<ConfigExport, IpcErro
     let (n_tweaks, n_settings) = (tweaks.len(), settings.len());
     let text = ConfigFile::new(tweaks, settings)
         .to_text()
-        .map_err(|error| IpcError::Other {
-            message: error.to_string(),
-        })?;
+        .map_err(|error| IpcError::plain(ErrorClass::Other, error.to_string()))?;
     let iso = SystemClock.now().to_iso8601();
     Ok(ConfigExport {
         file_name: format!(
@@ -555,7 +557,7 @@ pub fn apply_import(core: &AppCore, file: &ConfigFile) -> Result<ImportResult, I
     let mut tweaks = Vec::new();
     for item in core.engine.plan_import(&file.tweaks) {
         let title = title_of(core, &item.id);
-        let (status, detail) = match item.action {
+        let (status, detail): (_, Option<String>) = match item.action {
             ImportAction::Apply(_) => {
                 let failures_before = core.engine.activity_write_failures();
                 let result = core.engine.apply(&item.id, Source::Manual);
@@ -564,12 +566,19 @@ pub fn apply_import(core: &AppCore, file: &ConfigFile) -> Result<ImportResult, I
                     Ok(report) => match report.outcome {
                         ApplyOutcome::Applied => (ImportStatus::Applied, None),
                         ApplyOutcome::AlreadyApplied => (ImportStatus::AlreadyApplied, None),
-                        ApplyOutcome::RolledBack => {
-                            (ImportStatus::RolledBack, apply_failure_detail(&report))
-                        }
-                        _ => (ImportStatus::NeedsAttention, apply_failure_detail(&report)),
+                        ApplyOutcome::RolledBack => (
+                            ImportStatus::RolledBack,
+                            apply_failure_detail(&report).map(|p| p.english()),
+                        ),
+                        _ => (
+                            ImportStatus::NeedsAttention,
+                            apply_failure_detail(&report).map(|p| p.english()),
+                        ),
                     },
-                    Err(error) => (ImportStatus::Failed, Some(error.to_string())),
+                    Err(error) => (
+                        ImportStatus::Failed,
+                        Some(IpcError::from(error).message().to_owned()),
+                    ),
                 }
             }
             ImportAction::AlreadyApplied => (ImportStatus::AlreadyApplied, None),
@@ -631,17 +640,18 @@ pub fn read_config_file(path: &Path) -> Result<ConfigFile, IpcError> {
         .map_err(|error| {
             let message = format!("could not read {}: {error}", path.display());
             match error.kind() {
-                std::io::ErrorKind::PermissionDenied => IpcError::AccessDenied { message },
-                std::io::ErrorKind::NotFound => IpcError::NotFound { message },
-                std::io::ErrorKind::InvalidData => IpcError::InvalidInput {
-                    message: "this is not a Volt configuration file".to_owned(),
-                },
-                _ => IpcError::Other { message },
+                std::io::ErrorKind::PermissionDenied => {
+                    IpcError::plain(ErrorClass::AccessDenied, message)
+                }
+                std::io::ErrorKind::NotFound => IpcError::plain(ErrorClass::NotFound, message),
+                std::io::ErrorKind::InvalidData => {
+                    IpcError::invalid(&Phrase::new("err.config.notVolt"))
+                }
+                _ => IpcError::plain(ErrorClass::Other, message),
             }
         })?;
-    ConfigFile::parse(&text).map_err(|error| IpcError::InvalidInput {
-        message: error.to_string(),
-    })
+    ConfigFile::parse(&text)
+        .map_err(|error| IpcError::plain(ErrorClass::InvalidInput, error.to_string()))
 }
 
 /// Tauri command: the tweaks Volt applied that Windows or another program has changed since.
@@ -689,8 +699,11 @@ pub(crate) async fn export_configuration(
         let Some(chosen) = dialog.blocking_save_file() else {
             return Ok(ConfigExportResult::Cancelled);
         };
-        let path = chosen.into_path().map_err(|error| IpcError::Other {
-            message: format!("the chosen location cannot be used: {error}"),
+        let path = chosen.into_path().map_err(|error| {
+            IpcError::plain(
+                ErrorClass::Other,
+                format!("the chosen location cannot be used: {error}"),
+            )
         })?;
         write_export(&path, &export.text)?;
         Ok(ConfigExportResult::Saved {
@@ -723,8 +736,11 @@ pub(crate) async fn preview_configuration_import(
         let Some(chosen) = dialog.blocking_pick_file() else {
             return Ok(ImportPreviewResult::Cancelled);
         };
-        let path = chosen.into_path().map_err(|error| IpcError::Other {
-            message: format!("the chosen file cannot be used: {error}"),
+        let path = chosen.into_path().map_err(|error| {
+            IpcError::plain(
+                ErrorClass::Other,
+                format!("the chosen file cannot be used: {error}"),
+            )
         })?;
         let file = read_config_file(&path)?;
         let preview = preview_import(core, &file)?;
@@ -747,9 +763,9 @@ pub(crate) async fn apply_configuration_import(
     state: State<'_, AppState>,
 ) -> Result<ImportResult, IpcError> {
     blocking(&state, move |core| {
-        let file = pending().take().ok_or_else(|| IpcError::InvalidInput {
-            message: "no configuration is waiting to be imported".to_owned(),
-        })?;
+        let file = pending()
+            .take()
+            .ok_or_else(|| IpcError::invalid(&Phrase::new("err.config.nothingPending")))?;
         apply_import(core, &file)
     })
     .await

@@ -554,6 +554,8 @@ pub const ENGLISH: &[(&str, &str)] = &[
     ("err.tweak.nothingToRevert", "tweak `{tweak}`: the undo journal has no applied change to revert"),
     ("err.tweak.nothingToReset", "tweak `{tweak}` cannot be reset to the Windows default"),
     ("err.tweak.appliedByVolt", "tweak `{tweak}` was applied by Volt: undo it instead of resetting it"),
+    ("err.config.notVolt", "this is not a Volt configuration file"),
+    ("err.config.nothingPending", "no configuration is waiting to be imported"),
     ("err.tweak.notDrifted", "tweak `{tweak}` has not changed since Volt applied it"),
     ("err.uninstall.notFound", "that app is not installed any more"),
     ("err.uninstall.notUninstallable", "this app cannot be removed from Volt"),
