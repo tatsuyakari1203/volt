@@ -378,7 +378,7 @@ pub struct ProcessRule {
     /// The executable name as the process list spells it.
     pub name: String,
     /// The executable path in lower case, when it was known. A rule with a path matches only that
-    /// file; one without matches by name.
+    /// file; one without matches only processes whose path is unknown too, by name.
     pub path: Option<String>,
     /// What to apply.
     pub request: TuneRequest,
@@ -392,7 +392,9 @@ impl ProcessRule {
             return false;
         }
         match &self.path {
-            None => true,
+            // The app's file was unknown when the rule was saved: only a process whose file is
+            // unknown too is meant, never a same-named program that has a path.
+            None => process.path.as_deref().is_none_or(str::is_empty),
             Some(path) => process
                 .path
                 .as_deref()
@@ -941,11 +943,18 @@ impl ProcessTuner {
         rule: &ProcessRule,
         processes: &[&ProcessInfo],
     ) -> Result<u32, &'static str> {
+        // A rule read from a damaged settings value is checked again, like a request.
+        rule.request.validate().map_err(|_| "error")?;
         let change = rule.request.change();
         let sorted = self.sort(processes.iter().map(|p| (*p).clone()).collect());
         let due: Vec<ProcessTarget> = sorted
             .changeable
             .iter()
+            .filter(|c| {
+                change
+                    .affinity_mask
+                    .is_none_or(|mask| mask & !c.settings.system_affinity_mask == 0)
+            })
             .filter(|c| !change.is_met_by(&c.settings))
             .map(|c| ProcessTarget {
                 pid: c.process.pid,

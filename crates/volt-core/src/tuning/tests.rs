@@ -720,3 +720,19 @@ fn the_descriptions_name_the_fields_and_never_a_path() {
     );
     assert_eq!(on.throttling, Some(PowerThrottling::On));
 }
+
+#[test]
+fn a_rule_without_a_path_does_not_reach_a_same_named_program_that_has_one() {
+    let s = setup();
+    s.system.processes.add(10, "game.exe", 1);
+    s.tuner
+        .save_rule("game.exe", &priority(PriorityClass::Idle))
+        .expect("save");
+    s.system.processes.add(11, "game.exe", 1);
+    s.system
+        .processes
+        .set_path(11, r"C:\Windows\System32\Game.exe");
+    s.tuner.apply_rules();
+    assert_eq!(settings_of(&s, 10).priority, PriorityClass::Idle);
+    assert_eq!(settings_of(&s, 11).priority, PriorityClass::Normal);
+}
