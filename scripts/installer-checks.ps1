@@ -131,6 +131,9 @@ try {
     $left = @('volt-desktop.exe', 'volt-helper.exe', 'uninstall.exe') | Where-Object { Test-Path (Join-Path $allUsers $_) }
     Check 'the uninstaller removes the UI, the helper and itself' ($left.Count -eq 0) "left: $($left -join ', ')"
     Check 'the install folder is gone' (-not (Test-Path $allUsers)) ''
+    # The uninstaller removes its registry entry as its last step, just after the folder, so give it a moment.
+    $regDeadline = (Get-Date).AddSeconds(30)
+    while ($null -ne (Install-Location 'HKLM') -and (Get-Date) -lt $regDeadline) { Start-Sleep -Seconds 1 }
     Check 'the all-users registration is gone' ($null -eq (Install-Location 'HKLM')) ''
 
     # ---------------------------------------------------------------------------------------

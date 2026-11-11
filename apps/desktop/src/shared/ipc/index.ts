@@ -13,6 +13,8 @@ import {
   type AppListView,
   type ApplyResult,
   type AppReady,
+  type AutomationConfigView,
+  type AutomationStatusView,
   type BoostConfigView,
   type BoostResult,
   type CleaningRuleInfo,
@@ -89,6 +91,8 @@ export type {
   AreaResult,
   AreaStatus,
   ArgView,
+  AutomationConfigView,
+  AutomationStatusView,
   BoostConfigView,
   BoostResult,
   BrokenShortcutView,
@@ -357,6 +361,25 @@ export async function getBoostConfig(): Promise<BoostConfigView> {
 /** Saves what Boost includes and resolves with what is stored. */
 export async function setBoostConfig(config: BoostConfigView): Promise<BoostConfigView> {
   return call(() => commands.setBoostConfig(config));
+}
+
+/** What automation is set to (everything off until the user turns it on) and what happened last. */
+export async function getAutomationStatus(): Promise<AutomationStatusView> {
+  return call(() => commands.automationStatus());
+}
+
+/** Saves the automation settings and resolves with the new status. Out-of-range values reject. */
+export async function setAutomationConfig(
+  config: AutomationConfigView,
+): Promise<AutomationStatusView> {
+  return call(() => commands.setAutomationConfig(config));
+}
+
+/** Calls `handler` with the new status after each automatic run. Returns the unlisten function. */
+export function onAutomationUpdated(
+  handler: (status: AutomationStatusView) => void,
+): Promise<() => void> {
+  return events.automationUpdated.listen((event) => handler(event.payload));
 }
 
 /** Every tweak of the catalogue with its state read live from the system. */

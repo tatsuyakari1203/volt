@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use tauri::{AppHandle, Manager as _};
 use volt_core::{
-    ActivityLog, AppManager, AutoStartServices, Catalogue, CatalogueError, CleanEngine,
+    ActivityLog, AppManager, AutoStartServices, Automation, Catalogue, CatalogueError, CleanEngine,
     CleaningRules, Clock, Elevator, Executor, FilePublisher, Journal, KnownFolders,
     LargeFilesFinder, LogonTasks, MemoryCleaner, OwnInstall, PortError, Ports, ProcessMonitor,
     ProcessTuner, Processes, ReconcileReport, RecycleBinManager, Resolution, RulesError, Settings,
@@ -26,9 +26,9 @@ use volt_core::{
 };
 use volt_store::{CorruptionRecovery, OpenOutcome, Store, StoreError};
 use volt_win::{
-    WinAutoStartServices, WinCommands, WinElevator, WinFilePublisher, WinFileSystem,
-    WinKnownFolders, WinLogonTasks, WinMemory, WinPackagedApps, WinProcesses, WinRecycleBin,
-    WinRegistry, WinServices, WinShortcuts, WinUninstaller,
+    WinAutoStartServices, WinCommands, WinElevator, WinEnvironment, WinFilePublisher,
+    WinFileSystem, WinKnownFolders, WinLogonTasks, WinMemory, WinPackagedApps, WinProcesses,
+    WinRecycleBin, WinRegistry, WinServices, WinShortcuts, WinUninstaller,
 };
 
 use crate::IpcError;
@@ -125,6 +125,7 @@ pub struct AppCore {
     process_tuner: Option<ProcessTuner>,
     elevator: Option<Arc<dyn Elevator>>,
     apps: Option<AppManager>,
+    automation: Option<Automation>,
 }
 
 impl fmt::Debug for AppCore {
@@ -170,6 +171,7 @@ impl AppCore {
             process_tuner: None,
             elevator: None,
             apps: None,
+            automation: None,
         }
     }
 
@@ -329,6 +331,21 @@ impl AppCore {
     pub fn with_apps(mut self, manager: AppManager) -> Self {
         self.apps = Some(manager);
         self
+    }
+
+    /// The same core with automation attached. The real app does in [`init`]; [`build_core`]
+    /// never does, so a test cannot reach the real fullscreen and battery signals by accident.
+    #[must_use]
+    pub fn with_automation(mut self, automation: Automation) -> Self {
+        self.automation = Some(automation);
+        self
+    }
+
+    /// Automation (thresholds and the schedule), or the error its commands return without it.
+    pub fn automation(&self) -> Result<&Automation, IpcError> {
+        self.automation.as_ref().ok_or_else(|| {
+            IpcError::unsupported(&volt_core::Phrase::new("err.automationUnavailable"))
+        })
     }
 
     /// The installed apps manager, or the error the Apps commands return without one.
@@ -773,8 +790,17 @@ fn build_real_core(app: &AppHandle) -> Result<AppCore, InitError> {
     .with_packages(Arc::new(WinPackagedApps::new()))
     .with_own_install(OwnInstall::new(own_folder))
     .with_activity_log(core.activity.clone());
+    // Automation reads the real fullscreen, battery saver and time zone signals, so it is attached
+    // here only. It changes nothing until the user turns a feature on.
+    let automation = Automation::new(
+        core.settings.clone(),
+        core.activity.clone(),
+        Arc::new(SystemClock),
+        Arc::new(WinEnvironment::new()),
+    );
     Ok(core
         .with_recycle_bin(bin)
         .with_elevator(elevator)
-        .with_apps(apps))
+        .with_apps(apps)
+        .with_automation(automation))
 }

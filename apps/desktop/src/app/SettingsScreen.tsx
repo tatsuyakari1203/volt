@@ -1,5 +1,6 @@
 import { Languages, Monitor, Moon, Sun } from 'lucide-react';
 import { AppInfo } from '../features/app-info/AppInfo';
+import { AutomationSettings } from '../features/settings/AutomationSettings';
 import { BoostSettings } from '../features/settings/BoostSettings';
 import { StartupSettings } from '../features/settings/StartupSettings';
 import { type LanguageChoice, t, useLanguage } from '../shared/i18n';
@@ -33,7 +34,7 @@ function languageOptions(): ReadonlyArray<SegmentedOption<LanguageChoice>> {
   ];
 }
 
-/** Settings: appearance, language, Boost, startup and an About block fed by the Rust core. */
+/** Settings: appearance, language, Boost, automation, startup and an About block fed by the Rust core. */
 export function SettingsScreen() {
   const { preference, setPreference, locked } = useTheme();
   const language = useLanguage();
@@ -79,6 +80,7 @@ export function SettingsScreen() {
           </p>
         </Card>
         <BoostSettings />
+        <AutomationSettings />
         <StartupSettings />
         <Card as="section" aria-labelledby="settings-about">
           <h2 id="settings-about" className="text-subtitle font-semibold">

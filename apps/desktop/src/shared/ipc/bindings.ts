@@ -795,6 +795,29 @@ async stopWaitingForUninstaller() : Promise<Result<null, IpcError>> {
 }
 },
 /**
+ * Tauri command: the saved configuration, what happened last and the pause that is on now.
+ */
+async automationStatus() : Promise<Result<AutomationStatusView, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("automation_status") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: saves the configuration and returns the new status. The timer wakes to look at
+ * it at once.
+ */
+async setAutomationConfig(config: AutomationConfigView) : Promise<Result<AutomationStatusView, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_automation_config", { config }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Tauri command: runs Boost as saved and returns the before and after report.
  */
 async boost() : Promise<Result<BoostResult, IpcError>> {
@@ -892,6 +915,7 @@ async setLanguage(choice: LanguageChoice) : Promise<Result<LanguageSetting, IpcE
 
 export const events = __makeEvents__<{
 appReady: AppReady,
+automationUpdated: AutomationUpdated,
 boostFinished: BoostFinished,
 cleanScanProgress: CleanScanProgress,
 largeFilesProgress: LargeFilesProgress,
@@ -900,6 +924,7 @@ metricsUpdated: MetricsUpdated,
 tidyProgressEvent: TidyProgressEvent
 }>({
 appReady: "app-ready",
+automationUpdated: "automation-updated",
 boostFinished: "boost-finished",
 cleanScanProgress: "clean-scan-progress",
 largeFilesProgress: "large-files-progress",
@@ -1337,6 +1362,74 @@ sep: string;
  * The items, in order.
  */
 items: PhraseView[] } }
+/**
+ * What the user may enter, so the form never offers a value the core refuses.
+ */
+export type AutomationBoundsView = { 
+/**
+ * Lowest and highest standby threshold, in MB.
+ */
+standbyAboveMb: [number, number]; 
+/**
+ * Lowest and highest free memory threshold, in MB.
+ */
+freeBelowMb: [number, number]; 
+/**
+ * Shortest and longest cooldown, in minutes.
+ */
+cooldownMinutes: [number, number] }
+/**
+ * Everything the user sets for automation.
+ */
+export type AutomationConfigView = { 
+/**
+ * Memory cleaning on thresholds.
+ */
+memory: MemoryRuleView; 
+/**
+ * Cleaning on a schedule.
+ */
+cleaning: ScheduleView; 
+/**
+ * Whether an automatic run shows a notification when no window is open.
+ */
+notify: boolean }
+/**
+ * The configuration and what happened last.
+ */
+export type AutomationStatusView = { 
+/**
+ * The saved configuration (everything off until the user turns it on).
+ */
+config: AutomationConfigView; 
+/**
+ * What the user may enter.
+ */
+bounds: AutomationBoundsView; 
+/**
+ * The last automatic memory clean, in milliseconds since the Unix epoch.
+ */
+lastMemoryRun: number | null; 
+/**
+ * The last scheduled clean.
+ */
+lastCleanRun: number | null; 
+/**
+ * The last scheduled clean that was skipped.
+ */
+lastCleanSkip: SkippedRunView | null; 
+/**
+ * When the schedule runs next; the current time when a run is waiting.
+ */
+nextCleanRun: number | null; 
+/**
+ * The pause that is on right now, if any.
+ */
+paused: PauseView | null }
+/**
+ * Sent to every window after an automatic run, with the new status.
+ */
+export type AutomationUpdated = AutomationStatusView
 /**
  * What Boost includes.
  */
@@ -2003,6 +2096,18 @@ var: string;
  */
 source: string }
 /**
+ * How often the cleaning schedule runs.
+ */
+export type FrequencyView = 
+/**
+ * Every day.
+ */
+"daily" | 
+/**
+ * Once a week.
+ */
+"weekly"
+/**
  * The primary GPU. Every number may be missing (`null`): a driver without counters still
  * gives a name.
  */
@@ -2578,6 +2683,26 @@ takenAt: string;
  */
 lists: MemoryListsView }
 /**
+ * The memory threshold rule.
+ */
+export type MemoryRuleView = { 
+/**
+ * Whether the rule is on.
+ */
+enabled: boolean; 
+/**
+ * Clean only when standby memory is above this many MB.
+ */
+standbyAboveMb: number; 
+/**
+ * And free memory is below this many MB.
+ */
+freeBelowMb: number; 
+/**
+ * Minutes to wait after a clean.
+ */
+cooldownMinutes: number }
+/**
  * What the Memory page shows when it opens.
  */
 export type MemoryState = { 
@@ -2694,6 +2819,22 @@ line: string;
  * The Boost failed.
  */
 failed: boolean }
+/**
+ * Why an automatic run was not made.
+ */
+export type PauseView = 
+/**
+ * A fullscreen app or a presentation is active.
+ */
+"fullscreen" | 
+/**
+ * Battery saver is on.
+ */
+"batterySaver" | 
+/**
+ * The user cleaned by hand a moment ago.
+ */
+"manualRun"
 /**
  * A sentence, or a part of one, as a code and parameters.
  */
@@ -3057,6 +3198,30 @@ bytes: number;
  */
 files: number }
 /**
+ * The cleaning schedule.
+ */
+export type ScheduleView = { 
+/**
+ * Whether the schedule is on.
+ */
+enabled: boolean; 
+/**
+ * Daily or weekly.
+ */
+frequency: FrequencyView; 
+/**
+ * For a weekly schedule: 0 is Monday, 6 is Sunday.
+ */
+weekday: number; 
+/**
+ * Local time of day, in minutes after midnight.
+ */
+minuteOfDay: number; 
+/**
+ * The cleaning rules that run.
+ */
+ruleIds: string[] }
+/**
  * A scheduled task that runs when you sign in. Read-only: it has no switch.
  */
 export type ScheduledTaskView = { 
@@ -3221,6 +3386,18 @@ state: OperationState;
  * One sentence saying why.
  */
 reason: string }
+/**
+ * A scheduled run that was skipped.
+ */
+export type SkippedRunView = { 
+/**
+ * When, in milliseconds since the Unix epoch.
+ */
+at: number; 
+/**
+ * Why.
+ */
+reason: PauseView }
 /**
  * Whether the `StartupApproved` flag decides if an entry runs. Mirrors
  * [`volt_core::ApprovalRecord`].
