@@ -4,6 +4,7 @@
 pub mod administrator;
 mod agent;
 pub mod api;
+pub mod app_updates;
 pub mod apps;
 pub mod automation;
 mod autostart;

@@ -32,6 +32,9 @@ mod leftover_tests;
 mod leftovers;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod update_tests;
+mod updates;
 mod win32;
 
 use std::collections::HashMap;
@@ -45,6 +48,11 @@ pub use command::{CommandRefusal, UninstallCommand};
 pub use leftovers::{
     Confidence, LEFTOVERS_LABEL, Leftover, LeftoverCleaner, LeftoverError, LeftoverKind,
     LeftoverLock, LeftoverRemoval, LeftoverRemoved, LeftoverScan, LeftoverSkip, MAX_KEYS,
+};
+pub use updates::{
+    AppUpdate, NoTable, PackageId, PackageSource, ParsedUpdates, UPDATE_LABEL, UpdateError,
+    UpdateListing, UpdateManager, UpdateProblem, UpgradeFailure, UpgradeOutcome, UpgradeReport,
+    Winget, WingetCommand, WingetRun, parse_upgrade_list,
 };
 pub use win32::AppLocation;
 

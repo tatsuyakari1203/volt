@@ -371,6 +371,8 @@ pub struct AppReady(pub AppInfo);
 
 /// Registers every command, event and type of the boundary in one place.
 #[must_use]
+// A flat registry: each line is one command or event, so its length only counts them.
+#[allow(clippy::too_many_lines)]
 pub fn bindings_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new()
         .commands(collect_commands![
@@ -451,6 +453,8 @@ pub fn bindings_builder() -> Builder<tauri::Wry> {
             crate::profiles::preview_profile_switch,
             crate::profiles::switch_profile,
             crate::profiles::undo_profile_switch,
+            crate::app_updates::check_app_updates,
+            crate::app_updates::update_app,
             crate::boost::boost,
             crate::boost::boost_config,
             crate::boost::set_boost_config,

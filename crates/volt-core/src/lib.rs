@@ -113,6 +113,11 @@ pub use apps::{
     UninstallCommand, UninstallError, UninstallOutcome, UninstallReport, Uninstaller,
     UninstallerExit, Waited,
 };
+pub use apps::{
+    AppUpdate, NoTable, PackageId, PackageSource, ParsedUpdates, UPDATE_LABEL, UpdateError,
+    UpdateListing, UpdateManager, UpdateProblem, UpgradeFailure, UpgradeOutcome, UpgradeReport,
+    Winget, WingetCommand, WingetRun, parse_upgrade_list,
+};
 pub use automation::{
     Automation, AutomationConfig, AutomationState, AutomationStatus, CleaningOutcome, Environment,
     Frequency, MemoryRule, PauseReason, Schedule, SkippedRun, TickReport,

@@ -26,6 +26,7 @@ import { LeftoversDialog } from './LeftoversDialog';
 import { QueuePanel } from './QueuePanel';
 import { forgetQueue, type PendingApp, readRememberedQueue } from './queueMemory';
 import { UninstallDialog } from './UninstallDialog';
+import { UpdatesPanel } from './UpdatesPanel';
 import { useUninstallQueue } from './useUninstallQueue';
 
 type Load =
@@ -167,6 +168,7 @@ export function AppsScreen() {
     <>
       <PageHeader title={t('nav.apps')} description={t('apps.description')} />
       <div className="flex flex-col gap-3">
+        <UpdatesPanel />
         {problems.map((problem) => (
           <div
             key={problem.source}

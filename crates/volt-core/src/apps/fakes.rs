@@ -200,3 +200,83 @@ pub fn add_entry(
         registry.set(&key.value(*name), value.clone());
     }
 }
+
+/// A [`Winget`](super::Winget) that runs nothing. It answers the listing and each upgrade with
+/// what a test set, and records every command it was asked to run.
+#[derive(Debug)]
+pub struct FakeWinget {
+    list: Mutex<Result<super::WingetRun, PortError>>,
+    upgrades: Mutex<HashMap<String, Result<super::WingetRun, PortError>>>,
+    commands: Mutex<Vec<super::WingetCommand>>,
+}
+
+impl Default for FakeWinget {
+    fn default() -> Self {
+        Self {
+            list: Mutex::new(Err(PortError::NotFound("winget".into()))),
+            upgrades: Mutex::new(HashMap::new()),
+            commands: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl FakeWinget {
+    /// A winget that is not installed.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The listing prints `output` and exits with `exit_code`.
+    pub fn lists(&self, exit_code: i32, output: &str) {
+        *lock(&self.list) = Ok(super::WingetRun {
+            exit_code,
+            output: output.to_owned(),
+        });
+    }
+
+    /// The listing cannot be run.
+    pub fn list_fails(&self, error: PortError) {
+        *lock(&self.list) = Err(error);
+    }
+
+    /// Upgrading `id` exits with `exit_code`. An id without an answer exits with 0.
+    pub fn upgrade_exits(&self, id: &str, exit_code: i32) {
+        lock(&self.upgrades).insert(
+            id.to_owned(),
+            Ok(super::WingetRun {
+                exit_code,
+                output: String::new(),
+            }),
+        );
+    }
+
+    /// Upgrading `id` cannot be run.
+    pub fn upgrade_fails(&self, id: &str, error: PortError) {
+        lock(&self.upgrades).insert(id.to_owned(), Err(error));
+    }
+
+    /// Every command run so far, in order.
+    #[must_use]
+    pub fn commands(&self) -> Vec<super::WingetCommand> {
+        lock(&self.commands).clone()
+    }
+}
+
+impl super::Winget for FakeWinget {
+    fn run(&self, command: &super::WingetCommand) -> Result<super::WingetRun, PortError> {
+        lock(&self.commands).push(command.clone());
+        match command {
+            super::WingetCommand::List => lock(&self.list).clone(),
+            super::WingetCommand::Upgrade { id, .. } => lock(&self.upgrades)
+                .get(id.as_str())
+                .cloned()
+                .unwrap_or_else(|| {
+                    Ok(super::WingetRun {
+                        exit_code: 0,
+                        output: String::new(),
+                    })
+                }),
+        }
+    }
+}
