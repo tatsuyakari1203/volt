@@ -15,12 +15,17 @@
 mod catalogue;
 mod definition;
 mod engine;
+mod portable;
 
 pub use catalogue::{Catalogue, CatalogueError, CatalogueIssue, IssueKind};
 pub use definition::{Category, RestartRequirement, Tweak, TweakStep};
 pub use engine::{
-    ApplyOutcome, BatchRevert, RESET_LABEL_SUFFIX, StepPreview, TweakApplyReport, TweakEngine,
-    TweakError, TweakRevertReport, TweakState,
+    ApplyOutcome, BatchRevert, Drift, RESET_LABEL_SUFFIX, StepPreview, TweakApplyReport,
+    TweakEngine, TweakError, TweakRevertReport, TweakState,
+};
+pub use portable::{
+    CONFIG_FORMAT, CONFIG_VERSION, ConfigError, ConfigFile, ConfigTweak, ImportAction, ImportSkip,
+    MAX_CONFIG_BYTES, MAX_CONFIG_TWEAKS, TweakImport,
 };
 
 #[cfg(test)]

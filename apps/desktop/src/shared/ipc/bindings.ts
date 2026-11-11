@@ -106,6 +106,69 @@ async resetTweak(id: string) : Promise<Result<RevertResult, IpcError>> {
 }
 },
 /**
+ * Tauri command: the tweaks Volt applied that Windows or another program has changed since.
+ * Reads the system only.
+ */
+async listTweakDrift() : Promise<Result<DriftView[], IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_tweak_drift") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: keeps the state a drifted tweak is in. Volt stops treating the tweak as applied
+ * and its undo records can no longer be used (they stay in the history). Changes nothing on the
+ * system. To put the tweak back, apply it again.
+ */
+async acceptTweakState(id: string) : Promise<Result<AcceptResult, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("accept_tweak_state", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: asks where to save the configuration (a native save dialog) and writes it. The
+ * file lists the tweaks Volt applied that are still in place and the settings that make sense on
+ * another machine. Closing the dialog is `cancelled`.
+ */
+async exportConfiguration() : Promise<Result<ConfigExportResult, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("export_configuration") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: asks for a configuration file (a native open dialog), reads it and says exactly
+ * what importing it would change here. Changes nothing; [`apply_configuration_import`] applies
+ * what was shown, after the user confirms.
+ */
+async previewConfigurationImport() : Promise<Result<ImportPreviewResult, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("preview_configuration_import") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: applies the import that was previewed last and confirmed. The change to each
+ * tweak is journaled, so it can be undone. Fails with `invalidInput` when no preview is waiting.
+ */
+async applyConfigurationImport() : Promise<Result<ImportResult, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("apply_configuration_import") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Tauri command: reads the activity history, newest first. `limit` is clamped to 1 to 200;
  * `cursor` is the `nextCursor` of the previous page.
  */
@@ -753,6 +816,22 @@ metricsUpdated: "metrics-updated"
 /** user-defined types **/
 
 /**
+ * Result of [`accept_tweak_state`].
+ */
+export type AcceptResult = { 
+/**
+ * The tweak id.
+ */
+tweak: string; 
+/**
+ * How many undo records were set aside (they stay in the history, but cannot be undone).
+ */
+accepted: number; 
+/**
+ * The state read again.
+ */
+state: TweakStateView }
+/**
  * The activity log rendered as text, ready to save or copy.
  */
 export type ActivityExport = { 
@@ -1392,6 +1471,18 @@ removed: number;
  */
 kept: number }
 /**
+ * How [`export_configuration`] ended.
+ */
+export type ConfigExportResult = 
+/**
+ * The file was written.
+ */
+{ kind: "saved"; path: string; tweaks: number; settings: number } | 
+/**
+ * The user closed the dialog. Nothing was written.
+ */
+{ kind: "cancelled" }
+/**
  * One reason the score is below 100.
  */
 export type DeductionView = { 
@@ -1446,6 +1537,22 @@ freeBytes: number;
  * Used space as a share of the capacity, 0 to 100.
  */
 usedPercent: number }
+/**
+ * A tweak Volt applied that something else has changed since.
+ */
+export type DriftView = { 
+/**
+ * The tweak id.
+ */
+id: string; 
+/**
+ * What the system holds now: `notApplied` (nothing of it is left) or `partial`.
+ */
+state: TweakStateView; 
+/**
+ * Every step with its value now and the value the tweak sets, so the user sees what changed.
+ */
+steps: TweakStepView[] }
 /**
  * What an elevated purge did.
  */
@@ -1804,6 +1911,94 @@ export type HistoryStatus = {
  * entries are safe; the list is missing rows.
  */
 incomplete: boolean }
+/**
+ * What an import does with one tweak.
+ */
+export type ImportActionView = 
+/**
+ * It will be applied: these are the changes.
+ */
+{ kind: "apply"; steps: TweakStepView[] } | 
+/**
+ * Already in place here; nothing to do.
+ */
+{ kind: "alreadyApplied" } | 
+/**
+ * Left out.
+ */
+{ kind: "skip"; reason: SkipView; detail: string | null }
+/**
+ * Exactly what an import would change on this machine.
+ */
+export type ImportPreview = { 
+/**
+ * The tweaks of the file, each once, in file order.
+ */
+tweaks: TweakImportView[]; 
+/**
+ * The settings of the file that Volt knows.
+ */
+settings: SettingImportView[]; 
+/**
+ * How many entries of `settings` in the file were ignored because Volt does not know them.
+ */
+ignoredSettings: number }
+/**
+ * How [`preview_configuration_import`] ended.
+ */
+export type ImportPreviewResult = 
+/**
+ * A file was read and nothing was changed; the user decides what to do with the preview.
+ */
+{ kind: "preview"; fileName: string; preview: ImportPreview } | 
+/**
+ * The user closed the dialog.
+ */
+{ kind: "cancelled" }
+/**
+ * What an import did.
+ */
+export type ImportResult = { 
+/**
+ * Every tweak of the file.
+ */
+tweaks: TweakImportResult[]; 
+/**
+ * How many settings were stored.
+ */
+settingsStored: number; 
+/**
+ * How many settings could not be stored.
+ */
+settingsFailed: number }
+/**
+ * How one tweak of an import ended.
+ */
+export type ImportStatus = 
+/**
+ * Applied, through the journal.
+ */
+"applied" | 
+/**
+ * Already in place.
+ */
+"alreadyApplied" | 
+/**
+ * A step failed and the system is as it was.
+ */
+"rolledBack" | 
+/**
+ * A step failed and the system may differ from before.
+ */
+"needsAttention" | 
+/**
+ * Left out (see the preview), or no longer applicable.
+ */
+"skipped" | 
+/**
+ * It could not be applied at all.
+ */
+"failed"
 /**
  * What an app's processes hold now and how many of them can be changed.
  */
@@ -2655,6 +2850,50 @@ enabled: boolean;
  */
 microsoft: boolean }
 /**
+ * One setting of a file and what an import does with it.
+ */
+export type SettingImportView = { 
+/**
+ * The settings key, for example `boost.config`.
+ */
+key: string; 
+/**
+ * What happens.
+ */
+status: SettingStatus; 
+/**
+ * What this machine has now, when the value is replaced, in English.
+ */
+current: string | null; 
+/**
+ * `current` as a code and parameters.
+ */
+currentPhrase: PhraseView | null; 
+/**
+ * What it will hold, in English.
+ */
+new: string | null; 
+/**
+ * `new` as a code and parameters.
+ */
+newPhrase: PhraseView | null }
+/**
+ * What an import does with one setting.
+ */
+export type SettingStatus = 
+/**
+ * The file's value differs from this machine's: it will be stored.
+ */
+"change" | 
+/**
+ * This machine already has it.
+ */
+"same" | 
+/**
+ * The value in the file is not usable, so it is left out.
+ */
+"invalid"
+/**
  * Skipped items with the same reason.
  */
 export type SkipGroup = { 
@@ -2670,6 +2909,22 @@ reasonPhrase: PhraseView;
  * How many.
  */
 count: number }
+/**
+ * Why a tweak of the file is left out.
+ */
+export type SkipView = 
+/**
+ * This version of Volt has no such tweak.
+ */
+"unknown" | 
+/**
+ * It needs administrator rights, which Volt does not have in this session.
+ */
+"needsAdministrator" | 
+/**
+ * This machine lacks something it changes, or its state cannot be read.
+ */
+"unavailable"
 /**
  * A selected operation Boost did not run, and why.
  */
@@ -2904,6 +3159,42 @@ export type TweakCategory =
  * Preinstalled software and background tasks.
  */
 "debloat"
+/**
+ * How one tweak of an import ended.
+ */
+export type TweakImportResult = { 
+/**
+ * The tweak id.
+ */
+id: string; 
+/**
+ * The tweak's name; `null` for an id Volt does not know.
+ */
+title: string | null; 
+/**
+ * How it ended.
+ */
+status: ImportStatus; 
+/**
+ * Why it failed, in words.
+ */
+detail: string | null }
+/**
+ * One tweak of a file and what an import does with it.
+ */
+export type TweakImportView = { 
+/**
+ * The id in the file.
+ */
+id: string; 
+/**
+ * The tweak's name in this catalogue; `null` for an id Volt does not know.
+ */
+title: string | null; 
+/**
+ * What happens to it.
+ */
+action: ImportActionView }
 /**
  * One tweak with its live state, as the Tweaks screen shows it.
  */
