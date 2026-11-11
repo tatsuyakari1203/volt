@@ -26,9 +26,9 @@ use volt_core::{Clock, Memory, MetricsSnapshot, MetricsSource, MetricsTracker, S
 use volt_win::{WinMemory, WinMetrics};
 
 use crate::metrics::{MetricsUpdated, MetricsView};
+use crate::panel::PANEL_WINDOW;
 use crate::trend::{MemoryPointView, MemoryTrend, MemoryTrendUpdated, TrendSource};
 use crate::tuning::{RULES_EVERY_READS, RulesSource, apply_rules_on};
-use crate::panel::PANEL_WINDOW;
 use crate::window::MAIN_WINDOW;
 
 /// Time between two samples.
