@@ -357,6 +357,10 @@ impl Operation {
                     "prior.notApplied"
                 }),
             ),
+            Self::TuneProcesses { name, change, .. } => (
+                Phrase::new("subject.process").text("name", name.clone()),
+                Phrase::new("tune.list").list("items", ", ", change.phrases()),
+            ),
         }
     }
 }
@@ -388,6 +392,9 @@ impl PriorState {
             Self::ServiceStartType(start_type) => start_type_phrase(*start_type),
             Self::CommandState(true) => Phrase::new("prior.applied"),
             Self::CommandState(false) => Phrase::new("prior.notApplied"),
+            Self::Processes(settings) => {
+                Phrase::new("prior.processes").count("count", settings.iter().flatten().count())
+            }
         }
     }
 
