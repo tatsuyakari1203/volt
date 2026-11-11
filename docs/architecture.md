@@ -185,7 +185,16 @@ What `volt-core` contains today:
   relative path and any program that is not an `.exe` (a script or `.msi`). The adapter expands
   `%VAR%` in the program, looks a bare name up in System32 only, and starts it through
   `ShellExecuteExW` (Windows shows any UAC prompt) with the arguments as registered, waits for the
-  exit and returns the exit code. The result is checked by reading the list again.
+  exit and returns the exit code. The `Uninstaller` port takes a `StopWaiting` and returns
+  `UninstallerExit { exit_code, waited }`, where `waited` is `Everything`, `FirstProcess` or
+  `Stopped`. `WinUninstaller` puts the started process into a count-only job object (no
+  kill-on-close) and waits until the job is empty, which covers self-copying uninstallers. An
+  elevated uninstaller may not join the job: the adapter then reports `FirstProcess` and
+  `AppManager` polls the app's registry entry (every 2 s, up to 20 minutes) until it is gone or the
+  user stops waiting. `stop_waiting_for_uninstaller` ends the wait by hand without closing the
+  uninstaller; the queue goes on and the outcome is read from the list. The result is checked by
+  reading the list again.
+  Packaged apps have no size: Windows exposes none cheaply and the listing never walks folders.
   `WinPackagedApps` (volt-win) uses `PackageManager.FindPackagesByUserSecurityId("")` (current user,
   works unelevated) and `RemovePackageAsync` (current user only).
 - **Risk and evidence labels:** `Safe`, `Caution`, `Advanced`; `Measured` or `Anecdotal`. The UI
@@ -595,11 +604,22 @@ that UI over a private named pipe. Tested without elevation:
   (pid, creation time, image path) and passes the token rules (same user, same session, at least
   Medium integrity). Any other client is disconnected and counted, and the helper keeps
   listening. Quotas: one memory purge per 5 seconds and 30 changing requests per minute.
+- **Lifetime.** The helper stops, with exit code 0, when the bound UI has not connected within
+  30 seconds of the start (strangers refused meanwhile do not extend it), when the bound UI process
+  ends (polled every 250 ms with the held process handle), when the bound client disconnects or
+  says `bye`, after 10 idle minutes, or at the 60 minute hard cap.
 - **The build** is `scripts/build-helper.ps1`. The release helper has the `requireAdministrator`
   manifest, a static CRT and the Dependent Load Flag, and no test modes. One cfg
   (`helper_release`, set by the build script from the release profile) gates both the manifest and
   the debug-only test modes, so they cannot coexist. The build script refuses a release build
   without `crt-static`.
+
+- **Elevated UI refused.** If the UI process token is elevated and UAC is on (or cannot be read),
+  Volt shows a native message and exits before it creates a window or WebView
+  (`volt-win::helper::uac`: the UAC switch, the built-in Administrator SID, the message box). With
+  UAC off system-wide, or as the built-in Administrator (RID 500), it starts normally because there
+  is no boundary to protect. The message follows the Windows display language, since the settings
+  store is not open yet.
 
 Not built yet: the installer change, the confirmation desktop and the helper's own store. The
 rest of this page works unelevated and does not depend on the helper, except where it says so.
@@ -636,6 +656,27 @@ but refuse every report folder inside, and the Windows Update logs are readable.
 for real (and the Windows Update download cache, which also needs the update service stopped and
 started) waits for the elevation decision. The memory page shows the three admin-only kinds of
 purge disabled with the reason, and `requires_admin` tweaks are refused (`needsAdmin` in the UI).
+
+### Elevated CI job
+
+`.github/workflows/elevated-helper.yml` runs the release helper for real on a GitHub-hosted Windows
+runner (a throwaway VM with a full administrator token), on pull requests and on pushes to main,
+limited by paths to the helper's code. It is not a required check.
+
+- It stages `volt-helper.exe` and the harness in `C:\Program Files\Volt` with the inherited ACL,
+  the harness named `volt-desktop.exe`. The harness (`volt-elevated-ci`, cargo feature
+  `elevated-ci`, a bin of `volt-helper`) is never built by the release workflow or the installer
+  and is not part of `pnpm check`.
+- It refuses to run unless `GITHUB_ACTIONS=true`, `RUNNER_ENVIRONMENT=github-hosted` and
+  `VOLT_ELEVATED_CI=1`. It uses the real `WinElevator` path and the real `runas` launch, runs the
+  negative cases and writes a report to the job summary and the `elevated-helper-report` artifact.
+- Measured there (elevated-to-elevated launch only): the pipe owner is `S-1-5-32-544`; the launch
+  handle has mask 0x001fffff and wait, `GetProcessId` and the exit code work;
+  `GetNamedPipeServerProcessId` equals the handle's pid; the helper's working set is 9.9 MiB after
+  hello (peak 10.0) and 1.04 MiB after the first purge; the launch call takes 316 to 413 ms and
+  launch to hello 347 to 444 ms; the purge works after hardening, twice on one helper.
+- Not measured: a launch from a filtered medium-integrity token (handle rights across the UAC
+  boundary), the private-desktop dialog and the real ACLs of the machine cleaning roots.
 
 ### Window lifecycle and tray
 
@@ -979,8 +1020,8 @@ the WebView2 processes. The diagnostic log was read to confirm the sampler start
     choose and forget a folder, and `cleanSelectedRules` takes picked items. Rules with `requires_admin` are
     scanned but refused at clean (the elevation model is undecided). The Recycle Bin status and
     empty commands sit beside them.
-  - **Apps commands** (`src-tauri/src/apps.rs`). `list_apps` and `uninstall_app`; the UI sends only
-    an id. The `AppManager` is attached only in `build_real_core` (like the Recycle Bin), never by
+  - **Apps commands** (`src-tauri/src/apps.rs`). `list_apps`, `uninstall_app` and `stop_waiting_for_uninstaller`; the UI
+    sends only an id. The `AppManager` is attached only in `build_real_core` (like the Recycle Bin), never by
     `build_core`. The queue is driven by the UI (one `uninstall_app` call per app); the core allows
     one removal at a time (`Busy`).
   - **Large files commands** (`src-tauri/src/large_files.rs`). The shell keeps the scan in
@@ -1021,7 +1062,10 @@ the WebView2 processes. The diagnostic log was read to confirm the sampler start
 ### Apps page
 
 `features/apps` is the Apps page (navigation id `apps`, the seventh main section). It lists
-installed and packaged apps and uninstalls ticked ones in a queue, one at a time. Screenshot:
+installed and packaged apps and uninstalls ticked ones in a queue, one at a time. The queue lives
+in the page: leaving the page or closing the window ends it after the running removal. The apps
+not finished are kept in `localStorage` and the next open names those still installed. Removals are
+not undoable, and the page and the activity record say so. Screenshot:
 `docs/design/apps-light-460x700.png`.
 
 ### Design system
