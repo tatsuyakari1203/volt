@@ -2,14 +2,17 @@
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use super::confirm::{ConfirmRequest, Confirmer, Verdict};
 use super::{
     CatalogueHashes, ElevationError, ElevationStatus, Elevator, ErrorCode, HelloReply,
-    MemoryPurgeReply, PROTOCOL_VERSION, UnavailableReason,
+    HistoryReply, MemoryPurgeReply, PROTOCOL_VERSION, TweakApplyReply, TweakRevertReply,
+    UnavailableReason,
 };
 use crate::journal::Source;
 use crate::memory::MemoryCleaner;
 use crate::ports::{Memory, MemoryArea};
 use crate::time::SystemClock;
+use crate::tweak::ApplyOutcome;
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -35,6 +38,12 @@ pub enum ElevatorCall {
     Hello,
     /// `memory_purge` with these areas.
     MemoryPurge(Vec<MemoryArea>),
+    /// `tweak_apply` for this tweak id.
+    TweakApply(String),
+    /// `tweak_revert` for this tweak id.
+    TweakRevert(String),
+    /// `history` after this record id.
+    History(u64),
     /// `bye`.
     Bye,
 }
@@ -194,9 +203,110 @@ impl Elevator for FakeElevator {
         Ok(MemoryPurgeReply::from(&cleaner.run(areas, Source::Manual)))
     }
 
+    fn tweak_apply(&self, tweak: &str) -> Result<TweakApplyReply, ElevationError> {
+        let mut state = lock(&self.state);
+        state.calls.push(ElevatorCall::TweakApply(tweak.to_owned()));
+        Self::ensure_session(&mut state)?;
+        Ok(TweakApplyReply {
+            tweak: tweak.to_owned(),
+            outcome: ApplyOutcome::Applied,
+        })
+    }
+
+    fn tweak_revert(&self, tweak: &str) -> Result<TweakRevertReply, ElevationError> {
+        let mut state = lock(&self.state);
+        state
+            .calls
+            .push(ElevatorCall::TweakRevert(tweak.to_owned()));
+        Self::ensure_session(&mut state)?;
+        Ok(TweakRevertReply {
+            tweak: tweak.to_owned(),
+            batches: 1,
+            complete: true,
+        })
+    }
+
+    fn history(&self, after: u64, _limit: u32) -> Result<HistoryReply, ElevationError> {
+        let mut state = lock(&self.state);
+        state.calls.push(ElevatorCall::History(after));
+        Self::ensure_session(&mut state)?;
+        Ok(HistoryReply {
+            store: "fake-store".to_owned(),
+            records: Vec::new(),
+            more: false,
+        })
+    }
+
     fn bye(&self) {
         let mut state = lock(&self.state);
         state.calls.push(ElevatorCall::Bye);
         state.active = false;
+    }
+}
+
+/// A [`Confirmer`] that answers from a script and remembers what it was asked.
+///
+/// The answers are used in order; when they run out the last one repeats. The harness of the
+/// elevated CI job has its own accepting confirmer in the helper crate, compiled only with that
+/// job's feature: this fake is for tests and is not part of any product build.
+pub struct FakeConfirmer {
+    script: Mutex<(Vec<Verdict>, usize)>,
+    asked: Mutex<Vec<ConfirmRequest>>,
+}
+
+impl std::fmt::Debug for FakeConfirmer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FakeConfirmer").finish_non_exhaustive()
+    }
+}
+
+impl FakeConfirmer {
+    /// Answers with `script` in order, then repeats the last answer. An empty script is
+    /// [`Verdict::Unavailable`].
+    #[must_use]
+    pub fn scripted(script: Vec<Verdict>) -> Self {
+        Self {
+            script: Mutex::new((script, 0)),
+            asked: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// A confirmer whose person always accepts.
+    #[must_use]
+    pub fn accepting() -> Self {
+        Self::scripted(vec![Verdict::Accepted])
+    }
+
+    /// A confirmer whose person always declines.
+    #[must_use]
+    pub fn denying() -> Self {
+        Self::scripted(vec![Verdict::Denied])
+    }
+
+    /// A confirmer that cannot ask anyone.
+    #[must_use]
+    pub fn unavailable() -> Self {
+        Self::scripted(vec![Verdict::Unavailable])
+    }
+
+    /// Every question so far, in order.
+    #[must_use]
+    pub fn asked(&self) -> Vec<ConfirmRequest> {
+        lock(&self.asked).clone()
+    }
+}
+
+impl Confirmer for FakeConfirmer {
+    fn confirm(&self, request: &ConfirmRequest) -> Verdict {
+        lock(&self.asked).push(request.clone());
+        let mut script = lock(&self.script);
+        let (answers, next) = &mut *script;
+        let verdict = answers
+            .get(*next)
+            .or_else(|| answers.last())
+            .copied()
+            .unwrap_or(Verdict::Unavailable);
+        *next += 1;
+        verdict
     }
 }

@@ -156,4 +156,28 @@ impl ActivityLog for Store {
             .map_err(|e| db_error(&e))?;
         raws.into_iter().map(RawRecord::decode).collect()
     }
+
+    fn list_after(
+        &self,
+        after: Option<ActivityId>,
+        limit: usize,
+    ) -> Result<Vec<ActivityRecord>, PortError> {
+        let after = match after {
+            Some(cursor) => to_i64(cursor.0)?,
+            None => 0,
+        };
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let conn = self.conn();
+        let mut statement = conn
+            .prepare(&format!(
+                "SELECT {COLUMNS} FROM activity WHERE id > ?1 ORDER BY id ASC LIMIT ?2"
+            ))
+            .map_err(|e| db_error(&e))?;
+        let raws = statement
+            .query_map(params![after, limit], RawRecord::read)
+            .map_err(|e| db_error(&e))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| db_error(&e))?;
+        raws.into_iter().map(RawRecord::decode).collect()
+    }
 }

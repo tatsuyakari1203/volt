@@ -27,8 +27,9 @@ use std::time::Duration;
 
 use volt_core::{
     CatalogueHashes, ElevationError, ElevationStatus, Elevator, ErrorCode, HelloReply,
-    MAX_REPLY_BYTES, MemoryArea, MemoryPurgeReply, PROTOCOL_VERSION, ReplyBody, Request,
-    RequestEnvelope, UnavailableReason, decode_reply, encode_request,
+    HistoryReply, MAX_REPLY_BYTES, MemoryArea, MemoryPurgeReply, PROTOCOL_VERSION, ReplyBody,
+    Request, RequestEnvelope, TweakApplyReply, TweakRevertReply, UnavailableReason, decode_reply,
+    encode_request,
 };
 
 use super::args::{HelperArgs, PipeName};
@@ -42,6 +43,9 @@ const OPEN_WAIT: Duration = Duration::from_secs(10);
 const SHORT_TIMEOUT: Duration = Duration::from_secs(30);
 /// The longest a purge may take (the decision's per-request limit).
 const PURGE_TIMEOUT: Duration = Duration::from_secs(120);
+/// The longest a tweak request may take: the helper waits for a person to answer its confirmation
+/// first (the decision's per-request limit).
+const CHANGE_TIMEOUT: Duration = Duration::from_secs(120);
 /// How long saying bye may take.
 const BYE_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -373,6 +377,39 @@ impl Elevator for WinElevator {
         })
     }
 
+    fn tweak_apply(&self, tweak: &str) -> Result<TweakApplyReply, ElevationError> {
+        self.with_session(|connection| {
+            let request = Request::TweakApply {
+                tweak: tweak.to_owned(),
+            };
+            match connection.exchange(request, CHANGE_TIMEOUT)? {
+                ReplyBody::TweakApply(reply) => Ok(reply),
+                _ => Err(ElevationError::Refused(ErrorCode::Internal)),
+            }
+        })
+    }
+
+    fn tweak_revert(&self, tweak: &str) -> Result<TweakRevertReply, ElevationError> {
+        self.with_session(|connection| {
+            let request = Request::TweakRevert {
+                tweak: tweak.to_owned(),
+            };
+            match connection.exchange(request, CHANGE_TIMEOUT)? {
+                ReplyBody::TweakRevert(reply) => Ok(reply),
+                _ => Err(ElevationError::Refused(ErrorCode::Internal)),
+            }
+        })
+    }
+
+    fn history(&self, after: u64, limit: u32) -> Result<HistoryReply, ElevationError> {
+        self.with_session(|connection| {
+            match connection.exchange(Request::History { after, limit }, SHORT_TIMEOUT)? {
+                ReplyBody::History(reply) => Ok(reply),
+                _ => Err(ElevationError::Refused(ErrorCode::Internal)),
+            }
+        })
+    }
+
     fn bye(&self) {
         self.end_session();
     }
@@ -590,6 +627,20 @@ mod tests {
                         &cleaner.run(areas, Source::Manual),
                     ))
                 }
+                Request::TweakApply { tweak } => ReplyBody::TweakApply(TweakApplyReply {
+                    tweak: tweak.clone(),
+                    outcome: volt_core::ApplyOutcome::Applied,
+                }),
+                Request::TweakRevert { tweak } => ReplyBody::TweakRevert(TweakRevertReply {
+                    tweak: tweak.clone(),
+                    batches: 1,
+                    complete: true,
+                }),
+                Request::History { .. } => ReplyBody::History(HistoryReply {
+                    store: "test-store".to_owned(),
+                    records: Vec::new(),
+                    more: false,
+                }),
                 Request::Bye {} => ReplyBody::Bye {},
             };
             let reply = encode_reply(&Reply {
@@ -716,6 +767,47 @@ mod tests {
         // After bye the next request starts a new session (a new prompt).
         purge(&elevator).expect("a new session");
         assert_eq!(launcher.launches(), 2);
+    }
+
+    #[test]
+    fn tweak_and_history_requests_share_the_session_and_carry_only_the_id() {
+        let launcher = TestLauncher::new(Mode::Serve(Plan::genuine()));
+        let elevator = elevator(&launcher);
+        let applied = elevator.tweak_apply("some-tweak").expect("apply");
+        assert_eq!(applied.outcome, volt_core::ApplyOutcome::Applied);
+        assert!(
+            elevator
+                .tweak_revert("some-tweak")
+                .expect("revert")
+                .complete
+        );
+        assert_eq!(
+            elevator.history(4, 10).expect("history").store,
+            "test-store"
+        );
+        assert_eq!(launcher.launches(), 1, "one session, one prompt");
+        elevator.bye();
+        launcher.wait_for_helpers();
+        let seen = launcher.seen();
+        assert_eq!(
+            seen[1].1,
+            Request::TweakApply {
+                tweak: "some-tweak".to_owned()
+            }
+        );
+        assert_eq!(
+            seen[2].1,
+            Request::TweakRevert {
+                tweak: "some-tweak".to_owned()
+            }
+        );
+        assert_eq!(
+            seen[3].1,
+            Request::History {
+                after: 4,
+                limit: 10
+            }
+        );
     }
 
     #[test]

@@ -5,9 +5,13 @@ name: Elevated helper
 # shows no prompt and harms nobody. Nothing else in the repository starts the helper, writes under
 # Program Files or purges memory in a test; the harness refuses to run anywhere but here.
 #
-# Two jobs. "Elevated helper" stages a folder by hand and runs the harness as the UI. "Installer"
-# builds the real installer, installs it on the runner (all users, then just this user), checks
-# what it left behind and removes it again.
+# Two jobs. "Elevated helper" stages a folder by hand and runs the harness as the UI, in two
+# phases: against the RELEASE helper (the state folder it makes, the single-helper lock, a tweak
+# request that nobody can confirm), then, after a check that the release helper holds nothing of the
+# harness, against a HARNESS-feature build of the helper whose confirmer accepts (an apply and a
+# revert of a test-only tweak under a throwaway HKLM key). "Installer" builds the real installer,
+# installs it on the runner (all users, then just this user), checks what it left behind and
+# removes it again.
 #
 # Limited by paths to the code the helper and the installer are made of, so unrelated changes do
 # not wait for it. It is not a required status check.
@@ -16,6 +20,7 @@ on:
     branches: [main]
     paths:
       - crates/volt-core/**
+      - crates/volt-store/**
       - crates/volt-win/**
       - crates/volt-helper/**
       - catalogue/**
@@ -23,6 +28,7 @@ on:
       - Cargo.lock
       - rust-toolchain.toml
       - scripts/build-helper.ps1
+      - scripts/check-helper-harness.ps1
       - scripts/build-installer.ps1
       - scripts/installer-checks.ps1
       - apps/desktop/src-tauri/tauri.conf.json
@@ -32,6 +38,7 @@ on:
   pull_request:
     paths:
       - crates/volt-core/**
+      - crates/volt-store/**
       - crates/volt-win/**
       - crates/volt-helper/**
       - catalogue/**
@@ -39,6 +46,7 @@ on:
       - Cargo.lock
       - rust-toolchain.toml
       - scripts/build-helper.ps1
+      - scripts/check-helper-harness.ps1
       - scripts/build-installer.ps1
       - scripts/installer-checks.ps1
       - apps/desktop/src-tauri/tauri.conf.json
@@ -77,6 +85,12 @@ jobs:
 
       - name: Build the release helper
         run: pwsh scripts/build-helper.ps1
+
+      # The accepting confirmer and the test tweak exist only in the harness build. The release
+      # helper must hold none of their strings; the same search on the harness build (below) must
+      # find them, which is what shows the search works.
+      - name: Check that the release helper holds nothing of the harness
+        run: pwsh scripts/check-helper-harness.ps1 -Binary target/helper/release/volt-helper.exe -Expect absent
 
       # The harness is a binary behind a non-default feature: the release workflow and the
       # installer never build it.
@@ -122,12 +136,32 @@ jobs:
           & $exe run --out $env:REPORT_DIR 2>&1 | Tee-Object -FilePath (Join-Path $env:REPORT_DIR 'harness.log')
           exit $LASTEXITCODE
 
+      # The harness build of the helper, with the accepting confirmer and the test tweak. It
+      # replaces the release helper in the staged folder only now that the release helper's own
+      # cases are done.
+      - name: Build the harness helper
+        run: |
+          cargo build -p volt-helper --features elevated-ci --bin volt-helper --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pwsh scripts/check-helper-harness.ps1 -Binary target/debug/volt-helper.exe -Expect present
+
+      - name: Run the helper's tweak engine for real
+        env:
+          VOLT_ELEVATED_CI: "1"
+        run: |
+          Copy-Item target/debug/volt-helper.exe (Join-Path $env:ProgramFiles 'Volt\volt-helper.exe') -Force
+          $exe = Join-Path $env:ProgramFiles 'Volt\volt-desktop.exe'
+          & $exe tweaks --out $env:REPORT_DIR 2>&1 | Tee-Object -FilePath (Join-Path $env:REPORT_DIR 'harness-tweaks.log')
+          exit $LASTEXITCODE
+
       - name: Job summary
         if: always()
         run: |
-          $report = Join-Path $env:REPORT_DIR 'elevated-helper-report.md'
-          if (Test-Path $report) { Get-Content $report | Add-Content $env:GITHUB_STEP_SUMMARY }
-          else { 'The harness wrote no report.' | Add-Content $env:GITHUB_STEP_SUMMARY }
+          foreach ($name in 'elevated-helper-report.md', 'elevated-helper-tweaks-report.md') {
+            $report = Join-Path $env:REPORT_DIR $name
+            if (Test-Path $report) { Get-Content $report | Add-Content $env:GITHUB_STEP_SUMMARY }
+            else { "The harness wrote no $name." | Add-Content $env:GITHUB_STEP_SUMMARY }
+          }
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()

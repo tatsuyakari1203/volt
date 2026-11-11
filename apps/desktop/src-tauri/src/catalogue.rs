@@ -28,6 +28,14 @@ mod tests {
     }
 
     #[test]
+    fn no_administrator_tweak_has_a_command_step_or_a_per_user_registry_step() {
+        // The elevated helper runs these tweaks, so a command step or a per-user hive in one of
+        // them fails the build (the helper's own tests check the same text it embeds).
+        let catalogue = Catalogue::from_toml(EMBEDDED_CATALOGUE).expect("valid");
+        assert_eq!(catalogue.administrator_issues(), Vec::new());
+    }
+
+    #[test]
     fn show_file_extensions_keeps_its_honest_labels() {
         let catalogue = Catalogue::from_toml(EMBEDDED_CATALOGUE).expect("valid");
         let tweak = catalogue

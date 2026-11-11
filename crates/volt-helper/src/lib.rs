@@ -10,7 +10,10 @@
 //! - [`serve`]: the serve loop with its clocks (idle limit, hard cap), the bound-client check
 //!   and the exit when the client goes away;
 //! - [`session`]: one connection's protocol: ordering, quotas and the requests, over the core's
-//!   wire types and the core's memory operations.
+//!   wire types and the core's memory operations;
+//! - [`state`]: the helper's own protected state folder, the single-helper lock and its store;
+//! - [`tweaks`]: administrator tweaks over the helper's own journal, behind [`confirm`]'s
+//!   confirmation (which in this build always refuses), through the guarded [`ports`].
 //!
 //! The logic lives here, in the library, so tests run it in-process without elevation. The binary
 //! adds only `main`, an elevation manifest in release builds and, outside release builds only, two
@@ -18,23 +21,64 @@
 
 #![cfg(windows)]
 
+// The accepting confirmer of the CI harness must never reach a helper that asks for administrator
+// rights: the release profile (which the build script turns into `helper_release`) refuses the
+// harness feature outright.
+#[cfg(all(helper_release, feature = "elevated-ci"))]
+compile_error!("the `elevated-ci` feature must never be enabled in a release build of the helper");
+
+pub mod confirm;
 #[cfg(not(helper_release))]
 pub mod debug;
+pub mod ports;
 pub mod run;
 pub mod serve;
 pub mod session;
+pub mod state;
+pub mod tweaks;
 
 use std::sync::Arc;
 
-use volt_core::{CatalogueHashes, Memory, catalogue_hash};
+use volt_core::{Catalogue, CatalogueHashes, Memory, SystemClock, catalogue_hash};
 use volt_win::WinMemory;
 
 use crate::session::{QuotaLimits, Session};
+use crate::state::HelperState;
+use crate::tweaks::{DeskParts, TweakDesk};
 
+/// The tweak catalogue of the product.
+const PRODUCT_TWEAK_CATALOGUE: &str = include_str!("../../../catalogue/tweaks.toml");
 /// The tweak catalogue this helper holds. The UI compares its hash with its own.
-const TWEAK_CATALOGUE: &str = include_str!("../../../catalogue/tweaks.toml");
+#[cfg(not(feature = "elevated-ci"))]
+const TWEAK_CATALOGUE: &str = PRODUCT_TWEAK_CATALOGUE;
+/// The catalogue of the harness build: the product's, plus one test-only tweak under a throwaway
+/// `HKLM\SOFTWARE\VoltTest` key. The release helper never has it.
+#[cfg(feature = "elevated-ci")]
+const TWEAK_CATALOGUE: &str = concat!(
+    include_str!("../../../catalogue/tweaks.toml"),
+    "\n",
+    include_str!("../ci/ci-tweak.toml")
+);
 /// The cleaning rules this helper holds.
 const CLEANING_RULES: &str = include_str!("../../../catalogue/cleaning.toml");
+
+/// The text of the tweak catalogue this helper holds (the harness of the elevated CI job reads
+/// the tweaks it exercises from it).
+#[must_use]
+pub fn embedded_tweak_catalogue() -> &'static str {
+    TWEAK_CATALOGUE
+}
+
+/// The hashes of the catalogues of the PRODUCT: what the app embeds and what the release helper
+/// holds. They equal [`catalogue_hashes`] in every build except the harness build of the CI job,
+/// whose catalogue has a test-only tweak more.
+#[must_use]
+pub fn product_catalogue_hashes() -> CatalogueHashes {
+    CatalogueHashes {
+        tweaks: catalogue_hash(PRODUCT_TWEAK_CATALOGUE),
+        cleaning: catalogue_hash(CLEANING_RULES),
+    }
+}
 
 /// The hashes of the catalogues this helper was built with.
 #[must_use]
@@ -46,21 +90,67 @@ pub fn catalogue_hashes() -> CatalogueHashes {
 }
 
 /// The session the real helper serves: memory purges on the real memory port, the real
-/// catalogues, the decision's quotas.
+/// catalogues, the decision's quotas, and the administrator tweaks over the helper's own `state`
+/// behind [`confirm::product_confirmer`].
+///
+/// A start that cannot build the tweak desk (an interrupted apply whose journal cannot be read, a
+/// catalogue that breaks the administrator rules) still serves memory purges and answers every
+/// tweak request [`volt_core::ErrorCode::Unavailable`]: it never serves tweaks it could not
+/// settle.
 #[must_use]
-pub fn production_session() -> Session {
+pub fn production_session(state: &HelperState) -> Session {
     let memory: Arc<dyn Memory> = Arc::new(WinMemory::new());
-    Session::new(
-        memory,
+    let session = Session::new(
+        Arc::clone(&memory),
         catalogue_hashes(),
         env!("CARGO_PKG_VERSION"),
         QuotaLimits::default(),
-    )
+    );
+    match build_desk(state, memory) {
+        Ok(desk) => session.with_tweaks(desk),
+        Err(error) => {
+            log::error!("administrator tweaks are not available in this helper: {error}");
+            session
+        }
+    }
+}
+
+fn build_desk(state: &HelperState, memory: Arc<dyn Memory>) -> Result<TweakDesk, String> {
+    let catalogue = Arc::new(Catalogue::from_toml(TWEAK_CATALOGUE).map_err(|e| e.to_string())?);
+    let store = state.store();
+    TweakDesk::new(DeskParts {
+        ports: ports::helper_ports(&catalogue, memory),
+        catalogue,
+        journal: store.clone(),
+        activity: store,
+        clock: Arc::new(SystemClock),
+        confirmer: confirm::product_confirmer(),
+        store_id: state.store_id().to_owned(),
+    })
+    .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_embedded_catalogue_is_fit_for_the_helper() {
+        // The build check: a tweak that requires administrator rights must have neither a command
+        // step nor a per-user registry step.
+        let catalogue = Catalogue::from_toml(TWEAK_CATALOGUE).expect("the catalogue loads");
+        assert_eq!(catalogue.administrator_issues(), Vec::new());
+        assert!(
+            catalogue.tweaks().iter().any(|tweak| tweak.requires_admin),
+            "the helper has administrator tweaks to offer"
+        );
+    }
+
+    #[cfg(not(feature = "elevated-ci"))]
+    #[test]
+    fn a_product_catalogue_has_no_test_tweak() {
+        assert!(!TWEAK_CATALOGUE.contains("VoltTest"));
+    }
 
     #[test]
     fn the_embedded_catalogues_are_hashed() {

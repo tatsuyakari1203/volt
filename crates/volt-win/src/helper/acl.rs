@@ -4,13 +4,15 @@
 use std::ffi::c_void;
 use std::path::Path;
 
-use windows::Win32::Foundation::{ERROR_SUCCESS, HLOCAL, LocalFree, WIN32_ERROR};
+use windows::Win32::Foundation::{ERROR_SUCCESS, HANDLE, HLOCAL, LocalFree, WIN32_ERROR};
 use windows::Win32::Security::Authorization::{
     GetNamedSecurityInfoW, GetSecurityInfo, SE_FILE_OBJECT, SE_KERNEL_OBJECT, SE_OBJECT_TYPE,
+    SE_REGISTRY_KEY,
 };
 use windows::Win32::Security::{
     ACL, DACL_SECURITY_INFORMATION, GetAce, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
 };
+use windows::Win32::System::Registry::HKEY;
 use windows::core::PCWSTR;
 
 use super::identity::sid_to_string;
@@ -173,6 +175,37 @@ pub(crate) fn of_kernel_handle(handle: &OwnedHandle) -> Result<SecurityInfo, Str
         GetSecurityInfo(
             handle.raw(),
             object,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            Some(&raw mut owner),
+            None,
+            Some(&raw mut dacl),
+            None,
+            Some(&raw mut descriptor),
+        )
+    };
+    let descriptor = Descriptor(descriptor);
+    check(status, "GetSecurityInfo")?;
+    // SAFETY: as in `of_path`.
+    let info = unsafe { read(owner, dacl, true) };
+    drop(descriptor);
+    info
+}
+
+/// Owner and DACL of an open registry key (a handle with `READ_CONTROL`).
+///
+/// # Errors
+/// A message when the key cannot be read.
+pub(crate) fn of_registry_key(key: HKEY) -> Result<SecurityInfo, String> {
+    let mut owner = PSID::default();
+    let mut dacl: *mut ACL = std::ptr::null_mut();
+    let mut descriptor = PSECURITY_DESCRIPTOR::default();
+    // SAFETY: an open key handle (a registry handle is a kernel object handle) and valid out
+    // pointers; the owner and DACL pointers point into `descriptor`, which is freed by the guard
+    // below.
+    let status = unsafe {
+        GetSecurityInfo(
+            HANDLE(key.0),
+            SE_REGISTRY_KEY,
             OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
             Some(&raw mut owner),
             None,

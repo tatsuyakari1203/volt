@@ -1067,3 +1067,53 @@ fn a_phrase_is_stored_with_the_record_and_an_old_record_has_none() {
     assert_eq!(records[1].phrase, Some(phrase));
     assert_eq!(records[1].summary, "3 too new");
 }
+
+#[test]
+fn the_log_is_read_oldest_first_after_a_cursor() {
+    let dir = TempDir::new().expect("temp dir");
+    let store = open(&db_path(&dir));
+    for index in 1..=6 {
+        store
+            .record(new_activity(&format!("record {index}"), index))
+            .expect("record");
+    }
+    let ids = |after: Option<u64>, limit: usize| -> Vec<u64> {
+        store
+            .list_after(after.map(ActivityId), limit)
+            .expect("list after")
+            .iter()
+            .map(|record| record.id.0)
+            .collect()
+    };
+    assert_eq!(ids(None, 3), [1, 2, 3]);
+    // The last id of a page is the cursor of the next one, and nothing is skipped or repeated.
+    assert_eq!(ids(Some(3), 3), [4, 5, 6]);
+    assert_eq!(ids(Some(6), 3), Vec::<u64>::new());
+    assert_eq!(ids(Some(2), 0), Vec::<u64>::new());
+}
+
+#[test]
+fn a_store_keeps_its_identifier_and_a_new_store_has_another() {
+    let dir = TempDir::new().expect("temp dir");
+    let path = db_path(&dir);
+    let first = open(&path).store_id().expect("id");
+    assert_eq!(first.len(), 32);
+    assert!(first.bytes().all(|b| b.is_ascii_hexdigit()));
+    // The same file keeps it across a restart.
+    assert_eq!(open(&path).store_id().expect("id"), first);
+    // A different database is another store.
+    let other = TempDir::new().expect("temp dir");
+    assert_ne!(open(&db_path(&other)).store_id().expect("id"), first);
+}
+
+#[test]
+fn a_damaged_identifier_is_replaced() {
+    let dir = TempDir::new().expect("temp dir");
+    let store = open(&db_path(&dir));
+    store
+        .set("store_id", &serde_json::json!("not an id"))
+        .expect("set");
+    let id = store.store_id().expect("id");
+    assert_eq!(id.len(), 32);
+    assert_eq!(store.store_id().expect("id"), id);
+}

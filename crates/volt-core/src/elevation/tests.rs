@@ -24,6 +24,25 @@ fn every_request_round_trips() {
         },
         RequestEnvelope {
             id: 3,
+            request: Request::TweakApply {
+                tweak: "turn-off-error-reporting".into(),
+            },
+        },
+        RequestEnvelope {
+            id: 4,
+            request: Request::TweakRevert {
+                tweak: "turn-off-error-reporting".into(),
+            },
+        },
+        RequestEnvelope {
+            id: 5,
+            request: Request::History {
+                after: 7,
+                limit: HISTORY_MAX_RECORDS,
+            },
+        },
+        RequestEnvelope {
+            id: 6,
             request: Request::Bye {},
         },
     ] {
@@ -159,9 +178,73 @@ fn only_framing_and_order_violations_close_the_connection() {
         ErrorCode::HelloRequired,
         ErrorCode::InvalidRequest,
         ErrorCode::RateLimited,
+        ErrorCode::UnknownTweak,
+        ErrorCode::NotConfirmed,
+        ErrorCode::Blocked,
+        ErrorCode::NothingToRevert,
+        ErrorCode::TweakFailed,
+        ErrorCode::Unavailable,
     ] {
         assert!(!code.closes_connection(), "{code}");
     }
+}
+
+#[test]
+fn a_tweak_request_names_an_id_and_nothing_else() {
+    assert_eq!(
+        request(r#"{"id":2,"request":{"type":"tweak_apply","tweak":"turn-off-fast-startup"}}"#),
+        Ok(RequestEnvelope {
+            id: 2,
+            request: Request::TweakApply {
+                tweak: "turn-off-fast-startup".into()
+            }
+        })
+    );
+    assert_eq!(
+        request(r#"{"id":3,"request":{"type":"tweak_revert","tweak":"x"}}"#),
+        Ok(RequestEnvelope {
+            id: 3,
+            request: Request::TweakRevert { tweak: "x".into() }
+        })
+    );
+    assert_eq!(
+        request(r#"{"id":4,"request":{"type":"history","after":0,"limit":5}}"#),
+        Ok(RequestEnvelope {
+            id: 4,
+            request: Request::History { after: 0, limit: 5 }
+        })
+    );
+    // Nothing that could carry a path, a value, a command or a location.
+    for json in [
+        r#"{"id":1,"request":{"type":"tweak_apply","tweak":"x","path":"C:\x"}}"#,
+        r#"{"id":1,"request":{"type":"tweak_apply","tweak":"x","value":1}}"#,
+        r#"{"id":1,"request":{"type":"tweak_apply","tweak":"x","command":"calc.exe"}}"#,
+        r#"{"id":1,"request":{"type":"tweak_revert","tweak":"x","key":"HKLM\Software"}}"#,
+        r#"{"id":1,"request":{"type":"tweak_apply"}}"#,
+        r#"{"id":1,"request":{"type":"tweak_apply","tweak":7}}"#,
+        r#"{"id":1,"request":{"type":"history","after":-1,"limit":5}}"#,
+        r#"{"id":1,"request":{"type":"history","after":0}}"#,
+    ] {
+        assert_eq!(request(json), Err(ErrorCode::Malformed), "{json}");
+    }
+}
+
+#[test]
+fn the_fake_elevator_serves_the_tweak_requests_through_one_session() {
+    let elevator = FakeElevator::granted(Arc::new(FakeMemory::new()));
+    let applied = elevator.tweak_apply("a-tweak").expect("apply");
+    assert_eq!(applied.outcome, crate::ApplyOutcome::Applied);
+    assert!(elevator.tweak_revert("a-tweak").expect("revert").complete);
+    assert!(elevator.history(0, 5).expect("history").records.is_empty());
+    assert_eq!(elevator.prompts(), 1);
+    assert_eq!(
+        elevator.calls(),
+        vec![
+            ElevatorCall::TweakApply("a-tweak".into()),
+            ElevatorCall::TweakRevert("a-tweak".into()),
+            ElevatorCall::History(0),
+        ]
+    );
 }
 
 #[test]

@@ -33,7 +33,7 @@ const RULES = {
     banned: [],
   },
   'volt-helper': {
-    internal: ['volt-core', 'volt-win'],
+    internal: ['volt-core', 'volt-win', 'volt-store'],
     banned: ['tauri', 'rusqlite'],
   },
   'volt-cli': {

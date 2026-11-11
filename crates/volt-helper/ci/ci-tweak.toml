@@ -1,0 +1,19 @@
+# The test-only tweak of the elevated CI harness. It is appended to the embedded catalogue ONLY in
+# the harness build (the `elevated-ci` feature), never in a product helper. It changes one value
+# under a throwaway key of a hosted runner's registry.
+[[tweak]]
+id = "ci-voltest-marker"
+title = "CI marker"
+description = "Sets a marker value under a throwaway key. Exists only in the CI harness build."
+category = "privacy"
+risk = "safe"
+evidence = "measured"
+evidence_note = "Test-only."
+requires_admin = true
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKLM"
+subkey = 'SOFTWARE\VoltTest\Ci'
+name = "Marker"
+value = { dword = 1 }

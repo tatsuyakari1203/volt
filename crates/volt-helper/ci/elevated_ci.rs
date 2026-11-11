@@ -19,6 +19,8 @@
 
 #![cfg(windows)]
 
+mod state_cases;
+
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -61,11 +63,16 @@ fn main() -> ExitCode {
             Some(out) => ExitCode::from(run(Path::new(out))),
             None => ExitCode::from(2),
         },
+        Some("tweaks") if args.get(2).map(String::as_str) == Some("--out") => match args.get(3) {
+            Some(out) => ExitCode::from(tweaks(Path::new(out))),
+            None => ExitCode::from(2),
+        },
         Some("rogue") => ExitCode::from(args.get(2).map_or(2, |pipe| rogue(pipe))),
         Some("installed") => ExitCode::from(installed(&args[2..])),
         Some("per-user") => ExitCode::from(per_user(&args[2..])),
         _ => {
             eprintln!("usage: volt-desktop.exe run --out <folder>");
+            eprintln!("       volt-desktop.exe tweaks --out <folder>   (with the harness helper)");
             eprintln!(
                 "       volt-elevated-ci installed --out <folder> --ui <exe> --built <helper>"
             );
@@ -228,12 +235,29 @@ fn run(out: &Path) -> u8 {
             );
             real_session(&mut report);
             bound_client_only(&mut report, &image, &me);
+            // Before the negative cases: one of them resets the ACL of the whole install folder.
+            state_cases::release_phase(&mut report, &image, &me);
             negative_cases(&mut report, &image, &me);
             abandoned_helper(&mut report, &image.with_file_name(HELPER_IMAGE_NAME), &me);
         }
         Err(error) => report.check("identify the harness process", false, error),
     }
     finish(&report, out, "elevated-helper-report")
+}
+
+/// The apply and revert of the test-only tweak, against the harness-feature helper that the
+/// workflow has put in place of the release one.
+fn tweaks(out: &Path) -> u8 {
+    let _ = std::fs::create_dir_all(out);
+    let mut report = Report::default();
+    match inspect_current() {
+        Ok(me) => {
+            let image = PathBuf::from(&me.identity.image);
+            state_cases::tweaks_phase(&mut report, &image, &me);
+        }
+        Err(error) => report.check("identify the harness process", false, error),
+    }
+    finish(&report, out, "elevated-helper-tweaks-report")
 }
 
 /// Writes the report in both forms and returns the exit code.
@@ -413,7 +437,7 @@ fn describe_evidence(report: &mut Report, label: &str, evidence: &ConnectionEvid
 
 /// The whole happy path through the real `WinElevator`, then bye and the helper's exit.
 fn real_session(report: &mut Report) {
-    let elevator = WinElevator::new(volt_helper::catalogue_hashes());
+    let elevator = WinElevator::new(volt_helper::product_catalogue_hashes());
 
     let status = elevator.status();
     report.check(
@@ -427,7 +451,7 @@ fn real_session(report: &mut Report) {
         Ok(hello) => report.check(
             "launch through runas, authenticate the server, hello",
             hello.protocol == PROTOCOL_VERSION
-                && hello.catalogues == volt_helper::catalogue_hashes(),
+                && hello.catalogues == volt_helper::product_catalogue_hashes(),
             format!(
                 "helper {} speaks protocol {} with this build's catalogue hashes",
                 hello.helper_version, hello.protocol
@@ -842,7 +866,7 @@ fn writable_folder(report: &mut Report, image: &Path, helper: &Path, good: &[Str
         ),
         format!("{status:?}"),
     );
-    let elevator = WinElevator::new(volt_helper::catalogue_hashes());
+    let elevator = WinElevator::new(volt_helper::product_catalogue_hashes());
     let refused = elevator.hello();
     report.check(
         "the client starts no helper for it",

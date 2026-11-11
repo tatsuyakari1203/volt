@@ -159,6 +159,16 @@ pub trait ActivityLog: Send + Sync {
         before: Option<ActivityId>,
     ) -> Result<Vec<ActivityRecord>, PortError>;
 
+    /// Reads records oldest first (by id), at most `limit` of them, with an id above `after`
+    /// (`None` for the very start). The id of the last record is the cursor for the next call, so
+    /// a reader that mirrors the log keeps the cursor and misses nothing. A `limit` of zero
+    /// returns nothing.
+    fn list_after(
+        &self,
+        after: Option<ActivityId>,
+        limit: usize,
+    ) -> Result<Vec<ActivityRecord>, PortError>;
+
     /// Removes records that are older than `retention.max_age_ms` before `now`, or beyond the
     /// newest `retention.max_records`. Returns how many were removed. Touches the activity log
     /// only, and keeps every record linked to a journal entry that can still be undone (the
