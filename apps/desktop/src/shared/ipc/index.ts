@@ -168,16 +168,20 @@ export type {
   RuleView,
   ScanItemView,
   ScheduledTaskView,
+  ServiceView,
   SettingImportView,
   SettingStatus,
   SkipGroup,
   SkippedOperationView,
   SkipView,
+  StartupApprovalView,
   StartupChangeResult,
   StartupChangeStatus,
   StartupEntryView,
   StartupList,
+  StartupLockView,
   StartupProblemView,
+  StartupProtectionView,
   StartupSource,
   TidyItemKind,
   TidyLists,
@@ -434,13 +438,16 @@ export async function listStartupEntries(): Promise<StartupList> {
 
 /**
  * Switches a startup entry on or off the way Windows does, through the undo journal. Machine-wide
- * entries reject with an `accessDenied` error (administrator rights).
+ * entries reject with an `accessDenied` error (administrator rights), and so do entries Microsoft
+ * publishes unless `unlocked` says the user unlocked Windows items. Entries Windows cannot run
+ * without are always refused.
  */
 export async function setStartupEntryEnabled(
   id: string,
   enabled: boolean,
+  unlocked = false,
 ): Promise<StartupChangeResult> {
-  return call(() => commands.setStartupEntryEnabled(id, enabled));
+  return call(() => commands.setStartupEntryEnabled(id, enabled, unlocked));
 }
 
 /**

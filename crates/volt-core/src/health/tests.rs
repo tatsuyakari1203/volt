@@ -316,6 +316,8 @@ fn startup_entry(name: &str, state: StartupState) -> crate::startup::StartupEntr
         program: None,
         publisher: None,
         state,
+        protection: crate::startup::StartupProtection::None,
+        approval: crate::startup::ApprovalRecord::Missing,
     }
 }
 
@@ -336,8 +338,11 @@ fn the_startup_load_counts_the_enabled_entries_only() {
             publisher: None,
             enabled: true,
             microsoft: false,
+            protection: crate::startup::StartupProtection::None,
+            machine_wide: false,
         }],
         tasks_problem: None,
+        ..StartupListing::default()
     };
     assert_eq!(
         StartupLoad::from_listing(&listing),

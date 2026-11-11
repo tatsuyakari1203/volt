@@ -18,12 +18,12 @@ use volt_core::activity::{
 };
 use volt_core::startup::STARTUP_LABEL;
 use volt_core::{
-    ActivityId, ActivityOutcome, ActivityRecord, ApplyOutcome, BatchId, Category, ChangeOutcome,
-    Clock, EntryId, EntryState, Evidence, ItemStatus, JournalEntry, MEMORY_LABEL,
+    ActivityId, ActivityOutcome, ActivityRecord, ApplyOutcome, ApprovalRecord, BatchId, Category,
+    ChangeOutcome, Clock, EntryId, EntryState, Evidence, ItemStatus, JournalEntry, MEMORY_LABEL,
     PROCESS_END_LABEL, Phrase, RESET_LABEL_SUFFIX, RestartRequirement, RevertError, RevertOutcome,
-    RevertReport, Risk, Source, StartupEntry, StartupOrigin, StartupScope, StartupState,
-    StepPreview, SystemClock, TUNE_LABEL, Timestamp, TweakApplyReport, TweakError,
-    TweakRevertReport, TweakState, activity, overwrites_of, render_text,
+    RevertReport, Risk, Source, StartupEntry, StartupLock, StartupOrigin, StartupProtection,
+    StartupScope, StartupState, StepPreview, SystemClock, TUNE_LABEL, Timestamp, TweakApplyReport,
+    TweakError, TweakRevertReport, TweakState, activity, overwrites_of, render_text,
 };
 
 use crate::IpcError;
@@ -534,8 +534,55 @@ pub enum StartupSource {
     UserFolder,
     /// The Startup folder shared by all users.
     CommonFolder,
+    /// The current user's `RunOnce` key.
+    UserRunOnce,
+    /// The machine-wide `RunOnce` key.
+    MachineRunOnce,
+    /// The machine-wide `RunOnce` key of 32-bit programs.
+    MachineRunOnce32,
     /// A source this version of the UI does not know.
     Other,
+}
+
+/// How a startup item is protected. Mirrors [`volt_core::StartupProtection`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum StartupProtectionView {
+    /// Not protected.
+    None,
+    /// Microsoft or Windows itself publishes it: locked until Windows items are unlocked.
+    Microsoft,
+    /// Windows cannot run without it: never switchable.
+    Critical,
+}
+
+/// Why an item has its switch locked. Mirrors [`volt_core::StartupLock`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum StartupLockView {
+    /// Windows needs it: never switchable.
+    Critical,
+    /// It applies to every user: changing it needs administrator rights.
+    NeedsAdministrator,
+    /// Changing it needs the administrator helper.
+    NeedsHelper,
+    /// Volt cannot change this kind of item yet.
+    NotYet,
+    /// Published by Microsoft: locked until the user unlocks Windows items.
+    Microsoft,
+}
+
+/// Whether the `StartupApproved` flag decides if an entry runs. Mirrors
+/// [`volt_core::ApprovalRecord`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum StartupApprovalView {
+    /// Windows holds a record that says whether the entry runs.
+    Recorded,
+    /// There is no record: Windows runs the entry.
+    Missing,
+    /// `StartupApproved` does not apply to this kind of entry.
+    NotUsed,
 }
 
 /// One thing that starts with Windows, as the Startup screen shows it.
@@ -558,6 +605,13 @@ pub struct StartupEntryView {
     pub enabled: bool,
     /// Whether changing it needs administrator rights (it applies to every user).
     pub needs_admin: bool,
+    /// How it is protected.
+    pub protection: StartupProtectionView,
+    /// Why the switch is locked; `null` when it can be switched now. A `microsoft` lock is lifted
+    /// by unlocking Windows items.
+    pub lock: Option<StartupLockView>,
+    /// Whether the `StartupApproved` flag decides if it runs.
+    pub approval: StartupApprovalView,
 }
 
 /// A source that could not be read; the rest of the list is valid.
@@ -588,6 +642,33 @@ pub struct ScheduledTaskView {
     pub enabled: bool,
     /// Whether the task is part of Windows.
     pub microsoft: bool,
+    /// How it is protected.
+    pub protection: StartupProtectionView,
+    /// Why it has no switch.
+    pub lock: StartupLockView,
+}
+
+/// A Windows service that starts automatically. Read-only here: changing it needs the
+/// administrator helper.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceView {
+    /// The service name.
+    pub name: String,
+    /// The display name.
+    pub display_name: String,
+    /// The command line as written.
+    pub command: String,
+    /// Who published the program, when its version information says.
+    pub publisher: Option<String>,
+    /// Whether the start is delayed until after sign-in has settled.
+    pub delayed: bool,
+    /// The account it runs as; empty for the default.
+    pub account: String,
+    /// How it is protected.
+    pub protection: StartupProtectionView,
+    /// Why it has no switch.
+    pub lock: StartupLockView,
 }
 
 /// Everything that starts with Windows, read just now.
@@ -602,6 +683,12 @@ pub struct StartupList {
     pub tasks: Vec<ScheduledTaskView>,
     /// Why the scheduled tasks could not be read ("access denied", ...), if so.
     pub tasks_problem: Option<String>,
+    /// `RunOnce` entries: they run once at the next sign-in. The user's own can be switched.
+    pub once: Vec<StartupEntryView>,
+    /// Services that start automatically, read-only, sorted by display name.
+    pub services: Vec<ServiceView>,
+    /// Why the services could not be read ("access denied", ...), if so.
+    pub services_problem: Option<String>,
 }
 
 /// How a change of a startup entry ended.
@@ -1098,24 +1185,45 @@ pub fn list_startup_entries(core: &AppCore) -> Result<StartupList, IpcError> {
                 publisher: task.publisher.clone(),
                 enabled: task.enabled,
                 microsoft: task.microsoft,
+                protection: protection_view(task.protection),
+                lock: lock_view(task.lock()),
             })
             .collect(),
         tasks_problem: listing.tasks_problem.map(str::to_owned),
+        once: listing.once.iter().map(startup_entry_view).collect(),
+        services: listing
+            .services
+            .iter()
+            .map(|service| ServiceView {
+                name: service.name.clone(),
+                display_name: service.display_name.clone(),
+                command: service.command.clone(),
+                publisher: service.publisher.clone(),
+                delayed: service.delayed,
+                account: service.account.clone(),
+                protection: protection_view(service.protection),
+                lock: lock_view(service.lock()),
+            })
+            .collect(),
+        services_problem: listing.services_problem.map(str::to_owned),
     })
 }
 
 /// Switches a startup entry on or off the way Windows does, through the undo journal. Reports
 /// precisely how it ended. Entries that apply to every user are refused with `accessDenied`
-/// (they need administrator rights) before anything is touched.
+/// (they need administrator rights) before anything is touched, and so are the entries Microsoft
+/// publishes unless `unlocked` is set (the user chose to unlock Windows items) and those Windows
+/// cannot run without whatever `unlocked` says.
 pub fn set_startup_entry_enabled(
     core: &AppCore,
     id: &str,
     enabled: bool,
+    unlocked: bool,
 ) -> Result<StartupChangeResult, IpcError> {
     let manager = core.startup_apps()?;
     let _exclusive = core.exclusive();
     let failures_before = core.engine.activity_write_failures();
-    let result = manager.set_enabled(id, enabled, Source::Manual);
+    let result = manager.set_enabled_with(id, enabled, Source::Manual, unlocked);
     warn_if_history_incomplete(core, failures_before, "changing a startup entry");
     let change = result?;
     Ok(StartupChangeResult {
@@ -1140,7 +1248,36 @@ fn startup_source_view(origin: StartupOrigin) -> StartupSource {
         StartupOrigin::MachineRun32 => StartupSource::MachineRun32,
         StartupOrigin::UserFolder => StartupSource::UserFolder,
         StartupOrigin::CommonFolder => StartupSource::CommonFolder,
+        StartupOrigin::UserRunOnce => StartupSource::UserRunOnce,
+        StartupOrigin::MachineRunOnce => StartupSource::MachineRunOnce,
+        StartupOrigin::MachineRunOnce32 => StartupSource::MachineRunOnce32,
         _ => StartupSource::Other,
+    }
+}
+
+fn protection_view(protection: StartupProtection) -> StartupProtectionView {
+    match protection {
+        StartupProtection::None => StartupProtectionView::None,
+        StartupProtection::Microsoft => StartupProtectionView::Microsoft,
+        StartupProtection::Critical => StartupProtectionView::Critical,
+    }
+}
+
+fn lock_view(lock: StartupLock) -> StartupLockView {
+    match lock {
+        StartupLock::Critical => StartupLockView::Critical,
+        StartupLock::NeedsAdministrator => StartupLockView::NeedsAdministrator,
+        StartupLock::NeedsHelper => StartupLockView::NeedsHelper,
+        StartupLock::NotYet => StartupLockView::NotYet,
+        StartupLock::Microsoft => StartupLockView::Microsoft,
+    }
+}
+
+fn approval_view(approval: ApprovalRecord) -> StartupApprovalView {
+    match approval {
+        ApprovalRecord::Recorded => StartupApprovalView::Recorded,
+        ApprovalRecord::Missing => StartupApprovalView::Missing,
+        ApprovalRecord::NotUsed => StartupApprovalView::NotUsed,
     }
 }
 
@@ -1154,6 +1291,9 @@ fn startup_entry_view(entry: &StartupEntry) -> StartupEntryView {
         publisher: entry.publisher.clone(),
         enabled: entry.state == StartupState::Enabled,
         needs_admin: entry.origin.scope() == StartupScope::Machine,
+        protection: protection_view(entry.protection),
+        lock: entry.lock().map(lock_view),
+        approval: approval_view(entry.approval),
     }
 }
 

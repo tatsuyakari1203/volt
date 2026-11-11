@@ -1,10 +1,14 @@
-//! In-memory fakes of the [`FilePublisher`], [`ShortcutResolver`] and [`LogonTasks`] ports.
+//! In-memory fakes of the [`FilePublisher`], [`ShortcutResolver`], [`LogonTasks`] and
+//! [`AutoStartServices`] ports.
 
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use super::{FilePublisher, LogonTask, LogonTasks, ShortcutResolver, ShortcutTarget};
+use super::{
+    AutoStartService, AutoStartServices, FilePublisher, LogonTask, LogonTasks, ShortcutResolver,
+    ShortcutTarget,
+};
 use crate::error::PortError;
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -130,6 +134,36 @@ impl FakeLogonTasks {
 impl LogonTasks for FakeLogonTasks {
     fn logon_tasks(&self) -> Result<Vec<LogonTask>, PortError> {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        lock(&self.answer).clone()
+    }
+}
+
+/// An [`AutoStartServices`] source whose answer is set by the test.
+#[derive(Debug)]
+pub struct FakeAutoStartServices {
+    answer: Mutex<Result<Vec<AutoStartService>, PortError>>,
+}
+
+impl FakeAutoStartServices {
+    /// A source with these services.
+    #[must_use]
+    pub fn new(services: Vec<AutoStartService>) -> Self {
+        Self {
+            answer: Mutex::new(Ok(services)),
+        }
+    }
+
+    /// A source that cannot be read.
+    #[must_use]
+    pub fn failing(error: PortError) -> Self {
+        Self {
+            answer: Mutex::new(Err(error)),
+        }
+    }
+}
+
+impl AutoStartServices for FakeAutoStartServices {
+    fn auto_start_services(&self) -> Result<Vec<AutoStartService>, PortError> {
         lock(&self.answer).clone()
     }
 }

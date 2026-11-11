@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   ScheduledTaskView,
+  ServiceView,
   StartupChangeResult,
   StartupEntryView,
   StartupList,
@@ -31,6 +32,9 @@ const sync: StartupEntryView = {
   publisher: 'Sample Software Ltd',
   enabled: true,
   needsAdmin: false,
+  protection: 'none',
+  lock: null,
+  approval: 'missing',
 };
 
 const updater: StartupEntryView = {
@@ -42,6 +46,9 @@ const updater: StartupEntryView = {
   publisher: null,
   enabled: true,
   needsAdmin: true,
+  protection: 'none',
+  lock: 'needsAdministrator',
+  approval: 'recorded',
 };
 
 const disabledNotes: StartupEntryView = {
@@ -54,6 +61,9 @@ const disabledNotes: StartupEntryView = {
   publisher: null,
   enabled: false,
   needsAdmin: false,
+  protection: 'none',
+  lock: null,
+  approval: 'recorded',
 };
 
 function list(
@@ -61,8 +71,18 @@ function list(
   problems: StartupProblemView[] = [],
   tasks: ScheduledTaskView[] = [],
   tasksProblem: string | null = null,
+  extra: Partial<StartupList> = {},
 ): StartupList {
-  return { entries, problems, tasks, tasksProblem };
+  return {
+    entries,
+    problems,
+    tasks,
+    tasksProblem,
+    once: [],
+    services: [],
+    servicesProblem: null,
+    ...extra,
+  };
 }
 
 function changed(
@@ -231,7 +251,7 @@ describe('changing an entry', () => {
     const toggle = await screen.findByRole('switch', { name: 'Sample Sync' });
 
     await user.click(toggle);
-    expect(ipc.setStartupEntryEnabled).toHaveBeenCalledWith('user-run/Sample Sync', false);
+    expect(ipc.setStartupEntryEnabled).toHaveBeenCalledWith('user-run/Sample Sync', false, false);
     // While the command runs the switch is locked and the row says what is happening.
     expect(toggle.hasAttribute('disabled')).toBe(true);
     expect(screen.getByText('Turning off...')).toBeTruthy();
@@ -253,7 +273,7 @@ describe('changing an entry', () => {
     renderScreen();
     const toggle = await screen.findByRole('switch', { name: 'Notes' });
     await user.click(toggle);
-    expect(ipc.setStartupEntryEnabled).toHaveBeenCalledWith('user-folder/Notes.lnk', true);
+    expect(ipc.setStartupEntryEnabled).toHaveBeenCalledWith('user-folder/Notes.lnk', true, false);
     await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('true'));
     expect(await screen.findByText(/will start with Windows again/)).toBeTruthy();
   });
@@ -369,6 +389,8 @@ describe('scheduled tasks at sign-in', () => {
     publisher: 'Sample Software Ltd',
     enabled: true,
     microsoft: false,
+    protection: 'none',
+    lock: 'notYet',
     ...over,
   });
 
@@ -379,19 +401,33 @@ describe('scheduled tasks at sign-in', () => {
         [],
         [
           task({}),
-          task({ name: 'Windows Thing', microsoft: true, enabled: false, publisher: null }),
+          task({
+            name: 'Windows Thing',
+            microsoft: true,
+            enabled: false,
+            publisher: null,
+            protection: 'microsoft',
+            lock: 'needsHelper',
+          }),
         ],
       ),
     );
+    const user = userEvent.setup();
     renderScreen();
     const group = await screen.findByRole('list', { name: 'Scheduled tasks' });
+    // Windows' own tasks are hidden until the user asks to see them.
+    expect(within(group).getAllByRole('listitem')).toHaveLength(1);
+    expect(screen.getByText('Windows items hidden: 1.')).toBeTruthy();
+    await user.click(screen.getByRole('switch', { name: 'Show Windows items' }));
     const [first, second] = within(group).getAllByRole('listitem') as [HTMLElement, HTMLElement];
     const rows = [first, second];
     expect(rows).toHaveLength(2);
     expect(within(group).queryByRole('switch')).toBeNull();
     expect(within(first).getByText('Third-party')).toBeTruthy();
+    expect(within(first).getByText('Volt cannot switch scheduled tasks yet.')).toBeTruthy();
     expect(within(second).getByText('Microsoft')).toBeTruthy();
     expect(within(second).getByText('Disabled')).toBeTruthy();
+    expect(within(second).getByText(/needs the administrator helper/)).toBeTruthy();
     expect(screen.getByText(/changing them comes later/)).toBeTruthy();
     // The count above the switchable list is not changed by tasks.
     expect(screen.getByText('1 entry, 1 on')).toBeTruthy();
@@ -403,5 +439,189 @@ describe('scheduled tasks at sign-in', () => {
     expect(await screen.findByRole('list', { name: 'Scheduled tasks' })).toBeTruthy();
     expect(screen.queryByText('Nothing starts with Windows')).toBeNull();
     expect(screen.getByText(/Scheduled tasks could not be read \(access denied\)/)).toBeTruthy();
+  });
+});
+
+describe('items Microsoft publishes and items Windows needs', () => {
+  const cloud: StartupEntryView = {
+    ...sync,
+    id: 'user-run/Cloud Sync',
+    name: 'Cloud Sync',
+    publisher: 'Microsoft Corporation',
+    protection: 'microsoft',
+    lock: 'microsoft',
+  };
+  const shield: StartupEntryView = {
+    ...sync,
+    id: 'user-run/SecurityHealth',
+    name: 'SecurityHealth',
+    publisher: 'Microsoft Corporation',
+    protection: 'critical',
+    lock: 'critical',
+  };
+
+  it('keeps a Microsoft entry locked until the user allows changes, then passes that on', async () => {
+    const user = userEvent.setup();
+    ipc.listStartupEntries.mockResolvedValue(list([cloud]));
+    ipc.setStartupEntryEnabled.mockResolvedValue(changed(cloud, false));
+    renderScreen();
+    const toggle = await screen.findByRole('switch', { name: 'Cloud Sync' });
+    expect(toggle.hasAttribute('disabled')).toBe(true);
+    expect(screen.getByText(/Published by Microsoft/)).toBeTruthy();
+    expect(screen.getByText('Windows item')).toBeTruthy();
+
+    // Allowing changes is only possible after the Windows items are shown.
+    const allow = screen.getByRole('switch', { name: 'Allow changes to Windows items' });
+    expect(allow.hasAttribute('disabled')).toBe(true);
+    await user.click(screen.getByRole('switch', { name: 'Show Windows items' }));
+    await user.click(allow);
+    expect(toggle.hasAttribute('disabled')).toBe(false);
+    expect(screen.queryByText(/Published by Microsoft/)).toBeNull();
+
+    await user.click(toggle);
+    expect(ipc.setStartupEntryEnabled).toHaveBeenCalledWith('user-run/Cloud Sync', false, true);
+  });
+
+  it('never unlocks an item Windows needs, and hiding Windows items locks Microsoft ones again', async () => {
+    const user = userEvent.setup();
+    ipc.listStartupEntries.mockResolvedValue(list([cloud, shield]));
+    renderScreen();
+    await screen.findByRole('switch', { name: 'Cloud Sync' });
+    await user.click(screen.getByRole('switch', { name: 'Show Windows items' }));
+    await user.click(screen.getByRole('switch', { name: 'Allow changes to Windows items' }));
+    expect(screen.getByRole('switch', { name: 'Cloud Sync' }).hasAttribute('disabled')).toBe(false);
+    const critical = screen.getByRole('switch', { name: 'SecurityHealth' });
+    expect(critical.hasAttribute('disabled')).toBe(true);
+    expect(screen.getByText('Needed by Windows')).toBeTruthy();
+    expect(screen.getByText('Windows needs this, so it cannot be switched.')).toBeTruthy();
+
+    await user.click(screen.getByRole('switch', { name: 'Show Windows items' }));
+    expect(screen.getByRole('switch', { name: 'Cloud Sync' }).hasAttribute('disabled')).toBe(true);
+    expect(
+      screen
+        .getByRole('switch', { name: 'Allow changes to Windows items' })
+        .hasAttribute('disabled'),
+    ).toBe(true);
+  });
+
+  it('does not offer the Windows items switches when nothing is protected', async () => {
+    ipc.listStartupEntries.mockResolvedValue(list([sync]));
+    renderScreen();
+    await screen.findByRole('switch', { name: 'Sample Sync' });
+    expect(screen.queryByRole('switch', { name: 'Show Windows items' })).toBeNull();
+  });
+});
+
+describe('the StartupApproved flag and RunOnce entries', () => {
+  const step: StartupEntryView = {
+    id: 'user-once/Setup Step',
+    name: 'Setup Step',
+    source: 'userRunOnce',
+    sourceLabel: 'Run once (you)',
+    command: 'C:\\Sample\\setup.exe /finish',
+    publisher: null,
+    enabled: true,
+    needsAdmin: false,
+    protection: 'none',
+    lock: null,
+    approval: 'notUsed',
+  };
+
+  it('says what the flag decides for each kind of entry', async () => {
+    ipc.listStartupEntries.mockResolvedValue(list([sync, disabledNotes]));
+    renderScreen();
+    expect(
+      await screen.findByText('It has no StartupApproved flag, so Windows starts it.'),
+    ).toBeTruthy();
+    expect(screen.getByText(/flag Windows keeps for it is off, so it does not start/)).toBeTruthy();
+  });
+
+  it("lists RunOnce entries apart, explains them and switches the user's own", async () => {
+    const user = userEvent.setup();
+    const machine: StartupEntryView = {
+      ...step,
+      id: 'machine-once/Vendor Step',
+      name: 'Vendor Step',
+      source: 'machineRunOnce',
+      needsAdmin: true,
+      lock: 'needsAdministrator',
+    };
+    ipc.listStartupEntries.mockResolvedValue(list([sync], [], [], null, { once: [step, machine] }));
+    ipc.setStartupEntryEnabled.mockResolvedValue(changed(step, false));
+    renderScreen();
+    const group = await screen.findByRole('list', { name: 'Run once entries' });
+    expect(screen.getByText('Runs once at the next sign-in')).toBeTruthy();
+    expect(screen.getByText(/It keeps no on\/off flag for them/)).toBeTruthy();
+    expect(within(group).getAllByRole('listitem')).toHaveLength(2);
+    expect(
+      within(group).getByRole('switch', { name: 'Vendor Step' }).hasAttribute('disabled'),
+    ).toBe(true);
+    // RunOnce entries do not count towards the entries above.
+    expect(screen.getByText('1 entry, 1 on')).toBeTruthy();
+
+    await user.click(within(group).getByRole('switch', { name: 'Setup Step' }));
+    expect(ipc.setStartupEntryEnabled).toHaveBeenCalledWith('user-once/Setup Step', false, false);
+    await waitFor(() =>
+      expect(
+        within(group).getByRole('switch', { name: 'Setup Step' }).getAttribute('aria-checked'),
+      ).toBe('false'),
+    );
+  });
+});
+
+describe('services that start automatically', () => {
+  const service = (over: Partial<ServiceView>): ServiceView => ({
+    name: 'SampleSync',
+    displayName: 'Sample Sync Service',
+    command: '"C:\\Program Files\\Sample\\sync.exe" --service',
+    publisher: 'Sample Software Ltd',
+    delayed: false,
+    account: 'LocalSystem',
+    protection: 'none',
+    lock: 'needsHelper',
+    ...over,
+  });
+
+  it('lists third-party services read-only and hides Windows ones until asked', async () => {
+    const user = userEvent.setup();
+    ipc.listStartupEntries.mockResolvedValue(
+      list([], [], [], null, {
+        services: [
+          service({}),
+          service({
+            name: 'Dnscache',
+            displayName: 'DNS Client',
+            publisher: 'Microsoft Corporation',
+            protection: 'critical',
+            lock: 'critical',
+            delayed: true,
+            account: '',
+          }),
+        ],
+      }),
+    );
+    renderScreen();
+    const group = await screen.findByRole('list', { name: 'Services' });
+    expect(within(group).getAllByRole('listitem')).toHaveLength(1);
+    expect(within(group).queryByRole('switch')).toBeNull();
+    expect(within(group).getByText('Sample Sync Service')).toBeTruthy();
+    expect(within(group).getByText('Publisher: Sample Software Ltd')).toBeTruthy();
+    expect(within(group).getByText('Runs as: LocalSystem')).toBeTruthy();
+    expect(within(group).getByText(/needs the administrator helper/)).toBeTruthy();
+    expect(screen.getByText('Windows items hidden: 1.')).toBeTruthy();
+
+    await user.click(screen.getByRole('switch', { name: 'Show Windows items' }));
+    expect(within(group).getAllByRole('listitem')).toHaveLength(2);
+    expect(within(group).getByText('Delayed start')).toBeTruthy();
+    expect(within(group).getByText('Needed by Windows')).toBeTruthy();
+    expect(within(group).getByText('Windows needs this, so it cannot be switched.')).toBeTruthy();
+  });
+
+  it('says when the services could not be read', async () => {
+    ipc.listStartupEntries.mockResolvedValue(
+      list([sync], [], [], null, { servicesProblem: 'access denied' }),
+    );
+    renderScreen();
+    expect(await screen.findByText(/Services could not be read \(access denied\)/)).toBeTruthy();
   });
 });

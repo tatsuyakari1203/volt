@@ -114,16 +114,19 @@ pub(crate) async fn list_startup_entries(
 }
 
 /// Tauri command: switches a startup entry on or off the way Windows does, through the undo
-/// journal. Entries that apply to every user answer `accessDenied` (administrator rights).
+/// journal. Entries that apply to every user answer `accessDenied` (administrator rights), and so
+/// do entries Microsoft publishes unless `unlocked` says the user unlocked Windows items; entries
+/// Windows cannot run without are always refused.
 #[tauri::command]
 #[specta::specta]
 pub(crate) async fn set_startup_entry_enabled(
     state: State<'_, AppState>,
     id: String,
     enabled: bool,
+    unlocked: bool,
 ) -> Result<StartupChangeResult, IpcError> {
     blocking(&state, move |core| {
-        api::set_startup_entry_enabled(core, &id, enabled)
+        api::set_startup_entry_enabled(core, &id, enabled, unlocked)
     })
     .await
 }

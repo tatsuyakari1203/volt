@@ -16,6 +16,12 @@ use crate::registry::{RegistryHive, RegistryKeyRef, RegistryView};
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 /// Where Windows keeps the approval records, below a hive.
 const APPROVED_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved";
+/// The `RunOnce` key, below a hive.
+const RUN_ONCE_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\RunOnce";
+/// Where Volt keeps the per-user `RunOnce` entries it switched off. Windows keeps no record for
+/// `RunOnce` (it has no `StartupApproved` kind), so a switched-off entry is moved here and moved
+/// back when it is switched on.
+const HELD_RUN_ONCE_KEY: &str = r"Software\Volt\HeldStartup\RunOnce";
 /// The per-user Startup folder, below the roaming application data folder.
 const USER_STARTUP_FOLDER: [&str; 5] =
     ["Microsoft", "Windows", "Start Menu", "Programs", "Startup"];
@@ -46,16 +52,25 @@ pub enum StartupOrigin {
     UserFolder,
     /// The Startup folder shared by all users.
     CommonFolder,
+    /// `HKCU\...\RunOnce`: runs once at the next sign-in, then Windows removes it.
+    UserRunOnce,
+    /// `HKLM\...\RunOnce`, the 64-bit view.
+    MachineRunOnce,
+    /// `HKLM\...\RunOnce`, the 32-bit view.
+    MachineRunOnce32,
 }
 
 impl StartupOrigin {
     /// Every origin, in the order the sources are read.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 8] = [
         Self::UserRun,
         Self::MachineRun,
         Self::MachineRun32,
         Self::UserFolder,
         Self::CommonFolder,
+        Self::UserRunOnce,
+        Self::MachineRunOnce,
+        Self::MachineRunOnce32,
     ];
 
     /// A stable id, used inside entry ids and by the UI.
@@ -67,6 +82,9 @@ impl StartupOrigin {
             Self::MachineRun32 => "machine-run-32",
             Self::UserFolder => "user-folder",
             Self::CommonFolder => "common-folder",
+            Self::UserRunOnce => "user-once",
+            Self::MachineRunOnce => "machine-once",
+            Self::MachineRunOnce32 => "machine-once-32",
         }
     }
 
@@ -80,9 +98,23 @@ impl StartupOrigin {
     #[must_use]
     pub const fn scope(self) -> StartupScope {
         match self {
-            Self::UserRun | Self::UserFolder => StartupScope::User,
-            Self::MachineRun | Self::MachineRun32 | Self::CommonFolder => StartupScope::Machine,
+            Self::UserRun | Self::UserFolder | Self::UserRunOnce => StartupScope::User,
+            Self::MachineRun
+            | Self::MachineRun32
+            | Self::CommonFolder
+            | Self::MachineRunOnce
+            | Self::MachineRunOnce32 => StartupScope::Machine,
         }
+    }
+
+    /// Whether entries of this origin are `RunOnce` values: they run once and are then removed
+    /// by Windows, and `StartupApproved` does not apply to them.
+    #[must_use]
+    pub const fn is_run_once(self) -> bool {
+        matches!(
+            self,
+            Self::UserRunOnce | Self::MachineRunOnce | Self::MachineRunOnce32
+        )
     }
 
     /// Whether entries of this origin are files in a Startup folder (rather
@@ -101,6 +133,9 @@ impl StartupOrigin {
             Self::MachineRun32 => "Run, 32-bit (all users)",
             Self::UserFolder => "Startup folder (you)",
             Self::CommonFolder => "Startup folder (all users)",
+            Self::UserRunOnce => "Run once (you)",
+            Self::MachineRunOnce => "Run once (all users)",
+            Self::MachineRunOnce32 => "Run once, 32-bit (all users)",
         }
     }
 }
@@ -122,6 +157,18 @@ pub struct RunSource {
     pub approval: RegistryKeyRef,
 }
 
+/// A `RunOnce` key. Windows keeps no approval record for it, so a switched-off entry of the
+/// current user is held in a key of Volt's own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OnceSource {
+    /// Where the entries come from.
+    pub origin: StartupOrigin,
+    /// The `RunOnce` key.
+    pub key: RegistryKeyRef,
+    /// Where switched-off entries are kept; `None` for a source that cannot be switched.
+    pub held: Option<RegistryKeyRef>,
+}
+
 /// A Startup folder and the approval key that holds the state of its files.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FolderSource {
@@ -140,6 +187,8 @@ pub struct StartupSources {
     pub runs: Vec<RunSource>,
     /// Startup folders.
     pub folders: Vec<FolderSource>,
+    /// `RunOnce` keys.
+    pub once: Vec<OnceSource>,
 }
 
 impl StartupSources {
@@ -202,6 +251,39 @@ impl StartupSources {
                     approval: approval(RegistryHive::LocalMachine, "StartupFolder"),
                 },
             ],
+            once: vec![
+                OnceSource {
+                    origin: StartupOrigin::UserRunOnce,
+                    key: RegistryKeyRef::new(
+                        RegistryHive::CurrentUser,
+                        RUN_ONCE_KEY,
+                        RegistryView::Bit64,
+                    ),
+                    held: Some(RegistryKeyRef::new(
+                        RegistryHive::CurrentUser,
+                        HELD_RUN_ONCE_KEY,
+                        RegistryView::Bit64,
+                    )),
+                },
+                OnceSource {
+                    origin: StartupOrigin::MachineRunOnce,
+                    key: RegistryKeyRef::new(
+                        RegistryHive::LocalMachine,
+                        RUN_ONCE_KEY,
+                        RegistryView::Bit64,
+                    ),
+                    held: None,
+                },
+                OnceSource {
+                    origin: StartupOrigin::MachineRunOnce32,
+                    key: RegistryKeyRef::new(
+                        RegistryHive::LocalMachine,
+                        RUN_ONCE_KEY,
+                        RegistryView::Bit32,
+                    ),
+                    held: None,
+                },
+            ],
         }
     }
 
@@ -253,6 +335,23 @@ impl StartupSources {
                     approval: machine_approval("StartupFolder"),
                 },
             ],
+            once: vec![
+                OnceSource {
+                    origin: StartupOrigin::UserRunOnce,
+                    key: key(format!(r"{root}\RunOnce")),
+                    held: Some(key(format!(r"{root}\HeldRunOnce"))),
+                },
+                OnceSource {
+                    origin: StartupOrigin::MachineRunOnce,
+                    key: key(format!(r"{root}\RunOnceMachine")),
+                    held: None,
+                },
+                OnceSource {
+                    origin: StartupOrigin::MachineRunOnce32,
+                    key: key(format!(r"{root}\RunOnceMachine32")),
+                    held: None,
+                },
+            ],
         }
     }
 }
@@ -280,7 +379,14 @@ mod tests {
             .into_iter()
             .filter(|o| o.scope() == StartupScope::User)
             .collect();
-        assert_eq!(user, [StartupOrigin::UserRun, StartupOrigin::UserFolder]);
+        assert_eq!(
+            user,
+            [
+                StartupOrigin::UserRun,
+                StartupOrigin::UserFolder,
+                StartupOrigin::UserRunOnce
+            ]
+        );
     }
 
     #[test]
@@ -364,12 +470,43 @@ mod tests {
             .runs
             .iter()
             .flat_map(|s| [&s.key, &s.approval])
-            .chain(sources.folders.iter().map(|f| &f.approval));
+            .chain(sources.folders.iter().map(|f| &f.approval))
+            .chain(
+                sources
+                    .once
+                    .iter()
+                    .flat_map(|s| std::iter::once(&s.key).chain(s.held.as_ref())),
+            );
         for key in keys {
             assert_eq!(key.hive, RegistryHive::CurrentUser);
             assert!(key.subkey.starts_with(r"Software\VoltTest\x\"), "{key}");
         }
         assert_eq!(sources.runs.len(), 3);
         assert_eq!(sources.folders.len(), 2);
+        assert_eq!(sources.once.len(), 3);
+    }
+
+    #[test]
+    fn only_the_users_run_once_key_has_a_place_to_hold_switched_off_entries() {
+        let sources = StartupSources::windows(&FakeKnownFolders::new());
+        for source in &sources.once {
+            assert!(source.origin.is_run_once());
+            assert_eq!(
+                source.held.is_some(),
+                source.origin.scope() == StartupScope::User,
+                "{}",
+                source.origin
+            );
+        }
+        let user = sources
+            .once
+            .iter()
+            .find(|s| s.origin == StartupOrigin::UserRunOnce)
+            .expect("user source");
+        assert_eq!(user.key.hive, RegistryHive::CurrentUser);
+        assert_eq!(
+            user.held.as_ref().map(|key| key.subkey.as_str()),
+            Some(r"Software\Volt\HeldStartup\RunOnce")
+        );
     }
 }

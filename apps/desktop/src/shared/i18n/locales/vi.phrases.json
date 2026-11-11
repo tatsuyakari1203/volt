@@ -259,6 +259,8 @@
   "err.startup.needsAdmin": "Thay đổi \"{name}\" cần quyền quản trị.",
   "err.startup.read": "Volt không đọc được mục khởi động ({class}).",
   "err.startup.change": "Không thay đổi được mục khởi động: {reason}.",
+  "err.startup.protected": "\"{name}\" là mục của Windows và đang bị khóa. Hãy mở khóa mục Windows để thay đổi.",
+  "err.startup.critical": "\"{name}\" cần cho Windows nên không thể thay đổi.",
   "err.tweak.unknown": "không có tinh chỉnh `{tweak}`",
   "err.tweak.needsAdmin": "tinh chỉnh `{tweak}` cần quyền quản trị",
   "err.tweak.detect": "tinh chỉnh `{tweak}`: không đọc được trạng thái hiện tại ({class})",

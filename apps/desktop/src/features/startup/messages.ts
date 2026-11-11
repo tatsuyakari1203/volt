@@ -1,8 +1,10 @@
 import { t } from '../../shared/i18n';
 import {
   IpcCommandError,
+  type StartupApprovalView,
   type StartupChangeResult,
   type StartupEntryView,
+  type StartupLockView,
   type StartupSource,
 } from '../../shared/ipc';
 import { describeError } from '../../shared/text/errors';
@@ -34,6 +36,12 @@ export function sourceName(source: StartupSource, english: string): string {
       return t('startup.source.userFolder');
     case 'commonFolder':
       return t('startup.source.commonFolder');
+    case 'userRunOnce':
+      return t('startup.source.userRunOnce');
+    case 'machineRunOnce':
+      return t('startup.source.machineRunOnce');
+    case 'machineRunOnce32':
+      return t('startup.source.machineRunOnce32');
     default:
       // `other` is a source this UI does not know: the core's own words are the best there are.
       return english;
@@ -139,4 +147,47 @@ export function shortenCommand(command: string, max = 56): string {
 /** One sentence when the scheduled tasks could not be read. */
 export function describeTasksProblem(reason: string | null): string | null {
   return reason ? t('startup.tasks.problem', { reason: problemReason(reason) }) : null;
+}
+
+/**
+ * Why a switch is locked, in words, or `null` when it is not. Microsoft's items are locked only
+ * until the user allows changes to Windows items; the rest do not depend on that choice.
+ */
+export function lockText(lock: StartupLockView | null, unlocked: boolean): string | null {
+  switch (lock) {
+    case null:
+      return null;
+    case 'critical':
+      return t('startup.lock.critical');
+    case 'microsoft':
+      return unlocked ? null : t('startup.lock.microsoft');
+    case 'needsAdministrator':
+      return t('startup.lock.needsAdministrator');
+    case 'needsHelper':
+      return t('startup.lock.needsHelper');
+    case 'notYet':
+      return t('startup.lock.notYet');
+    default:
+      return assertNever(lock);
+  }
+}
+
+/** Whether an entry's switch cannot be used now. The core refuses the same changes. */
+export function isLocked(entry: StartupEntryView, unlocked: boolean): boolean {
+  if (entry.needsAdmin || entry.lock === 'critical') return true;
+  return entry.lock === 'microsoft' && !unlocked;
+}
+
+/** What the StartupApproved flag says about an entry, where it decides whether the entry runs. */
+export function approvalText(approval: StartupApprovalView, enabled: boolean): string {
+  switch (approval) {
+    case 'recorded':
+      return t(enabled ? 'startup.flag.recordedOn' : 'startup.flag.recordedOff');
+    case 'missing':
+      return t('startup.flag.missing');
+    case 'notUsed':
+      return t(enabled ? 'startup.flag.notUsedOn' : 'startup.flag.notUsedOff');
+    default:
+      return assertNever(approval);
+  }
 }
