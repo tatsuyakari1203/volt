@@ -527,16 +527,20 @@ mod tests {
         let window = Arc::new(AtomicBool::new(true));
         let published = Arc::new(AtomicU64::new(0));
         let sampler = fake_sampler(&fake, &window, &published);
+        let started = Instant::now();
         for _ in 0..3 {
             sampler.set_window_open(|| window.load(Ordering::SeqCst));
         }
         thread::sleep(TICK * 20);
         sampler.stop_and_wait();
-        // One thread reads at most once per tick (plus the baseline); three would triple that.
-        let reads = fake.reads();
+        // One thread reads at most once per tick (plus the baseline and one more at the edge);
+        // three would triple that. The bound follows the time that really passed, so a busy
+        // machine that oversleeps only raises the allowance.
+        let ticks = started.elapsed().as_millis() / TICK.as_millis();
+        let reads = fake.reads() as u128;
         assert!(
-            reads <= 20 + 2,
-            "{reads} reads in 20 ticks means more than one thread"
+            reads <= ticks + 2,
+            "{reads} reads in {ticks} ticks means more than one thread"
         );
     }
 
@@ -621,13 +625,23 @@ mod tests {
         assert!(stats.samples >= 3);
     }
 
-    /// A source that takes four ticks to answer and counts its reads.
-    struct SlowSource(Arc<AtomicU64>);
+    /// A source whose reads block until the test lets them through, and that records how many
+    /// reads are in flight at once. No timing is involved: the test decides when a read ends.
+    struct GatedSource {
+        reads: Arc<AtomicU64>,
+        in_flight: Arc<AtomicU64>,
+        max_in_flight: Arc<AtomicU64>,
+        gate: Mutex<Receiver<()>>,
+    }
 
-    impl MetricsSource for SlowSource {
+    impl MetricsSource for GatedSource {
         fn read(&self) -> Result<volt_core::RawSample, PortError> {
-            self.0.fetch_add(1, Ordering::SeqCst);
-            thread::sleep(TICK * 4);
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_in_flight.fetch_max(now, Ordering::SeqCst);
+            // A generous timeout only so a broken loop fails the test instead of hanging it.
+            let _ = lock(&self.gate).recv_timeout(Duration::from_secs(10));
+            self.in_flight.fetch_sub(1, Ordering::SeqCst);
             Ok(typical_sample())
         }
     }
@@ -635,23 +649,53 @@ mod tests {
     #[test]
     fn a_slow_source_does_not_pile_up_reads() {
         let reads = Arc::new(AtomicU64::new(0));
-        let started = Instant::now();
-        let (stop, worker) = spawn_loop(SlowSource(Arc::clone(&reads)), TICK, |_| {});
-        thread::sleep(TICK * 40);
-        let _ = stop.send(());
-        let stats = worker.join().unwrap_or_default();
-        let elapsed = started.elapsed();
+        let in_flight = Arc::new(AtomicU64::new(0));
+        let max_in_flight = Arc::new(AtomicU64::new(0));
+        let (open, gate) = mpsc::channel();
+        let source = GatedSource {
+            reads: Arc::clone(&reads),
+            in_flight: Arc::clone(&in_flight),
+            max_in_flight: Arc::clone(&max_in_flight),
+            gate: Mutex::new(gate),
+        };
+        let published = Arc::new(AtomicU64::new(0));
+        let counter = Arc::clone(&published);
+        let (stop, worker) = spawn_loop(source, TICK, move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
 
-        // One thread, one read at a time: the number of reads cannot exceed the time that
-        // passed divided by the cost of a read (plus the baseline and one in flight). A queue
-        // of missed ticks would have run one read per tick, four times as many.
-        let ticks_of_work = elapsed.as_millis() / (TICK * 4).as_millis();
-        let reads = u128::from(reads.load(Ordering::SeqCst));
-        assert!(
-            reads <= ticks_of_work + 3,
-            "{reads} reads of a 4-tick source in {elapsed:?}"
+        // The baseline read is in flight and blocked.
+        assert!(wait_until(|| reads.load(Ordering::SeqCst) == 1));
+        let _ = open.send(());
+        // The first sampled read starts and blocks: the source is now "slow".
+        assert!(wait_until(|| reads.load(Ordering::SeqCst) == 2));
+        // Many ticks pass while it is blocked (the loop is single threaded, so none can start
+        // a second read, and none is queued behind this one).
+        thread::sleep(TICK * 20);
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            2,
+            "no read started during a read"
         );
-        assert!(stats.samples >= 2, "{stats:?}");
+        assert_eq!(published.load(Ordering::SeqCst), 0);
+
+        // Let the slow read finish: exactly one snapshot, then the loop goes on to a new read.
+        let _ = open.send(());
+        assert!(wait_until(|| reads.load(Ordering::SeqCst) == 3));
+        assert_eq!(published.load(Ordering::SeqCst), 1);
+
+        // Stop while a read is blocked, then let it through: no snapshot is published after it.
+        let _ = stop.send(());
+        let _ = open.send(());
+        let stats = worker.join().unwrap_or_default();
+        assert_eq!(stats.samples, 1, "{stats:?}");
+        assert_eq!(published.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            max_in_flight.load(Ordering::SeqCst),
+            1,
+            "reads never overlapped"
+        );
+        assert_eq!(in_flight.load(Ordering::SeqCst), 0);
     }
 
     #[test]
