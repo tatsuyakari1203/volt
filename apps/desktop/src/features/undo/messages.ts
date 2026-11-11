@@ -130,6 +130,8 @@ export function describeUndo(result: UndoResult, scope: 'change' | 'batch'): Not
       return { tone: 'problem', message: t('undo.notConfirmed'), details };
     case 'blocked':
       return { tone: 'problem', message: t('undo.blocked'), details };
+    case 'timedOut':
+      return { tone: 'problem', message: t('undo.timedOut'), details };
     case 'needsAcknowledgement':
       return {
         tone: 'problem',

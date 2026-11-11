@@ -2,8 +2,13 @@
 //!
 //! The helper writes the question itself, from text embedded in the helper: nothing the client sent
 //! beyond the tweak id ever reaches it, and the tweak's name comes from the helper's own
-//! catalogue (English) or from the Vietnamese catalogue file embedded next to it. The language is
-//! the display language of Windows, read by the helper (it has no settings of the UI to ask).
+//! catalogue (English) or from the Vietnamese catalogue file embedded next to it.
+//!
+//! The language is the MACHINE's display language (`GetSystemDefaultUILanguage`), not the signed-in
+//! user's: the user's display language is a setting in their registry hive, and no user-hive setting
+//! may reach the elevated helper (decision on the helper, amendment 5). The machine value cannot be
+//! changed without administrator rights, and all it does is choose between the two texts embedded
+//! in this file, so nothing a user-level program does can put another text in front of the person.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -26,24 +31,21 @@ pub enum Lang {
 }
 
 impl Lang {
-    /// The language of a BCP 47 name such as `vi-VN`: Vietnamese for `vi` and its regions, English
-    /// for everything else.
+    /// The language of a Windows language id: Vietnamese for Vietnamese in any region, English for
+    /// everything else.
     #[must_use]
-    pub fn from_tag(tag: &str) -> Self {
-        let tag = tag.to_ascii_lowercase();
-        if tag == "vi" || tag.starts_with("vi-") {
+    pub fn from_language_id(language_id: u16) -> Self {
+        if volt_win::primary_language(language_id) == volt_win::LANG_VIETNAMESE {
             Self::Vietnamese
         } else {
             Self::English
         }
     }
 
-    /// The display language of Windows, English when Windows does not say.
+    /// The machine's display language, English when it is not Vietnamese.
     #[must_use]
-    pub fn of_windows() -> Self {
-        volt_win::display_languages()
-            .first()
-            .map_or(Self::English, |tag| Self::from_tag(tag))
+    pub fn of_machine() -> Self {
+        Self::from_language_id(volt_win::machine_ui_language_id())
     }
 }
 
@@ -156,12 +158,30 @@ mod tests {
     }
 
     #[test]
-    fn the_language_follows_the_windows_tag() {
-        assert_eq!(Lang::from_tag("vi-VN"), Lang::Vietnamese);
-        assert_eq!(Lang::from_tag("vi"), Lang::Vietnamese);
-        assert_eq!(Lang::from_tag("en-US"), Lang::English);
-        assert_eq!(Lang::from_tag("fr-FR"), Lang::English);
-        assert_eq!(Lang::from_tag(""), Lang::English);
+    fn the_language_follows_the_machine_language_id() {
+        assert_eq!(Lang::from_language_id(0x042A), Lang::Vietnamese);
+        assert_eq!(Lang::from_language_id(0x2A), Lang::Vietnamese);
+        assert_eq!(Lang::from_language_id(0x0409), Lang::English);
+        assert_eq!(Lang::from_language_id(0x040C), Lang::English);
+        assert_eq!(Lang::from_language_id(0), Lang::English);
+    }
+
+    #[test]
+    fn the_helper_never_reads_the_users_display_language() {
+        // The user's display language is a user-hive setting: only the machine's may be read here.
+        let needles = [
+            concat!("display", "_languages"),
+            concat!("GetUserPreferred", "UILanguages"),
+            concat!("GetUserDefault", "UILanguage"),
+        ];
+        for (file, text) in [
+            ("prompt_text.rs", include_str!("prompt_text.rs")),
+            ("confirm.rs", include_str!("confirm.rs")),
+        ] {
+            for needle in needles {
+                assert!(!text.contains(needle), "{file} mentions {needle}");
+            }
+        }
     }
 
     #[test]

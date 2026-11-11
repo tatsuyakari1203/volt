@@ -8,13 +8,13 @@ use std::sync::Arc;
 use tempfile::TempDir;
 use volt_core::elevation::fakes::{ElevatorCall, FakeElevator};
 use volt_core::fakes::FakeSystem;
-use volt_core::{Availability, MemoryArea, UnavailableReason};
+use volt_core::{Availability, MemoryArea, SystemProtection, UnavailableReason};
 use volt_desktop_lib::IpcError;
 use volt_desktop_lib::boost::boost_of;
 use volt_desktop_lib::catalogue::EMBEDDED_CATALOGUE;
 use volt_desktop_lib::elevation::{
-    ElevatedCleanResult, ElevationReasonView, ElevationStatusView, clean_memory_elevated_of,
-    elevation_status_of, end_session_of,
+    ElevatedCleanResult, ElevationReasonView, ElevationStatusView, SystemProtectionView,
+    clean_memory_elevated_of, elevation_status_of, end_session_of, system_protection_of_app,
 };
 use volt_desktop_lib::memory::{AreaStatus, MemoryAreaView};
 use volt_desktop_lib::wiring::{AppCore, build_core};
@@ -34,6 +34,23 @@ fn core_with(system: &FakeSystem, dir: &TempDir, elevator: Option<Arc<FakeElevat
 
 fn granted(system: &FakeSystem) -> Arc<FakeElevator> {
     Arc::new(FakeElevator::granted(system.memory.clone()))
+}
+
+#[test]
+fn system_protection_is_a_hint_read_without_a_prompt() {
+    let dir = TempDir::new().expect("temp dir");
+    let system = FakeSystem::new();
+    let elevator = granted(&system);
+    let core = core_with(&system, &dir, Some(elevator.clone()));
+    for (value, view) in [
+        (SystemProtection::On, SystemProtectionView::On),
+        (SystemProtection::Off, SystemProtectionView::Off),
+        (SystemProtection::Unknown, SystemProtectionView::Unknown),
+    ] {
+        elevator.set_system_protection(value);
+        assert_eq!(system_protection_of_app(&core).expect("hint"), view);
+    }
+    assert_eq!(elevator.prompts(), 0);
 }
 
 #[test]

@@ -48,6 +48,8 @@ const INHERITED: u8 = 0x10;
 const CI_TWEAK: &str = "ci-voltest-marker";
 /// The test-only tweak whose key the workflow made writable for Users.
 const OPEN_KEY_TWEAK: &str = "ci-voltest-open";
+/// The test-only tweak whose write ends the helper (the failpoint, see `src/failpoint.rs`).
+const CRASH_TWEAK: &str = "ci-voltest-crash";
 /// A real administrator tweak of the product catalogue that the refusal case asks for.
 const REAL_TWEAK: &str = "turn-off-error-reporting";
 
@@ -399,6 +401,7 @@ fn clean_up(registry: WinRegistry, with_open_key: bool) {
     let open = with_open_key.then_some(r"SOFTWARE\VoltTest\Open");
     for subkey in [
         Some(r"SOFTWARE\VoltTest\Ci"),
+        Some(r"SOFTWARE\VoltTest\Crash"),
         open,
         Some(r"SOFTWARE\VoltTest"),
     ]
@@ -565,9 +568,90 @@ pub(crate) fn tweaks_phase(report: &mut Report, image: &Path, me: &ProcessFacts)
     );
 
     open_key_refused(report, &elevator, registry);
+    killed_mid_apply(report, &elevator, registry);
 
     elevator.bye();
     clean_up(registry, true);
+}
+
+/// A helper that really ends between the journal write and the change. The harness build's registry
+/// ends the process at the first write of the crash tweak, after the engine journaled the previous
+/// value. The request ends with no answer, nothing was changed, and the NEXT helper start settles
+/// the pending entry: the activity log says the change never happened and there is nothing to
+/// revert.
+fn killed_mid_apply(report: &mut Report, elevator: &WinElevator, registry: WinRegistry) {
+    let value = RegistryValueRef::new(
+        RegistryHive::LocalMachine,
+        r"SOFTWARE\VoltTest\Crash",
+        "Marker",
+    );
+    let answer = elevator.tweak_apply(CRASH_TWEAK);
+    report.check(
+        "the helper ends at the failpoint, so the request gets no answer",
+        matches!(
+            answer,
+            Err(ElevationError::Disconnected | ElevationError::TimedOut)
+        ),
+        format!("{answer:?}"),
+    );
+    report.check(
+        "the change was never made: no value under the crash key",
+        registry.read_value(&value) == Ok(None),
+        format!("{:?}", registry.read_value(&value)),
+    );
+
+    // The next request starts a new helper, which settles the pending entry before it serves. The
+    // old process may need a moment to let go of the single-helper lock.
+    let mut hello = elevator.hello();
+    for _ in 0..5 {
+        if hello.is_ok() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+        hello = elevator.hello();
+    }
+    report.check(
+        "the next helper starts and serves",
+        hello.is_ok(),
+        format!("{:?}", hello.as_ref().map(|h| h.helper_version.clone())),
+    );
+    // A reply holds as many records as fit one message, so read the log page by page to its end.
+    let mut records = Vec::new();
+    let mut after = 0_u64;
+    for _ in 0..50 {
+        let Ok(page) = elevator.history(after, 20) else {
+            break;
+        };
+        let Some(last) = page.records.last().map(|record| record.id.0) else {
+            break;
+        };
+        after = last;
+        records.extend(page.records);
+        if !page.more {
+            break;
+        }
+    }
+    let settled = records.iter().find(|record| {
+        record
+            .phrase
+            .as_ref()
+            .is_some_and(|phrase| phrase.code == "summary.interruptedNever")
+    });
+    report.check(
+        "the next start settled the interrupted apply: the log says the change never happened",
+        settled.is_some_and(|record| record.outcome == ActivityOutcome::Failed),
+        format!(
+            "{:?} of {} rows",
+            settled.map(|record| record.summary.clone()),
+            records.len()
+        ),
+    );
+    let nothing = elevator.tweak_revert(CRASH_TWEAK);
+    report.check(
+        "an apply that never happened leaves nothing to revert",
+        nothing == Err(ElevationError::Refused(ErrorCode::NothingToRevert)),
+        format!("{nothing:?}"),
+    );
 }
 
 /// A key on the path that a non-administrator can write: the workflow made `SOFTWARE\VoltTest\Open`

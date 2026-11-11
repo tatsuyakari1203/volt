@@ -427,6 +427,7 @@ pub fn bindings_builder() -> Builder<tauri::Wry> {
             crate::exclusions::add_memory_exclusion,
             crate::exclusions::remove_memory_exclusion,
             crate::elevation::elevation_status,
+            crate::elevation::system_protection,
             crate::elevation::clean_memory_elevated,
             crate::administrator::undo_administrator_change,
             crate::processes::list_processes,

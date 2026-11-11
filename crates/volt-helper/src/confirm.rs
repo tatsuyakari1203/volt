@@ -13,7 +13,11 @@
 //! - Cancel, Escape, closing the window and a question nobody answered in time are
 //!   [`Verdict::Denied`] (a timeout counts as a denial);
 //! - a desktop that cannot be made or switched to, or a session that cannot be switched back (it is
-//!   locked), is [`Verdict::Unavailable`]: the request is refused and nothing is shown.
+//!   locked), is [`Verdict::Unavailable`]: the request is refused and nothing is shown;
+//! - a question that was shown but whose input could not be put back on the person's desktop (not
+//!   even on `Default`, after retries) ends the helper at once: the private desktop is destroyed
+//!   with it and Windows returns the input to the default desktop, so nobody is left on an empty
+//!   one. Nothing was changed, because the confirmation never returned.
 //!
 //! Nothing turns the question off: there is no environment variable, argument or setting that is
 //! read, and no cargo feature of the product build. The only other confirmer in this crate is the
@@ -29,9 +33,10 @@ use volt_win::helper::prompt::{self, PromptAnswer};
 
 use crate::prompt_text::{Lang, prompt_text};
 
-/// How long the question waits for an answer in the product helper. Shorter than the UI's wait for
-/// a tweak request (120 s), so the helper has answered before the UI gives up.
-pub const PRODUCT_TIMEOUT: Duration = Duration::from_secs(45);
+/// How long the question waits for an answer in the product helper. The UI's wait for a tweak
+/// request ([`volt_core::CHANGE_TIMEOUT`]) is this, plus the restore point, plus the change, so the
+/// helper has answered before the UI gives up.
+pub const PRODUCT_TIMEOUT: Duration = volt_core::CONFIRM_TIMEOUT;
 
 /// Asks on a private desktop. See the module documentation.
 #[derive(Debug, Clone, Copy)]
@@ -62,10 +67,19 @@ pub fn verdict_of(answer: &PromptAnswer) -> Verdict {
 
 impl Confirmer for DesktopConfirmer {
     fn confirm(&self, request: &ConfirmRequest) -> Verdict {
-        let text = prompt_text(Lang::of_windows(), request, self.timeout);
+        let text = prompt_text(Lang::of_machine(), request, self.timeout);
         let answer = prompt::ask(&text, self.timeout);
-        if let PromptAnswer::Unavailable(reason) = &answer {
-            log::warn!("the confirmation could not be shown: {reason}");
+        match &answer {
+            PromptAnswer::Unavailable(reason) => {
+                log::warn!("the confirmation could not be shown: {reason}");
+            }
+            PromptAnswer::SwitchBackFailed(reason) => {
+                log::error!("the person's desktop could not be restored ({reason}): ending");
+                // The one way left to give the input back: the private desktop goes with the
+                // process. Nothing was changed (this confirmation never answers).
+                std::process::exit(i32::from(crate::run::exit::DESKTOP));
+            }
+            _ => {}
         }
         verdict_of(&answer)
     }
@@ -119,12 +133,21 @@ mod tests {
             verdict_of(&PromptAnswer::Unavailable("no desktop".to_owned())),
             Verdict::Unavailable
         );
+        // A question whose desktop could not be restored never counts, whatever was clicked.
+        assert_eq!(
+            verdict_of(&PromptAnswer::SwitchBackFailed("busy".to_owned())),
+            Verdict::Unavailable
+        );
     }
 
     #[test]
     fn the_product_wait_is_shorter_than_the_ui_wait_for_a_tweak_request() {
-        // The UI gives a tweak request 120 s; the question, the restore point and the change all
-        // have to fit inside it.
-        assert!(PRODUCT_TIMEOUT <= Duration::from_secs(60));
+        // The UI gives a tweak request `CHANGE_TIMEOUT`; the question, the restore point and the
+        // change all have to fit inside it, one after the other.
+        assert!(
+            PRODUCT_TIMEOUT + volt_core::RESTORE_POINT_TIMEOUT + volt_core::CHANGE_TAIL
+                <= volt_core::CHANGE_TIMEOUT
+        );
+        assert_eq!(PRODUCT_TIMEOUT, Duration::from_secs(45));
     }
 }

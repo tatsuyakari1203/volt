@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use super::confirm::{ConfirmRequest, Confirmer, Verdict};
-use super::restore::RestorePoints;
+use super::restore::{RestorePoints, SystemProtection};
 use super::{
     CatalogueHashes, ElevationError, ElevationStatus, Elevator, ErrorCode, HelloReply,
     HistoryReply, MemoryPurgeReply, PROTOCOL_VERSION, TweakApplyReply, TweakRevertReply,
@@ -63,6 +63,8 @@ struct State {
     tweak_error: Option<ElevationError>,
     /// The helper's log: its store id and records, oldest first.
     history: (String, Vec<ActivityRecord>),
+    /// What `system_protection` answers.
+    system_protection: SystemProtection,
 }
 
 /// In-memory [`Elevator`]. A purge runs against the [`Memory`] port it was given (a
@@ -96,6 +98,7 @@ impl FakeElevator {
                 protocol: PROTOCOL_VERSION,
                 tweak_error: None,
                 history: ("fake-store".to_owned(), Vec::new()),
+                system_protection: SystemProtection::Unknown,
             }),
         }
     }
@@ -110,6 +113,11 @@ impl FakeElevator {
     #[must_use]
     pub fn declined(memory: Arc<dyn Memory>) -> Self {
         Self::with(memory, Behaviour::Decline)
+    }
+
+    /// Sets what the elevator answers to `system_protection`.
+    pub fn set_system_protection(&self, value: SystemProtection) {
+        lock(&self.state).system_protection = value;
     }
 
     /// An elevator that is unavailable for `reason`, given in words.
@@ -271,6 +279,10 @@ impl Elevator for FakeElevator {
             records,
             more,
         })
+    }
+
+    fn system_protection(&self) -> SystemProtection {
+        lock(&self.state).system_protection
     }
 
     fn session_open(&self) -> bool {

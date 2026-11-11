@@ -772,6 +772,7 @@ it('says what happened when the confirmation of an administrator undo was not gi
   for (const [status, text] of [
     ['notConfirmed', /declined or timed out/],
     ['blocked', /Try again in 10 minutes/],
+    ['timedOut', /stopped waiting for the administrator helper/],
     ['declined', /cancelled the administrator prompt/],
   ] as const) {
     ipc.undoAdministratorChange.mockResolvedValueOnce(result({ status, restored: 0 }));

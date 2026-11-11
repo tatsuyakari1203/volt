@@ -651,6 +651,18 @@ async elevationStatus() : Promise<Result<ElevationStatusView, IpcError>> {
 }
 },
 /**
+ * Tauri command: whether System Protection looks on, so the Tweaks page can say what to do before
+ * the user tries a Caution or Advanced administrator tweak. Reads only; never starts the helper.
+ */
+async systemProtection() : Promise<Result<SystemProtectionView, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("system_protection") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Tauri command: runs the selected memory operations as administrator through the helper. The
  * first call of a session shows one administrator prompt; cancelling it resolves with `declined`.
  * This cannot be undone, so it is recorded in the activity log but not in the undo journal.
@@ -1229,7 +1241,13 @@ export type ApplyStatus =
  * The tweak needs a restore point first and Windows could not create one. Nothing was
  * changed.
  */
-"restorePointFailed"
+"restorePointFailed" | 
+/**
+ * No answer came in time (the person may still be answering the helper's confirmation, or
+ * Windows is slow to make the restore point). The change may still be made: the helper's
+ * record shows up on the Undo page the next time the helper runs.
+ */
+"timedOut"
 /**
  * One operation of a run.
  */
@@ -2867,7 +2885,12 @@ export type RevertStatus =
  * The same request was declined lately, so it was refused without asking. Nothing was
  * changed.
  */
-"blocked"
+"blocked" | 
+/**
+ * No answer came in time. The revert may still be made: the helper's record shows up on the
+ * Undo page the next time the helper runs.
+ */
+"timedOut"
 /**
  * How risky a tweak is. Mirrors [`volt_core::Risk`].
  */
@@ -3424,6 +3447,23 @@ export type StartupSource =
  * A source this version of the UI does not know.
  */
 "other"
+/**
+ * Whether System Protection looks on, which decides whether Windows can make the restore point a
+ * Caution or Advanced administrator tweak needs.
+ */
+export type SystemProtectionView = 
+/**
+ * It looks on.
+ */
+"on" | 
+/**
+ * It looks off (turned off, or by policy): such a tweak will be refused.
+ */
+"off" | 
+/**
+ * The registry does not say.
+ */
+"unknown"
 /**
  * Which list an item is in.
  */
@@ -3987,7 +4027,12 @@ export type UndoStatus =
  * The same request was declined lately, so it was refused without asking. Nothing was
  * changed.
  */
-"blocked"
+"blocked" | 
+/**
+ * No answer came in time. The undo may still be made: the helper's record shows up on the
+ * Undo page the next time the helper runs.
+ */
+"timedOut"
 /**
  * How removing one app ended. Mirrors [`volt_core::UninstallOutcome`].
  */

@@ -57,6 +57,7 @@ import {
   type RuleView,
   type StartupChangeResult,
   type StartupList,
+  type SystemProtectionView,
   type TidyItemKind,
   type TidyProgressEvent,
   type TidyResult,
@@ -183,6 +184,7 @@ export type {
   StartupProblemView,
   StartupProtectionView,
   StartupSource,
+  SystemProtectionView,
   TidyItemKind,
   TidyLists,
   TidyProgressEvent,
@@ -796,6 +798,15 @@ export async function removeMemoryExclusion(name: string): Promise<string[]> {
  */
 export async function getElevationStatus(): Promise<ElevationStatusView> {
   return call(() => commands.elevationStatus());
+}
+
+/**
+ * Whether System Protection looks on, which decides whether Windows can make the restore point a
+ * Caution or Advanced administrator tweak needs. A hint read without any prompt; the helper is the
+ * authority.
+ */
+export async function getSystemProtection(): Promise<SystemProtectionView> {
+  return call(() => commands.systemProtection());
 }
 
 /**

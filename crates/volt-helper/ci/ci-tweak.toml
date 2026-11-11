@@ -18,6 +18,25 @@ subkey = 'SOFTWARE\VoltTest\Ci'
 name = "Marker"
 value = { dword = 1 }
 
+# Applying it ends the helper between the journal write and the change (the failpoint, see
+# src/failpoint.rs): the harness then shows the next start settling the interrupted apply.
+[[tweak]]
+id = "ci-voltest-crash"
+title = "CI crash key"
+description = "Ends the helper at the write. Exists only in the CI harness build."
+category = "privacy"
+risk = "safe"
+evidence = "measured"
+evidence_note = "Test-only."
+requires_admin = true
+
+[[tweak.steps]]
+kind = "registry_set"
+hive = "HKLM"
+subkey = 'SOFTWARE\VoltTest\Crash'
+name = "Marker"
+value = { dword = 1 }
+
 # Its key is made by the workflow so that Users can write to it. The helper must refuse the write.
 [[tweak]]
 id = "ci-voltest-open"

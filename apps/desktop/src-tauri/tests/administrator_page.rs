@@ -154,6 +154,23 @@ fn a_refusal_of_the_helper_is_a_result_that_says_nothing_was_changed() {
         revert_tweak(&core, TWEAK).expect("answered").status,
         RevertStatus::NothingToRevert
     );
+    // No answer in time is a result too, not an error: the request may still finish, and the
+    // state is read again so the page shows what is really there.
+    elevator.set_tweak_error(Some(ElevationError::TimedOut));
+    assert_eq!(
+        apply_tweak(&core, TWEAK).expect("answered").status,
+        ApplyStatus::TimedOut
+    );
+    assert_eq!(
+        revert_tweak(&core, TWEAK).expect("answered").status,
+        RevertStatus::TimedOut
+    );
+    assert_eq!(
+        administrator::undo_change(&core, TWEAK)
+            .expect("answered")
+            .status,
+        UndoStatus::TimedOut
+    );
     // A helper that cannot carry the change out is an error the UI words itself.
     elevator.set_tweak_error(Some(ElevationError::Refused(ErrorCode::TweakFailed)));
     assert!(matches!(

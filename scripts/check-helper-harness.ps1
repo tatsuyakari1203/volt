@@ -1,6 +1,7 @@
 #!/usr/bin/env pwsh
-# Proves what a helper binary holds of the CI harness: the accepting confirmer and the test-only
-# tweak exist only in the harness build (the `elevated-ci` feature), never in the release helper.
+# Proves what a helper binary holds of the CI harness: the accepting confirmer, the failpoint that
+# ends the helper between the journal write and the change, and the test-only tweaks exist only in
+# the harness build (the `elevated-ci` feature), never in the release helper.
 #
 #   check-helper-harness.ps1 -Binary <volt-helper.exe> -Expect absent    the release helper
 #   check-helper-harness.ps1 -Binary <volt-helper.exe> -Expect present   the harness helper
@@ -21,7 +22,10 @@ $markers = @(
     'volt-ci-accepting-confirmer',
     'ci-voltest-marker',
     'ci-voltest-open',
-    'SOFTWARE\VoltTest\Ci'
+    'ci-voltest-crash',
+    'volt-ci-failpoint',
+    'SOFTWARE\VoltTest\Ci',
+    'SOFTWARE\VoltTest\Crash'
 )
 
 $bytes = [System.IO.File]::ReadAllBytes($Binary)

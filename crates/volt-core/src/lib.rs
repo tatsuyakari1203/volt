@@ -126,14 +126,16 @@ pub use elevation::confirm::{
 };
 pub use elevation::mirror::{HelperMirror, MirrorRow, RowState, pull as pull_helper_history};
 pub use elevation::restore::{
-    RESTORE_POINT_MIN_GAP, RestoreGate, RestorePoints, needs_restore_point,
+    RESTORE_POINT_MIN_GAP, RestoreGate, RestorePoints, SystemProtection, needs_restore_point,
+    system_protection_of,
 };
 pub use elevation::{
-    AreaResult, AreaStatus, CatalogueHashes, ElevationError, ElevationStatus, Elevator, ErrorCode,
-    HISTORY_MAX_RECORDS, HelloReply, HistoryReply, MAX_REPLY_BYTES, MAX_REQUEST_BYTES,
-    MemoryPurgeReply, PROTOCOL_VERSION, Reply, ReplyBody, Request, RequestEnvelope,
-    RequestSequencer, TweakApplyReply, TweakRevertReply, UnavailableReason, catalogue_hash,
-    decode_reply, decode_request, encode_reply, encode_request,
+    AreaResult, AreaStatus, CHANGE_TAIL, CHANGE_TIMEOUT, CONFIRM_TIMEOUT, CatalogueHashes,
+    ElevationError, ElevationStatus, Elevator, ErrorCode, HISTORY_MAX_RECORDS, HelloReply,
+    HistoryReply, MAX_REPLY_BYTES, MAX_REQUEST_BYTES, MemoryPurgeReply, PROTOCOL_VERSION,
+    RESTORE_POINT_TIMEOUT, Reply, ReplyBody, Request, RequestEnvelope, RequestSequencer,
+    TweakApplyReply, TweakRevertReply, UnavailableReason, catalogue_hash, decode_reply,
+    decode_request, encode_reply, encode_request,
 };
 pub use error::{ExecError, PlanError, PortError, RevertError};
 pub use exclusions::{EXCLUSIONS_SETTINGS_KEY, ExclusionList, MAX_EXCLUSIONS};

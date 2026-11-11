@@ -16,6 +16,7 @@ on:
       - apps/desktop/src-tauri/icons/**
       - crates/volt-helper/**
       - scripts/build-helper.ps1
+      - scripts/check-helper-harness.ps1
       - scripts/build-installer.ps1
 
 concurrency:
@@ -62,6 +63,12 @@ jobs:
       # Builds the release helper first and bundles it: the installer puts it next to the app.
       - name: Build the NSIS installer
         run: pwsh scripts/build-installer.ps1
+
+      # The accepting confirmer, the failpoint and the test tweaks of the CI harness exist only in
+      # the harness build of the helper. The helper that goes into the installer must hold none of
+      # their strings (the same search finds them in the harness build, in elevated-helper.yml).
+      - name: Check that the bundled helper holds nothing of the harness
+        run: pwsh scripts/check-helper-harness.ps1 -Binary target/helper/release/volt-helper.exe -Expect absent
 
       - name: Write the SHA-256 file
         run: |

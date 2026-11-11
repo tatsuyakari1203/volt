@@ -12,7 +12,8 @@
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use volt_core::{
-    ElevationError, ElevationStatus, ErrorCode, MemoryCleanReport, Source, UnavailableReason,
+    ElevationError, ElevationStatus, ErrorCode, MemoryCleanReport, Source, SystemProtection,
+    UnavailableReason,
 };
 
 use crate::IpcError;
@@ -51,6 +52,19 @@ pub enum ElevationStatusView {
         /// One sentence in English with the specifics, for the details line.
         detail: String,
     },
+}
+
+/// Whether System Protection looks on, which decides whether Windows can make the restore point a
+/// Caution or Advanced administrator tweak needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum SystemProtectionView {
+    /// It looks on.
+    On,
+    /// It looks off (turned off, or by policy): such a tweak will be refused.
+    Off,
+    /// The registry does not say.
+    Unknown,
 }
 
 /// What an elevated purge did.
@@ -94,6 +108,17 @@ pub fn elevation_status_of(core: &AppCore) -> Result<ElevationStatusView, IpcErr
     })
 }
 
+/// Whether System Protection looks on. A hint read without any prompt: the helper is the authority
+/// and refuses a Caution or Advanced tweak whenever Windows cannot make the restore point.
+pub fn system_protection_of_app(core: &AppCore) -> Result<SystemProtectionView, IpcError> {
+    Ok(match core.elevator()?.system_protection() {
+        SystemProtection::On => SystemProtectionView::On,
+        SystemProtection::Off => SystemProtectionView::Off,
+        // `SystemProtection` is non-exhaustive: anything else is "not known".
+        _ => SystemProtectionView::Unknown,
+    })
+}
+
 /// The error a failed elevated call becomes.
 pub(crate) fn ipc_error(error: &ElevationError) -> IpcError {
     match error {
@@ -112,6 +137,7 @@ pub(crate) fn ipc_error(error: &ElevationError) -> IpcError {
         }
         ElevationError::Refused(_) => IpcError::other(&Phrase::new("err.helper.refused")),
         ElevationError::Disconnected => IpcError::other(&Phrase::new("err.helper.disconnected")),
+        ElevationError::TimedOut => IpcError::other(&Phrase::new("err.helper.timedOut")),
         // `ElevationError::Declined` is an outcome, not an error, and the enum is non-exhaustive.
         _ => IpcError::other(&Phrase::new("err.helper.unusable")),
     }
@@ -179,6 +205,16 @@ pub(crate) async fn elevation_status(
     state: tauri::State<'_, AppState>,
 ) -> Result<ElevationStatusView, IpcError> {
     blocking(&state, elevation_status_of).await
+}
+
+/// Tauri command: whether System Protection looks on, so the Tweaks page can say what to do before
+/// the user tries a Caution or Advanced administrator tweak. Reads only; never starts the helper.
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn system_protection(
+    state: tauri::State<'_, AppState>,
+) -> Result<SystemProtectionView, IpcError> {
+    blocking(&state, system_protection_of_app).await
 }
 
 /// Tauri command: runs the selected memory operations as administrator through the helper. The

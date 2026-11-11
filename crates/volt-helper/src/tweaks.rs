@@ -514,6 +514,15 @@ value = { dword = 1 }
             assert_eq!(records[0].outcome, ActivityOutcome::Failed);
             assert_eq!(records[0].label.as_deref(), Some("machine-flag"));
             assert!(records[0].summary.contains("Refused to apply"));
+            // The record carries the phrase, with the reason as a phrase of its own, so the Undo
+            // page can write it in the language of the person.
+            let phrase = records[0].phrase.as_ref().expect("a refusal has a phrase");
+            assert_eq!(phrase.code, "summary.adminRefused");
+            assert!(
+                matches!(phrase.args.get("reason"), Some(volt_core::Arg::Phrase(reason))
+                    if reason.code.starts_with("reason.admin")),
+                "{phrase:?}"
+            );
         }
     }
 

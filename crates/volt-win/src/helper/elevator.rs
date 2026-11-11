@@ -26,16 +26,16 @@ use std::sync::{Mutex, MutexGuard, PoisonError, TryLockError};
 use std::time::Duration;
 
 use volt_core::{
-    CatalogueHashes, ElevationError, ElevationStatus, Elevator, ErrorCode, HelloReply,
-    HistoryReply, MAX_REPLY_BYTES, MemoryArea, MemoryPurgeReply, PROTOCOL_VERSION, ReplyBody,
-    Request, RequestEnvelope, TweakApplyReply, TweakRevertReply, UnavailableReason, decode_reply,
-    encode_request,
+    CHANGE_TIMEOUT, CatalogueHashes, ElevationError, ElevationStatus, Elevator, ErrorCode,
+    HelloReply, HistoryReply, MAX_REPLY_BYTES, MemoryArea, MemoryPurgeReply, PROTOCOL_VERSION,
+    ReplyBody, Request, RequestEnvelope, SystemProtection, TweakApplyReply, TweakRevertReply,
+    UnavailableReason, decode_reply, encode_request, system_protection_of,
 };
 
 use super::args::{HelperArgs, PipeName};
 use super::identity::{ProcessHandle, inspect_current};
 use super::launch::{HELPER_IMAGE_NAME, LaunchError, Launcher, ShellLauncher, status_for};
-use super::pipe::{PipeClient, is_trusted_owner};
+use super::pipe::{IoError, PipeClient, is_trusted_owner};
 
 /// How long to wait for the helper to create its pipe after the prompt was answered.
 const OPEN_WAIT: Duration = Duration::from_secs(10);
@@ -43,9 +43,6 @@ const OPEN_WAIT: Duration = Duration::from_secs(10);
 const SHORT_TIMEOUT: Duration = Duration::from_secs(30);
 /// The longest a purge may take (the decision's per-request limit).
 const PURGE_TIMEOUT: Duration = Duration::from_secs(120);
-/// The longest a tweak request may take: the helper waits for a person to answer its confirmation
-/// first (the decision's per-request limit).
-const CHANGE_TIMEOUT: Duration = Duration::from_secs(120);
 /// How long saying bye may take.
 const BYE_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -97,8 +94,9 @@ impl Connection {
     }
 }
 
-/// One request and its answer on `client`. An error reply is [`ElevationError::Refused`]; a broken
-/// pipe, a timeout, a reply that cannot be read or one for another id is
+/// One request and its answer on `client`. An error reply is [`ElevationError::Refused`]; no answer
+/// in time after the request was sent is [`ElevationError::TimedOut`] (the helper may still finish
+/// it); a broken pipe, a reply that cannot be read or one for another id is
 /// [`ElevationError::Disconnected`].
 fn exchange(
     client: &PipeClient,
@@ -113,7 +111,10 @@ fn exchange(
         .map_err(|_| ElevationError::Disconnected)?;
     let message = client
         .read_message(MAX_REPLY_BYTES, Some(timeout))
-        .map_err(|_| ElevationError::Disconnected)?;
+        .map_err(|error| match error {
+            IoError::Timeout => ElevationError::TimedOut,
+            _ => ElevationError::Disconnected,
+        })?;
     let reply = decode_reply(&message).map_err(|_| ElevationError::Disconnected)?;
     if reply.id != id {
         return Err(ElevationError::Disconnected);
@@ -324,7 +325,10 @@ impl WinElevator {
         };
         let result = work(connection);
         let broken = match &result {
-            Err(ElevationError::Disconnected) => true,
+            // A request that got no answer leaves the pipe with a reply still to come: the
+            // connection is dropped (the helper ends its session, after finishing what it was
+            // doing), so the next request starts clean.
+            Err(ElevationError::Disconnected | ElevationError::TimedOut) => true,
             Err(ElevationError::Refused(code)) => code.closes_connection(),
             _ => false,
         };
@@ -408,6 +412,10 @@ impl Elevator for WinElevator {
                 _ => Err(ElevationError::Refused(ErrorCode::Internal)),
             }
         })
+    }
+
+    fn system_protection(&self) -> SystemProtection {
+        system_protection_of(&crate::WinRegistry::new())
     }
 
     fn session_open(&self) -> bool {
@@ -740,6 +748,30 @@ mod tests {
 
     fn purge(elevator: &WinElevator) -> Result<MemoryPurgeReply, ElevationError> {
         elevator.memory_purge(&[MemoryArea::StandbyList, MemoryArea::WorkingSets])
+    }
+
+    #[test]
+    fn a_request_that_gets_no_answer_in_time_is_timed_out_and_not_a_lost_connection() {
+        let name = PipeName::random().expect("name");
+        let server = PipeServer::create(&name, &own_sid()).expect("pipe");
+        let helper = thread::spawn(move || {
+            let _ = server.accept(SECOND);
+            // Reads the request and says nothing (a person is still answering its confirmation).
+            let _ = server.read_message(volt_core::MAX_REQUEST_BYTES, SECOND);
+            thread::sleep(Duration::from_millis(600));
+        });
+        let client = PipeClient::open_waiting(&name, Duration::from_secs(5)).expect("client");
+        let answer = exchange(&client, 1, Request::Bye {}, Duration::from_millis(200));
+        assert_eq!(answer, Err(ElevationError::TimedOut));
+        helper.join().expect("fake helper thread");
+    }
+
+    #[test]
+    fn the_wait_for_a_tweak_covers_the_question_the_restore_point_and_the_change() {
+        assert!(
+            volt_core::CONFIRM_TIMEOUT + volt_core::RESTORE_POINT_TIMEOUT <= CHANGE_TIMEOUT,
+            "the UI must not give up before the helper has had its turn"
+        );
     }
 
     #[test]
