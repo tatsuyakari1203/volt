@@ -40,6 +40,8 @@ use crate::tweak::ApplyOutcome;
 pub mod confirm;
 #[cfg(any(test, feature = "fakes"))]
 pub mod fakes;
+pub mod mirror;
+pub mod restore;
 #[cfg(test)]
 mod tests;
 
@@ -373,6 +375,10 @@ pub enum ErrorCode {
     /// The helper cannot serve this kind of request (its state could not be opened).
     #[error("not available in this helper")]
     Unavailable,
+    /// The tweak needs a restore point first (its risk is above Safe) and Windows could not create
+    /// one, so nothing was changed.
+    #[error("a restore point could not be created")]
+    RestorePointFailed,
 }
 
 impl ErrorCode {
@@ -392,6 +398,7 @@ impl ErrorCode {
                 | Self::NothingToRevert
                 | Self::TweakFailed
                 | Self::Unavailable
+                | Self::RestorePointFailed
         )
     }
 }
@@ -610,6 +617,13 @@ pub trait Elevator: Send + Sync {
 
     /// Reads the helper's activity log after the record `after` (0 for the start).
     fn history(&self, after: u64, limit: u32) -> Result<HistoryReply, ElevationError>;
+
+    /// Whether a session is open now, so a call would reuse it and show no prompt. Reads only: it
+    /// never starts the helper. The UI uses it to pull the helper's history without ever asking
+    /// the user for administrator approval just to look.
+    fn session_open(&self) -> bool {
+        false
+    }
 
     /// Ends the session. The next call starts a new one (and may prompt again).
     fn bye(&self);

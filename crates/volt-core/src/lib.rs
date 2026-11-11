@@ -124,6 +124,10 @@ pub use elevation::confirm::{
     ConfirmAction, ConfirmGate, ConfirmRequest, Confirmer, DENIAL_BLOCK, DENIALS_BEFORE_LOCKOUT,
     Decision, Verdict,
 };
+pub use elevation::mirror::{HelperMirror, MirrorRow, RowState, pull as pull_helper_history};
+pub use elevation::restore::{
+    RESTORE_POINT_MIN_GAP, RestoreGate, RestorePoints, needs_restore_point,
+};
 pub use elevation::{
     AreaResult, AreaStatus, CatalogueHashes, ElevationError, ElevationStatus, Elevator, ErrorCode,
     HISTORY_MAX_RECORDS, HelloReply, HistoryReply, MAX_REPLY_BYTES, MAX_REQUEST_BYTES,

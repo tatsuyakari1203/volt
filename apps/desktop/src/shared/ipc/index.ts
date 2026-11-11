@@ -490,6 +490,15 @@ export async function undoBatch(batch: string, acknowledged: string[] = []): Pro
   return call(() => commands.undoBatch(batch, acknowledged));
 }
 
+/**
+ * Undoes an administrator change (a row with `administrator: true`) through the elevated helper,
+ * which asks for its own confirmation and restores the earlier value from its own journal. The
+ * first call of a session shows one Windows prompt.
+ */
+export async function undoAdministratorChange(tweak: string): Promise<UndoResult> {
+  return call(() => commands.undoAdministratorChange(tweak));
+}
+
 /** What undoing a batch would restore right now, newest first. Reads only. */
 export async function previewUndoBatch(batch: string): Promise<UndoPreview> {
   return call(() => commands.previewUndoBatch(batch));

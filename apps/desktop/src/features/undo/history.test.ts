@@ -19,6 +19,8 @@ function item(id: string, over: Partial<ActivityItem> = {}): ActivityItem {
     state: 'cannotUndo',
     reason: null,
     reasonPhrase: null,
+    administrator: false,
+    administratorTweak: null,
     ...over,
   };
 }

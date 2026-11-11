@@ -3,11 +3,14 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use super::confirm::{ConfirmRequest, Confirmer, Verdict};
+use super::restore::RestorePoints;
 use super::{
     CatalogueHashes, ElevationError, ElevationStatus, Elevator, ErrorCode, HelloReply,
     HistoryReply, MemoryPurgeReply, PROTOCOL_VERSION, TweakApplyReply, TweakRevertReply,
     UnavailableReason,
 };
+use crate::activity::ActivityRecord;
+use crate::error::PortError;
 use crate::journal::Source;
 use crate::memory::MemoryCleaner;
 use crate::ports::{Memory, MemoryArea};
@@ -56,6 +59,10 @@ struct State {
     calls: Vec<ElevatorCall>,
     hashes: CatalogueHashes,
     protocol: u32,
+    /// What `tweak_apply` and `tweak_revert` answer instead of success, when set.
+    tweak_error: Option<ElevationError>,
+    /// The helper's log: its store id and records, oldest first.
+    history: (String, Vec<ActivityRecord>),
 }
 
 /// In-memory [`Elevator`]. A purge runs against the [`Memory`] port it was given (a
@@ -87,6 +94,8 @@ impl FakeElevator {
                     cleaning: "fake-cleaning".to_owned(),
                 },
                 protocol: PROTOCOL_VERSION,
+                tweak_error: None,
+                history: ("fake-store".to_owned(), Vec::new()),
             }),
         }
     }
@@ -128,6 +137,17 @@ impl FakeElevator {
     /// Sets the protocol version `hello` reports (to test a mismatch).
     pub fn set_protocol(&self, protocol: u32) {
         lock(&self.state).protocol = protocol;
+    }
+
+    /// Makes `tweak_apply` and `tweak_revert` answer `error` (after the session started), or
+    /// succeed again with `None`.
+    pub fn set_tweak_error(&self, error: Option<ElevationError>) {
+        lock(&self.state).tweak_error = error;
+    }
+
+    /// Sets the helper's activity log: its store id and records, oldest first.
+    pub fn set_history(&self, store: &str, records: Vec<ActivityRecord>) {
+        lock(&self.state).history = (store.to_owned(), records);
     }
 
     /// How many times a session was started, which is how many prompts the user saw.
@@ -207,6 +227,9 @@ impl Elevator for FakeElevator {
         let mut state = lock(&self.state);
         state.calls.push(ElevatorCall::TweakApply(tweak.to_owned()));
         Self::ensure_session(&mut state)?;
+        if let Some(error) = state.tweak_error.clone() {
+            return Err(error);
+        }
         Ok(TweakApplyReply {
             tweak: tweak.to_owned(),
             outcome: ApplyOutcome::Applied,
@@ -219,6 +242,9 @@ impl Elevator for FakeElevator {
             .calls
             .push(ElevatorCall::TweakRevert(tweak.to_owned()));
         Self::ensure_session(&mut state)?;
+        if let Some(error) = state.tweak_error.clone() {
+            return Err(error);
+        }
         Ok(TweakRevertReply {
             tweak: tweak.to_owned(),
             batches: 1,
@@ -226,15 +252,29 @@ impl Elevator for FakeElevator {
         })
     }
 
-    fn history(&self, after: u64, _limit: u32) -> Result<HistoryReply, ElevationError> {
+    fn history(&self, after: u64, limit: u32) -> Result<HistoryReply, ElevationError> {
         let mut state = lock(&self.state);
         state.calls.push(ElevatorCall::History(after));
         Self::ensure_session(&mut state)?;
+        let (store, all) = &state.history;
+        let wanted = usize::try_from(limit.min(super::HISTORY_MAX_RECORDS)).unwrap_or(0);
+        let mut records: Vec<ActivityRecord> = all
+            .iter()
+            .filter(|record| record.id.0 > after)
+            .take(wanted + 1)
+            .cloned()
+            .collect();
+        let more = records.len() > wanted;
+        records.truncate(wanted);
         Ok(HistoryReply {
-            store: "fake-store".to_owned(),
-            records: Vec::new(),
-            more: false,
+            store: store.clone(),
+            records,
+            more,
         })
+    }
+
+    fn session_open(&self) -> bool {
+        lock(&self.state).active
     }
 
     fn bye(&self) {
@@ -308,5 +348,55 @@ impl Confirmer for FakeConfirmer {
             .unwrap_or(Verdict::Unavailable);
         *next += 1;
         verdict
+    }
+}
+
+/// A [`RestorePoints`] that remembers what it was asked and can be made to fail.
+#[derive(Debug, Default)]
+pub struct FakeRestorePoints {
+    fail: bool,
+    descriptions: Mutex<Vec<String>>,
+    attempts: Mutex<u32>,
+}
+
+impl FakeRestorePoints {
+    /// A port whose restore points are created.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A port that cannot create a restore point (System Protection is off, say).
+    #[must_use]
+    pub fn failing() -> Self {
+        Self {
+            fail: true,
+            ..Self::default()
+        }
+    }
+
+    /// The descriptions of the points that were created, in order.
+    #[must_use]
+    pub fn descriptions(&self) -> Vec<String> {
+        lock(&self.descriptions).clone()
+    }
+
+    /// How many times a point was asked for.
+    #[must_use]
+    pub fn attempts(&self) -> u32 {
+        *lock(&self.attempts)
+    }
+}
+
+impl RestorePoints for FakeRestorePoints {
+    fn create(&self, description: &str) -> Result<(), PortError> {
+        *lock(&self.attempts) += 1;
+        if self.fail {
+            return Err(PortError::Unsupported(
+                "System Protection is off".to_owned(),
+            ));
+        }
+        lock(&self.descriptions).push(description.to_owned());
+        Ok(())
     }
 }

@@ -410,6 +410,20 @@ impl Elevator for WinElevator {
         })
     }
 
+    fn session_open(&self) -> bool {
+        // Never waits: while a request is in flight (a person is answering the helper's
+        // confirmation, say) the session counts as busy, not as open, so a page that only wants to
+        // look at the history is not held up behind it.
+        match self.session.try_lock() {
+            Ok(session) => session.as_ref().is_some_and(Connection::is_alive),
+            Err(TryLockError::Poisoned(poisoned)) => poisoned
+                .into_inner()
+                .as_ref()
+                .is_some_and(Connection::is_alive),
+            Err(TryLockError::WouldBlock) => false,
+        }
+    }
+
     fn bye(&self) {
         self.end_session();
     }
@@ -733,7 +747,12 @@ mod tests {
         let launcher = TestLauncher::new(Mode::Serve(Plan::genuine()));
         let elevator = elevator(&launcher);
 
+        assert!(
+            !elevator.session_open(),
+            "nothing is open before the first request"
+        );
         let first = purge(&elevator).expect("purges");
+        assert!(elevator.session_open(), "the session is open after it");
         assert!(first.any_purged());
         assert!(matches!(first.areas[0].status, AreaStatus::Purged { .. }));
         assert_eq!(launcher.launches(), 1, "one prompt");
@@ -745,6 +764,7 @@ mod tests {
         assert_eq!(elevator.hello().expect("hello").catalogues, hashes("a"));
 
         elevator.bye();
+        assert!(!elevator.session_open(), "bye closes it");
         launcher.wait_for_helpers();
         let seen = launcher.seen();
         let ids: Vec<u64> = seen.iter().map(|(id, _)| *id).collect();

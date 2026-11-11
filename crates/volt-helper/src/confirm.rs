@@ -1,33 +1,77 @@
 //! The confirmer of this build.
 //!
 //! A change that persists is made only after a person confirms it on a surface of the helper's own
-//! (see the decision on the helper). This part of the work has the question and the rules around
-//! it ([`volt_core::Confirmer`], [`volt_core::ConfirmGate`]) but not yet the surface: the dialog on
-//! a private desktop comes with the next part. Until then the real helper's confirmer is
-//! [`RefusingConfirmer`], which answers "cannot ask" to every question, so **every persistent
-//! request is refused and nothing is ever changed**. It fails closed on purpose.
+//! (see the decision on the helper). The helper's confirmer is [`DesktopConfirmer`]: it writes the
+//! question from the helper's catalogue ([`crate::prompt_text`]) and shows it on a private desktop
+//! that only Administrators can open ([`volt_win::helper::prompt`]). The rules around the question
+//! (a denial blocks the same request for ten minutes, two denials lock the session) are
+//! [`volt_core::ConfirmGate`]'s.
 //!
-//! Nothing turns the refusal off: there is no environment variable, argument or setting that is
+//! The mapping to a verdict fails closed:
+//!
+//! - a click on the accept button is [`Verdict::Accepted`], and nothing else is;
+//! - Cancel, Escape, closing the window and a question nobody answered in time are
+//!   [`Verdict::Denied`] (a timeout counts as a denial);
+//! - a desktop that cannot be made or switched to, or a session that cannot be switched back (it is
+//!   locked), is [`Verdict::Unavailable`]: the request is refused and nothing is shown.
+//!
+//! Nothing turns the question off: there is no environment variable, argument or setting that is
 //! read, and no cargo feature of the product build. The only other confirmer in this crate is the
 //! accepting one of the elevated CI job's harness, which is compiled only with the `elevated-ci`
 //! feature (which a release build refuses, see `lib.rs`, and which no workflow of the product
 //! enables) and which a CI step proves is absent from the release helper.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use volt_core::{ConfirmRequest, Confirmer, Verdict};
+use volt_win::helper::prompt::{self, PromptAnswer};
 
-/// Answers [`Verdict::Unavailable`] to every question. See the module documentation.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct RefusingConfirmer;
+use crate::prompt_text::{Lang, prompt_text};
 
-impl Confirmer for RefusingConfirmer {
-    fn confirm(&self, _request: &ConfirmRequest) -> Verdict {
-        Verdict::Unavailable
+/// How long the question waits for an answer in the product helper. Shorter than the UI's wait for
+/// a tweak request (120 s), so the helper has answered before the UI gives up.
+pub const PRODUCT_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// Asks on a private desktop. See the module documentation.
+#[derive(Debug, Clone, Copy)]
+pub struct DesktopConfirmer {
+    timeout: Duration,
+}
+
+impl DesktopConfirmer {
+    /// A confirmer that waits `timeout` for an answer. The product uses [`PRODUCT_TIMEOUT`]; the
+    /// elevated CI job's harness uses a short one so a question nobody answers ends quickly.
+    #[must_use]
+    pub const fn with_timeout(timeout: Duration) -> Self {
+        Self { timeout }
     }
 }
 
-/// The confirmer the helper binary uses: the refusing one in every product build.
+/// The verdict for how a question ended.
+#[must_use]
+pub fn verdict_of(answer: &PromptAnswer) -> Verdict {
+    match answer {
+        PromptAnswer::Accepted => Verdict::Accepted,
+        PromptAnswer::Declined | PromptAnswer::TimedOut => Verdict::Denied,
+        // `PromptAnswer` is non-exhaustive: an answer this build does not know is not an
+        // acceptance.
+        _ => Verdict::Unavailable,
+    }
+}
+
+impl Confirmer for DesktopConfirmer {
+    fn confirm(&self, request: &ConfirmRequest) -> Verdict {
+        let text = prompt_text(Lang::of_windows(), request, self.timeout);
+        let answer = prompt::ask(&text, self.timeout);
+        if let PromptAnswer::Unavailable(reason) = &answer {
+            log::warn!("the confirmation could not be shown: {reason}");
+        }
+        verdict_of(&answer)
+    }
+}
+
+/// The confirmer the helper binary uses: the private-desktop one in every product build.
 #[must_use]
 pub fn product_confirmer() -> Arc<dyn Confirmer> {
     #[cfg(feature = "elevated-ci")]
@@ -36,7 +80,7 @@ pub fn product_confirmer() -> Arc<dyn Confirmer> {
     }
     #[cfg(not(feature = "elevated-ci"))]
     {
-        Arc::new(RefusingConfirmer)
+        Arc::new(DesktopConfirmer::with_timeout(PRODUCT_TIMEOUT))
     }
 }
 
@@ -64,35 +108,23 @@ pub mod harness {
 
 #[cfg(test)]
 mod tests {
-    use volt_core::{ConfirmAction, Risk};
-
     use super::*;
 
     #[test]
-    fn the_refusing_confirmer_cannot_be_talked_into_accepting() {
-        let question = |action| ConfirmRequest {
-            action,
-            tweak: "turn-off-fast-startup".to_owned(),
-            title: "Turn off fast startup".to_owned(),
-            risk: Risk::Safe,
-        };
-        for action in [ConfirmAction::ApplyTweak, ConfirmAction::RevertTweak] {
-            assert_eq!(
-                RefusingConfirmer.confirm(&question(action)),
-                Verdict::Unavailable
-            );
-        }
+    fn only_a_click_on_accept_is_an_acceptance() {
+        assert_eq!(verdict_of(&PromptAnswer::Accepted), Verdict::Accepted);
+        assert_eq!(verdict_of(&PromptAnswer::Declined), Verdict::Denied);
+        assert_eq!(verdict_of(&PromptAnswer::TimedOut), Verdict::Denied);
+        assert_eq!(
+            verdict_of(&PromptAnswer::Unavailable("no desktop".to_owned())),
+            Verdict::Unavailable
+        );
     }
 
-    #[cfg(not(feature = "elevated-ci"))]
     #[test]
-    fn a_product_build_has_only_the_refusing_confirmer() {
-        let question = ConfirmRequest {
-            action: ConfirmAction::ApplyTweak,
-            tweak: "x".to_owned(),
-            title: "X".to_owned(),
-            risk: Risk::Safe,
-        };
-        assert_eq!(product_confirmer().confirm(&question), Verdict::Unavailable);
+    fn the_product_wait_is_shorter_than_the_ui_wait_for_a_tweak_request() {
+        // The UI gives a tweak request 120 s; the question, the restore point and the change all
+        // have to fit inside it.
+        assert!(PRODUCT_TIMEOUT <= Duration::from_secs(60));
     }
 }

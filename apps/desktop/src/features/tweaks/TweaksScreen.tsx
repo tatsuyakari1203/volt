@@ -5,6 +5,8 @@ import {
   acceptTweakState,
   applyTweak,
   type DriftView,
+  type ElevationStatusView,
+  getElevationStatus,
   getTweakPlan,
   listTweakDrift,
   listTweaks,
@@ -93,6 +95,8 @@ export function TweaksScreen() {
   const [plans, setPlans] = useState<Readonly<Record<string, PlanLoad>>>({});
   const [notice, setNotice] = useState<string | null>(null);
   const [confirming, setConfirming] = useState<Confirmation | null>(null);
+  // `null` until it is known, and when it could not be read: administrator tweaks stay locked.
+  const [elevation, setElevation] = useState<ElevationStatusView | null>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
   const alive = useRef(true);
 
@@ -124,6 +128,16 @@ export function TweaksScreen() {
   }, []);
 
   useEffect(read, [read]);
+
+  useEffect(() => {
+    getElevationStatus()
+      .then((status) => {
+        if (alive.current) setElevation(status);
+      })
+      .catch(() => {
+        if (alive.current) setElevation(null);
+      });
+  }, []);
 
   const patch = (id: string, change: Partial<TweakInfo>) => {
     setLoad((current) =>
@@ -196,7 +210,12 @@ export function TweaksScreen() {
     setNotice(null);
     try {
       const result = await revertTweak(tweak.id);
-      if (alive.current) patchState(tweak.id, result.state, false);
+      // A revert the helper refused (declined, timed out, blocked) left everything as it was.
+      const undone =
+        result.status === 'reverted' ||
+        result.status === 'incomplete' ||
+        result.status === 'nothingToRevert';
+      if (alive.current) patchState(tweak.id, result.state, undone ? false : tweak.appliedByVolt);
       report(describeRevert(tweak, result, afterUndo), tweak);
     } catch (error) {
       if (alive.current) setNotice(describeFailure('undo', tweak, error));
@@ -429,6 +448,7 @@ export function TweaksScreen() {
                         tweak={tweak}
                         detailed={detailed}
                         busy={busy[tweak.id]}
+                        elevation={elevation}
                         plan={plans[tweak.id]}
                         onToggle={toggle}
                         onUndo={(target) => void revert(target, true)}

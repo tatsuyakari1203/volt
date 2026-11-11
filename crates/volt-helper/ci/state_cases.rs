@@ -235,8 +235,8 @@ fn snapshot(registry: WinRegistry, tweak: &volt_core::Tweak) -> Vec<String> {
         .collect()
 }
 
-/// A tweak request that nobody can confirm: the release helper has no way to ask, so it refuses,
-/// logs the refusal and changes nothing.
+/// A tweak request that nobody answers: the release helper asks on its private desktop, nobody is
+/// at the runner, so the question ends at its timeout. Nothing changes and the refusal is logged.
 fn refused_without_confirmation(report: &mut Report) {
     let catalogue = match Catalogue::from_toml(volt_helper::embedded_tweak_catalogue()) {
         Ok(catalogue) => catalogue,
@@ -258,18 +258,38 @@ fn refused_without_confirmation(report: &mut Report) {
 
     // The release helper holds the product's catalogue.
     let elevator = WinElevator::new(volt_helper::product_catalogue_hashes());
+    let began = std::time::Instant::now();
     let first = elevator.tweak_apply(REAL_TWEAK);
+    let waited = began.elapsed();
     report.check(
-        "an apply request that nobody confirmed is refused as not confirmed",
+        "an apply request that nobody answered is refused as not confirmed",
         first == Err(ElevationError::Refused(ErrorCode::NotConfirmed)),
-        format!("{first:?}"),
+        format!("{first:?} after {}", millis(waited)),
     );
-    // Asking again is asked again, not blocked: nobody declined, there was no one to ask.
+    // A question that timed out is a denial, so the same request is blocked for ten minutes
+    // without asking again. A runner that cannot show the prompt at all (no interactive desktop)
+    // refuses the same way and counts no denial: asked again, it is refused again.
+    let began = std::time::Instant::now();
     let second = elevator.tweak_apply(REAL_TWEAK);
+    let quick = began.elapsed() < Duration::from_secs(10);
+    let blocked = second == Err(ElevationError::Refused(ErrorCode::Blocked));
+    let asked_again = second == Err(ElevationError::Refused(ErrorCode::NotConfirmed));
     report.check(
-        "the same request is refused the same way again (no denial was counted)",
-        second == Err(ElevationError::Refused(ErrorCode::NotConfirmed)),
-        format!("{second:?}"),
+        "the same request is then blocked without asking (the unanswered question counted as a denial), or refused again when no prompt could be shown",
+        (blocked && quick) || asked_again,
+        format!("{second:?} after {}", millis(began.elapsed())),
+    );
+    report.fact(
+        "the first question took",
+        format!(
+            "{} ({})",
+            millis(waited),
+            if blocked {
+                "a prompt was shown and timed out"
+            } else {
+                "no prompt could be shown"
+            }
+        ),
     );
     let after = snapshot(registry, tweak);
     report.check(
@@ -301,6 +321,12 @@ fn refused_without_confirmation(report: &mut Report) {
         );
     }
 
+    refusals_in_the_log(report, &elevator);
+    elevator.bye();
+}
+
+/// The refusals of the case above are in the helper's activity log, which the UI reads by pull.
+fn refusals_in_the_log(report: &mut Report, elevator: &WinElevator) {
     let history = elevator.history(0, 20);
     match &history {
         Ok(reply) => {
@@ -325,7 +351,6 @@ fn refused_without_confirmation(report: &mut Report) {
             error.to_string(),
         ),
     }
-    elevator.bye();
 }
 
 /// A state folder that Users can write to: the helper refuses to run (the install code), and after

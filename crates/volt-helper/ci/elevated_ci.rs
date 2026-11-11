@@ -19,6 +19,7 @@
 
 #![cfg(windows)]
 
+mod prompt_cases;
 mod state_cases;
 
 use std::fmt::Write as _;
@@ -254,6 +255,8 @@ fn tweaks(out: &Path) -> u8 {
         Ok(me) => {
             let image = PathBuf::from(&me.identity.image);
             state_cases::tweaks_phase(&mut report, &image, &me);
+            // In this process, with the real confirmer: what happens when nobody answers.
+            prompt_cases::prompt_phase(&mut report);
         }
         Err(error) => report.check("identify the harness process", false, error),
     }

@@ -188,6 +188,16 @@ pub enum ApplyStatus {
     RolledBack,
     /// A step failed and the system may differ from before; the user has to look.
     NeedsAttention,
+    /// The administrator prompt of Windows was cancelled. Nothing was changed.
+    Declined,
+    /// The helper's own confirmation was declined or timed out. Nothing was changed.
+    NotConfirmed,
+    /// The same request was declined less than 10 minutes ago (or confirmations are locked for
+    /// this session), so it was refused without asking. Nothing was changed.
+    Blocked,
+    /// The tweak needs a restore point first and Windows could not create one. Nothing was
+    /// changed.
+    RestorePointFailed,
 }
 
 /// Precise result of [`apply_tweak`].
@@ -217,6 +227,13 @@ pub enum RevertStatus {
     /// The journal holds nothing to undo for this tweak: Volt did not apply it, or it is
     /// already undone. Not an error.
     NothingToRevert,
+    /// The administrator prompt of Windows was cancelled. Nothing was changed.
+    Declined,
+    /// The helper's own confirmation was declined or timed out. Nothing was changed.
+    NotConfirmed,
+    /// The same request was declined lately, so it was refused without asking. Nothing was
+    /// changed.
+    Blocked,
 }
 
 /// Precise result of [`revert_tweak`].
@@ -320,6 +337,11 @@ pub struct ActivityItem {
     pub reason: Option<String>,
     /// `reason` as a code and parameters.
     pub reason_phrase: Option<PhraseView>,
+    /// Whether the elevated helper made this change (it is mirrored from the helper's own log):
+    /// the row carries an Administrator badge and is undone through the helper.
+    pub administrator: bool,
+    /// For an administrator row, the tweak id to pass to `undoAdministratorChange`.
+    pub administrator_tweak: Option<String>,
 }
 
 /// A page of the activity history, newest first.
@@ -347,6 +369,13 @@ pub enum UndoStatus {
     /// Nothing was changed: the undo would replace a later change the caller has not
     /// acknowledged. `overwrites` lists them; call again with their `laterEntry` ids to go ahead.
     NeedsAcknowledgement,
+    /// The administrator prompt of Windows was cancelled. Nothing was changed.
+    Declined,
+    /// The helper's own confirmation was declined or timed out. Nothing was changed.
+    NotConfirmed,
+    /// The same request was declined lately, so it was refused without asking. Nothing was
+    /// changed.
+    Blocked,
 }
 
 /// One change an undo could not restore.
@@ -605,6 +634,7 @@ pub struct StartupChangeResult {
 /// with [`TweakStateView::Unreadable`]; it does not fail the list.
 pub fn list_tweaks(core: &AppCore) -> Result<Vec<TweakInfo>, IpcError> {
     let _exclusive = core.exclusive();
+    let mirror = crate::administrator::load_mirror(core);
     let infos = core
         .engine
         .catalogue()
@@ -621,7 +651,12 @@ pub fn list_tweaks(core: &AppCore) -> Result<Vec<TweakInfo>, IpcError> {
             restart: restart_view(tweak.restart),
             needs_admin: tweak.requires_admin,
             state: state_view(core.engine.state(&tweak.id)),
-            applied_by_volt: core.engine.applied_by_volt(&tweak.id).unwrap_or(false),
+            applied_by_volt: if tweak.requires_admin && core.has_elevator() {
+                // An administrator change lives in the helper's journal, which the UI mirrors.
+                mirror.can_undo(&tweak.id)
+            } else {
+                core.engine.applied_by_volt(&tweak.id).unwrap_or(false)
+            },
         })
         .collect();
     Ok(infos)
@@ -629,6 +664,9 @@ pub fn list_tweaks(core: &AppCore) -> Result<Vec<TweakInfo>, IpcError> {
 
 /// Applies a tweak as the user, through the journal. Reports precisely how it ended.
 pub fn apply_tweak(core: &AppCore, id: &str) -> Result<ApplyResult, IpcError> {
+    if crate::administrator::through_helper(core, id) {
+        return crate::administrator::apply(core, id);
+    }
     let _exclusive = core.exclusive();
     let failures_before = core.engine.activity_write_failures();
     let report = core.engine.apply(id, Source::Manual);
@@ -655,6 +693,9 @@ pub fn apply_tweak(core: &AppCore, id: &str) -> Result<ApplyResult, IpcError> {
 /// Reverts what Volt applied for a tweak, restoring the state the journal recorded. Reports
 /// whether the revert was complete. Nothing to undo is a result, not an error.
 pub fn revert_tweak(core: &AppCore, id: &str) -> Result<RevertResult, IpcError> {
+    if crate::administrator::through_helper(core, id) {
+        return crate::administrator::revert(core, id);
+    }
     let _exclusive = core.exclusive();
     let failures_before = core.engine.activity_write_failures();
     let result = core.engine.revert(id);
@@ -780,13 +821,17 @@ pub fn list_activity(
     } else {
         None
     };
-    Ok(ActivityPage {
-        items: records
-            .iter()
-            .map(|record| activity_item(core, record))
-            .collect(),
-        next_cursor,
-    })
+    let mut items: Vec<ActivityItem> = records
+        .iter()
+        .map(|record| activity_item(core, record))
+        .collect();
+    if before.is_none() {
+        // The helper's rows join the first page, by time. A session that is open is pulled first.
+        crate::administrator::pull_if_open(core);
+        items.extend(crate::administrator::rows(core));
+        items.sort_by(|a, b| b.time.cmp(&a.time));
+    }
+    Ok(ActivityPage { items, next_cursor })
 }
 
 /// Undoes one journal entry: puts back the value the journal recorded before the change. Reports
@@ -950,7 +995,8 @@ fn undo_preview(core: &AppCore, applied: &[JournalEntry]) -> Result<UndoPreview,
 /// of changes that can still be undone stay so they remain on the Undo page.
 pub fn clear_history(core: &AppCore) -> Result<ClearResult, IpcError> {
     let _exclusive = core.exclusive();
-    let removed = core.activity.clear().map_err(IpcError::from)?;
+    let removed = core.activity.clear().map_err(IpcError::from)?
+        + crate::administrator::clear_rows(core) as u64;
     // What is left is exactly what was kept: records of changes that can still be undone.
     let mut kept = 0_usize;
     let mut before = None;
@@ -965,6 +1011,7 @@ pub fn clear_history(core: &AppCore) -> Result<ClearResult, IpcError> {
             _ => break,
         }
     }
+    kept += crate::administrator::row_count(core);
     Ok(ClearResult {
         removed: u32::try_from(removed).unwrap_or(u32::MAX),
         kept: u32::try_from(kept).unwrap_or(u32::MAX),
@@ -1294,6 +1341,8 @@ fn activity_item(core: &AppCore, record: &ActivityRecord) -> ActivityItem {
         state,
         reason: reason.map(|code| Phrase::new(code).english()),
         reason_phrase: reason.map(|code| (&Phrase::new(code)).into()),
+        administrator: false,
+        administrator_tweak: None,
     }
 }
 

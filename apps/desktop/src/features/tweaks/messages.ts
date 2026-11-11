@@ -89,6 +89,22 @@ export function describeApply(tweak: TweakInfo, result: ApplyResult): Outcome {
         tone: 'problem',
         undoable: false,
       };
+    case 'declined':
+      return { message: t('tweaks.apply.declined', { title }), tone: 'problem', undoable: false };
+    case 'notConfirmed':
+      return {
+        message: t('tweaks.apply.notConfirmed', { title }),
+        tone: 'problem',
+        undoable: false,
+      };
+    case 'blocked':
+      return { message: t('tweaks.apply.blocked', { title }), tone: 'problem', undoable: false };
+    case 'restorePointFailed':
+      return {
+        message: t('tweaks.apply.restorePoint', { title }),
+        tone: 'problem',
+        undoable: false,
+      };
     default:
       return assertNever(result.status);
   }
@@ -121,6 +137,16 @@ export function describeRevert(
       };
     case 'nothingToRevert':
       return { message: t('tweaks.revert.nothing', { title }), tone: 'problem', undoable: false };
+    case 'declined':
+      return { message: t('tweaks.revert.declined', { title }), tone: 'problem', undoable: false };
+    case 'notConfirmed':
+      return {
+        message: t('tweaks.revert.notConfirmed', { title }),
+        tone: 'problem',
+        undoable: false,
+      };
+    case 'blocked':
+      return { message: t('tweaks.revert.blocked', { title }), tone: 'problem', undoable: false };
     default:
       return assertNever(result.status);
   }

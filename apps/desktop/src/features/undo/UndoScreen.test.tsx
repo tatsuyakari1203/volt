@@ -9,6 +9,7 @@ const ipc = vi.hoisted(() => ({
   listActivity: vi.fn(),
   undoEntry: vi.fn(),
   undoBatch: vi.fn(),
+  undoAdministratorChange: vi.fn(),
   previewUndoBatch: vi.fn(),
   previewUndoEntry: vi.fn(),
   historyStatus: vi.fn(),
@@ -41,6 +42,8 @@ function item(id: string, over: Partial<ActivityItem> = {}): ActivityItem {
     state: 'cannotUndo',
     reason: null,
     reasonPhrase: null,
+    administrator: false,
+    administratorTweak: null,
     ...over,
   };
 }
@@ -716,4 +719,63 @@ it('names a memory or process record by its title, and leaves an unknown one by 
   expect(ended?.textContent).toContain('Ended apps: Applied');
   expect(memory?.textContent).toContain('Memory cleaning: Applied');
   expect(other?.textContent).not.toContain(': Applied');
+});
+
+/** A row the elevated helper wrote, mirrored by the shell. */
+function administrator(id: string, over: Partial<ActivityItem> = {}): ActivityItem {
+  return item(id, {
+    administrator: true,
+    administratorTweak: 'turn-off-error-reporting',
+    label: 'turn-off-error-reporting',
+    title: 'Turn off Windows Error Reporting',
+    summary: 'Applied registry value HKLMXFlag = REG_DWORD 1',
+    state: 'canUndo',
+    ...over,
+  });
+}
+
+it('marks the rows the helper made and undoes one through the helper, not the journal', async () => {
+  const user = userEvent.setup();
+  ipc.listActivity.mockResolvedValue(page([administrator('admin-1')]));
+  render(<UndoScreen />);
+  const row = (await screen.findByText(/Applied registry value HKLM/)).closest('li') as HTMLElement;
+  expect(within(row).getByText('Administrator')).toBeTruthy();
+  ipc.undoAdministratorChange.mockResolvedValue(result());
+  await user.click(
+    within(row).getByRole('button', { name: /Undo this change: Applied registry value HKLM/ }),
+  );
+  expect(ipc.undoAdministratorChange).toHaveBeenCalledWith('turn-off-error-reporting');
+  expect(ipc.undoEntry).not.toHaveBeenCalled();
+  expect(await screen.findByText(/Undone/)).toBeTruthy();
+});
+
+it('shows a helper row read-only, with the reason, when the helper is not available', async () => {
+  ipc.listActivity.mockResolvedValue(
+    page([
+      administrator('admin-1', {
+        state: 'cannotUndo',
+        reason: 'Administrator changes can be undone only from a Volt installed for all users.',
+      }),
+    ]),
+  );
+  render(<UndoScreen />);
+  const row = (await screen.findByText(/Applied registry value HKLM/)).closest('li') as HTMLElement;
+  expect(within(row).getByText('Administrator')).toBeTruthy();
+  expect(within(row).queryByRole('button')).toBeNull();
+  expect(row.textContent).toContain('installed for all users');
+});
+
+it('says what happened when the confirmation of an administrator undo was not given', async () => {
+  const user = userEvent.setup();
+  ipc.listActivity.mockResolvedValue(page([administrator('admin-1')]));
+  render(<UndoScreen />);
+  for (const [status, text] of [
+    ['notConfirmed', /declined or timed out/],
+    ['blocked', /Try again in 10 minutes/],
+    ['declined', /cancelled the administrator prompt/],
+  ] as const) {
+    ipc.undoAdministratorChange.mockResolvedValueOnce(result({ status, restored: 0 }));
+    await user.click(await screen.findByRole('button', { name: /Undo this change/ }));
+    expect((await screen.findByText(text)).textContent).toMatch(text);
+  }
 });

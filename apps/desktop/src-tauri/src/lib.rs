@@ -1,6 +1,7 @@
 //! Volt desktop shell: the Tauri host. A composition root, so it may know every crate; it
 //! holds commands and window wiring, never business rules.
 
+pub mod administrator;
 pub mod api;
 pub mod apps;
 mod autostart;

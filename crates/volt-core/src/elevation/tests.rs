@@ -184,6 +184,7 @@ fn only_framing_and_order_violations_close_the_connection() {
         ErrorCode::NothingToRevert,
         ErrorCode::TweakFailed,
         ErrorCode::Unavailable,
+        ErrorCode::RestorePointFailed,
     ] {
         assert!(!code.closes_connection(), "{code}");
     }

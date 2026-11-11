@@ -13,7 +13,8 @@
 //!   wire types and the core's memory operations;
 //! - [`state`]: the helper's own protected state folder, the single-helper lock and its store;
 //! - [`tweaks`]: administrator tweaks over the helper's own journal, behind [`confirm`]'s
-//!   confirmation (which in this build always refuses), through the guarded [`ports`].
+//!   confirmation (drawn on a private desktop, see [`confirm`] and [`prompt_text`]) and, for a
+//!   Caution or Advanced tweak, a restore point first, through the guarded [`ports`].
 //!
 //! The logic lives here, in the library, so tests run it in-process without elevation. The binary
 //! adds only `main`, an elevation manifest in release builds and, outside release builds only, two
@@ -31,6 +32,7 @@ pub mod confirm;
 #[cfg(not(helper_release))]
 pub mod debug;
 pub mod ports;
+pub mod prompt_text;
 pub mod run;
 pub mod serve;
 pub mod session;
@@ -41,6 +43,7 @@ use std::sync::Arc;
 
 use volt_core::{Catalogue, CatalogueHashes, Memory, SystemClock, catalogue_hash};
 use volt_win::WinMemory;
+use volt_win::helper::restore::WinRestorePoints;
 
 use crate::session::{QuotaLimits, Session};
 use crate::state::HelperState;
@@ -125,6 +128,7 @@ fn build_desk(state: &HelperState, memory: Arc<dyn Memory>) -> Result<TweakDesk,
         activity: store,
         clock: Arc::new(SystemClock),
         confirmer: confirm::product_confirmer(),
+        restore: Arc::new(WinRestorePoints::new()),
         store_id: state.store_id().to_owned(),
     })
     .map_err(|e| e.to_string())

@@ -70,10 +70,14 @@ impl std::fmt::Display for StateError {
 impl std::error::Error for StateError {}
 
 /// A security descriptor made from SDDL text, freed on drop.
-struct Descriptor(PSECURITY_DESCRIPTOR);
+pub(crate) struct Descriptor(PSECURITY_DESCRIPTOR);
 
 impl Descriptor {
-    fn parse(sddl: &str) -> Result<Self, String> {
+    pub(crate) fn raw(&self) -> PSECURITY_DESCRIPTOR {
+        self.0
+    }
+
+    pub(crate) fn parse(sddl: &str) -> Result<Self, String> {
         let sddl = wide(sddl);
         let mut descriptor = PSECURITY_DESCRIPTOR::default();
         // SAFETY: `sddl` is NUL-terminated and outlives the call; `descriptor` is a valid out
