@@ -443,12 +443,7 @@ fn a_core_built_without_the_startup_wiring_answers_unsupported() {
 fn a_microsoft_entry_is_locked_until_windows_items_are_unlocked() {
     let sandbox = Sandbox::new();
     sandbox.set_command("Run", "Sample Notepad", NOTEPAD);
-    sandbox.set_command(
-        "Run",
-        "Own Tool",
-        r"C:	his\does
-ot\exist	ool.exe",
-    );
+    sandbox.set_command("Run", "Own Tool", r"C:\this\does\not\exist\tool.exe");
     let core = sandbox.core();
 
     let list = list_startup_entries(&core).expect("lists");
@@ -494,8 +489,7 @@ fn run_once_entries_are_listed_switched_through_the_journal_and_undone_on_a_sand
     sandbox.set_command(
         "RunOnce",
         "Setup Step",
-        r"C:	his\does
-ot\exist\setup.exe /finish",
+        r"C:\this\does\not\exist\setup.exe /finish",
     );
     sandbox.set_command("RunOnceMachine", "Vendor Step", r"C:.exe");
     let core = sandbox.core();
@@ -517,9 +511,7 @@ ot\exist\setup.exe /finish",
     assert_eq!(
         sandbox.read("HeldRunOnce", "Setup Step"),
         Some(RegistryValue::Sz(
-            r"C:	his\does
-ot\exist\setup.exe /finish"
-                .to_owned()
+            r"C:\this\does\not\exist\setup.exe /finish".to_owned()
         ))
     );
     let after = list_startup_entries(&core).expect("lists again");
