@@ -695,9 +695,13 @@ previousPhrase: PhraseView | null;
  */
 state: ChangeState; 
 /**
- * One line saying why the change cannot be undone, when `state` is `cannotUndo`.
+ * One line saying why the change cannot be undone, when `state` is `cannotUndo`. English.
  */
-reason: string | null }
+reason: string | null; 
+/**
+ * `reason` as a code and parameters.
+ */
+reasonPhrase: PhraseView | null }
 /**
  * A page of the activity history, newest first.
  */
@@ -2640,6 +2644,18 @@ current: string;
  * The value the tweak sets (or, in a reset, the value that is left), as text.
  */
 target: string; 
+/**
+ * `subject` as a code and parameters.
+ */
+subjectPhrase: PhraseView; 
+/**
+ * `current` as a code and parameters.
+ */
+currentPhrase: PhraseView; 
+/**
+ * `target` as a code and parameters.
+ */
+targetPhrase: PhraseView; 
 /**
  * Whether the system is already in the target state for this step.
  */

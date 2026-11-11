@@ -20,7 +20,7 @@ use volt_core::startup::STARTUP_LABEL;
 use volt_core::{
     ActivityId, ActivityOutcome, ActivityRecord, ApplyOutcome, BatchId, Category, ChangeOutcome,
     Clock, EntryId, EntryState, Evidence, ItemStatus, JournalEntry, MEMORY_LABEL,
-    PROCESS_END_LABEL, RESET_LABEL_SUFFIX, RestartRequirement, RevertError, RevertOutcome,
+    PROCESS_END_LABEL, Phrase, RESET_LABEL_SUFFIX, RestartRequirement, RevertError, RevertOutcome,
     RevertReport, Risk, Source, StartupEntry, StartupOrigin, StartupScope, StartupState,
     StepPreview, SystemClock, Timestamp, TweakApplyReport, TweakError, TweakRevertReport,
     TweakState, activity, overwrites_of, render_text,
@@ -149,6 +149,12 @@ pub struct TweakStepView {
     pub current: String,
     /// The value the tweak sets (or, in a reset, the value that is left), as text.
     pub target: String,
+    /// `subject` as a code and parameters.
+    pub subject_phrase: PhraseView,
+    /// `current` as a code and parameters.
+    pub current_phrase: PhraseView,
+    /// `target` as a code and parameters.
+    pub target_phrase: PhraseView,
     /// Whether the system is already in the target state for this step.
     pub at_target: bool,
 }
@@ -303,8 +309,10 @@ pub struct ActivityItem {
     pub previous_phrase: Option<PhraseView>,
     /// Whether this line can be undone, was undone, failed and so on.
     pub state: ChangeState,
-    /// One line saying why the change cannot be undone, when `state` is `cannotUndo`.
+    /// One line saying why the change cannot be undone, when `state` is `cannotUndo`. English.
     pub reason: Option<String>,
+    /// `reason` as a code and parameters.
+    pub reason_phrase: Option<PhraseView>,
 }
 
 /// A page of the activity history, newest first.
@@ -680,6 +688,9 @@ pub fn get_tweak_plan(core: &AppCore, id: &str) -> Result<TweakPlanView, IpcErro
                 subject: item.preview.subject,
                 current: item.preview.current,
                 target: item.preview.target,
+                subject_phrase: (&item.preview.subject_phrase).into(),
+                current_phrase: (&item.preview.current_phrase).into(),
+                target_phrase: (&item.preview.target_phrase).into(),
                 at_target: true,
             })
             .collect()
@@ -721,6 +732,9 @@ fn step_view(step: StepPreview) -> TweakStepView {
         subject: step.preview.subject,
         current: step.preview.current,
         target: step.preview.target,
+        subject_phrase: (&step.preview.subject_phrase).into(),
+        current_phrase: (&step.preview.current_phrase).into(),
+        target_phrase: (&step.preview.target_phrase).into(),
         at_target: step.at_target,
     }
 }
@@ -1142,13 +1156,11 @@ enum EntryLookup {
     Found(Box<JournalEntry>),
 }
 
-const REASON_NO_RECORD: &str =
-    "Volt saved no earlier value for this action, so it cannot restore it.";
-const REASON_RECORD_GONE: &str =
-    "Its undo record is no longer in the journal, so Volt cannot restore it.";
-const REASON_UNREADABLE: &str =
-    "The undo journal could not be read just now. Reload the list to try again.";
-const REASON_UNCONFIRMED: &str = "Volt has not confirmed that this change happened.";
+// The phrase codes of the reasons a line cannot be undone (their English text is in the core).
+const REASON_NO_RECORD: &str = "undo.noRecord";
+const REASON_RECORD_GONE: &str = "undo.recordGone";
+const REASON_UNREADABLE: &str = "undo.unreadable";
+const REASON_UNCONFIRMED: &str = "undo.unconfirmed";
 
 fn lookup_entry(core: &AppCore, record: &ActivityRecord) -> EntryLookup {
     let Some(id) = record.entry else {
@@ -1259,7 +1271,8 @@ fn activity_item(core: &AppCore, record: &ActivityRecord) -> ActivityItem {
         previous,
         previous_phrase: previous_phrase.as_ref().map(PhraseView::from),
         state,
-        reason: reason.map(str::to_owned),
+        reason: reason.map(|code| Phrase::new(code).english()),
+        reason_phrase: reason.map(|code| (&Phrase::new(code)).into()),
     }
 }
 

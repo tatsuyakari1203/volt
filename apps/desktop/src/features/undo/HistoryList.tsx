@@ -157,7 +157,9 @@ function Row({
               })}
             </span>
           ) : null}
-          {item.reason !== null ? <span className="mt-0.5 block">{item.reason}</span> : null}
+          {item.reason !== null ? (
+            <span className="mt-0.5 block">{say(item.reasonPhrase, item.reason)}</span>
+          ) : null}
         </>
       }
       trailing={

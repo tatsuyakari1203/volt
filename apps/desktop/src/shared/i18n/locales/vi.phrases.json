@@ -142,5 +142,29 @@
   "health.disk": "Còn trống {free} trên tổng {total} ở ổ {mount} ({share}%). Windows cần chỗ trống để cài bản cập nhật và để chuyển bộ nhớ xuống ổ đĩa.",
   "health.memory": "Đang dùng {percent}% bộ nhớ. Khi hết bộ nhớ, Windows sẽ chậm lại và có thể đóng chương trình.",
   "health.restart": "Windows có bản cập nhật hoặc bản cài đặt chỉ hoàn tất sau khi khởi động lại.",
-  "health.startup": "Có {count} mục khởi động đang bật. Mỗi mục chạy một chương trình khi bạn đăng nhập, làm quá trình này chậm đi."
+  "health.startup": "Có {count} mục khởi động đang bật. Mỗi mục chạy một chương trình khi bạn đăng nhập, làm quá trình này chậm đi.",
+
+  "undo.noRecord": "Volt không lưu giá trị trước đó của thao tác này nên không thể khôi phục.",
+  "undo.recordGone": "Bản ghi hoàn tác của thao tác này không còn trong nhật ký nên Volt không thể khôi phục.",
+  "undo.unreadable": "Chưa đọc được nhật ký hoàn tác. Hãy tải lại danh sách để thử lại.",
+  "undo.unconfirmed": "Volt chưa xác nhận thay đổi này đã diễn ra.",
+
+  "preview.text": "{text}",
+  "preview.command": "lệnh {command}",
+  "preview.keyExists": "khóa tồn tại",
+  "preview.keyRemoved": "khóa bị xóa",
+  "preview.keyEmpty": "khóa tồn tại, trống",
+  "preview.keyValues.other": "khóa tồn tại, {count} giá trị",
+
+  "tray.open": "Mở",
+  "tray.boost": "Boost",
+  "tray.quit": "Thoát",
+  "boost.tooltip.failed": "Volt: Boost không chạy được",
+  "boost.tooltip.done": "Volt: Boost xong",
+  "boost.tooltip.memory": "Volt: Boost xong, bộ nhớ khả dụng {before} lên {after}",
+  "boost.notice.failed": "Boost không chạy được.",
+  "boost.notice.done": "Boost xong.",
+  "boost.notice.memory": "Bộ nhớ khả dụng {before} lên {after}.",
+  "boost.notice.moved": "Đã chuyển {files} vào Thùng rác.",
+  "boost.notice.skipped": "Đã bỏ qua {count}: mở Volt để xem lý do."
 }

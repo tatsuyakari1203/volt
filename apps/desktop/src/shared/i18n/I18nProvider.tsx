@@ -44,11 +44,25 @@ function readStoredChoice(): LanguageChoice {
 }
 
 /**
+ * The language of the window itself, a first guess at the display language of Windows for a fresh
+ * install: the window shows in the language of the system, so its first language is right in all
+ * but a few set-ups. Only the first paint uses it; the shell's answer replaces it.
+ */
+export function guessSystemLocale(languages: readonly string[] | undefined): Locale {
+  const first = languages?.[0]?.toLowerCase() ?? '';
+  return first === 'vi' || first.startsWith('vi-') ? 'vi' : 'en';
+}
+
+/**
  * What `System` stood for the last time. The shell reads the display language of Windows, so this
- * copy only serves the first paint, until the shell answers. English until it was ever known.
+ * copy only serves the first paint, until the shell answers. On a fresh install, when it was never
+ * known, the language of the window stands in, so nothing paints in English first.
  */
 function readStoredSystem(): Locale {
-  return parseLocale(readStored(SYSTEM_STORAGE_KEY)) ?? 'en';
+  return (
+    parseLocale(readStored(SYSTEM_STORAGE_KEY)) ??
+    guessSystemLocale(typeof navigator === 'undefined' ? undefined : navigator.languages)
+  );
 }
 
 /** The language for the first paint: a `?lang=` override, else the remembered choice. */

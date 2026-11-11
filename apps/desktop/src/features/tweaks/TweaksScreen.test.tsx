@@ -3,10 +3,12 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   ApplyResult,
+  PhraseView,
   RevertResult,
   TweakInfo,
   TweakPlanView,
   TweakStateView,
+  TweakStepView,
 } from '../../shared/ipc';
 import { IpcCommandError, IpcUnavailableError } from '../../shared/ipc';
 import { ToastProvider } from '../../shared/ui';
@@ -72,17 +74,27 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+/** A text that is the same in every language, as the core sends it. */
+function raw(text: string): PhraseView {
+  return { code: 'preview.text', args: { text: { kind: 'text', value: text } } };
+}
+
+function step(subject: string, current: string, target: string, atTarget: boolean): TweakStepView {
+  return {
+    subject,
+    current,
+    target,
+    subjectPhrase: raw(subject),
+    currentPhrase: raw(current),
+    targetPhrase: raw(target),
+    atTarget,
+  };
+}
+
 function plan(over: Partial<TweakPlanView> = {}): TweakPlanView {
   return {
     id: 'x',
-    steps: [
-      {
-        subject: 'HKCU\\Software\\X\\Flag',
-        current: '(not set)',
-        target: 'dword:0',
-        atTarget: false,
-      },
-    ],
+    steps: [step('HKCU\\Software\\X\\Flag', '(not set)', 'dword:0', false)],
     reset: null,
     ...over,
   };

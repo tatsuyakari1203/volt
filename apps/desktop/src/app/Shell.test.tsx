@@ -251,11 +251,17 @@ it('follows the display language of Windows, as the shell reports it, by default
   expect(window.localStorage.getItem('volt.language.system')).toBe('vi');
 });
 
-it('never takes the language from the browser language list', () => {
+it('paints a fresh install in the window language, and the shell has the last word', async () => {
+  // Nothing is remembered yet: the first paint follows the language of the window, so Vietnamese
+  // Windows never flashes English. Once the shell says System is English, the page follows it.
+  languageSetting.mockResolvedValueOnce({ choice: 'system', system: 'en' });
   const languages = vi.spyOn(window.navigator, 'languages', 'get').mockReturnValue(['vi-VN']);
   try {
     renderLocalisedShell();
-    expect(screen.getByRole('heading', { level: 1, name: 'Home' })).toBeTruthy();
+    expect(screen.getByRole('heading', { level: 1, name: 'Trang chủ' })).toBeTruthy();
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Home' }, { timeout: 2000 }),
+    ).toBeTruthy();
   } finally {
     languages.mockRestore();
   }

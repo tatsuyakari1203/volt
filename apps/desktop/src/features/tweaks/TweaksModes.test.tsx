@@ -1,7 +1,13 @@
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { RevertResult, TweakInfo, TweakPlanView } from '../../shared/ipc';
+import type {
+  PhraseView,
+  RevertResult,
+  TweakInfo,
+  TweakPlanView,
+  TweakStepView,
+} from '../../shared/ipc';
 import { ToastProvider } from '../../shared/ui';
 import { MODE_STORAGE_KEY, TweaksScreen } from './TweaksScreen';
 
@@ -57,10 +63,27 @@ const machine: TweakInfo = {
   needsAdmin: true,
 };
 
+/** A text that is the same in every language, as the core sends it. */
+function raw(text: string): PhraseView {
+  return { code: 'preview.text', args: { text: { kind: 'text', value: text } } };
+}
+
+function step(subject: string, current: string, target: string, atTarget: boolean): TweakStepView {
+  return {
+    subject,
+    current,
+    target,
+    subjectPhrase: raw(subject),
+    currentPhrase: raw(current),
+    targetPhrase: raw(target),
+    atTarget,
+  };
+}
+
 function plan(over: Partial<TweakPlanView> = {}): TweakPlanView {
   return {
     id: 'x',
-    steps: [{ subject: flagKey, current: '(not set)', target: 'dword:0', atTarget: false }],
+    steps: [step(flagKey, '(not set)', 'dword:0', false)],
     reset: null,
     ...over,
   };
@@ -130,14 +153,7 @@ describe('simple and advanced modes', () => {
     ipc.getTweakPlan.mockResolvedValue(
       plan({
         id: 'sysmain',
-        steps: [
-          {
-            subject: 'service SysMain start type',
-            current: 'automatic',
-            target: 'disabled',
-            atTarget: false,
-          },
-        ],
+        steps: [step('service SysMain start type', 'automatic', 'disabled', false)],
       }),
     );
     renderScreen();
@@ -181,7 +197,7 @@ describe('a tweak that was already on', () => {
     ipc.listTweaks.mockResolvedValue([external]);
     ipc.getTweakPlan.mockResolvedValue(
       plan({
-        reset: [{ subject: flagKey, current: 'dword:0', target: '(not set)', atTarget: true }],
+        reset: [step(flagKey, 'dword:0', '(not set)', true)],
       }),
     );
     ipc.resetTweak.mockResolvedValue(reverted);
