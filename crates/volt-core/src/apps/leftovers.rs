@@ -552,6 +552,8 @@ impl LeftoverCleaner {
             !part.is_empty()
                 && part != "."
                 && part != ".."
+                && !part.ends_with(['.', ' '])
+                && !is_short_name(part)
                 && !part.contains([':', '*', '?', '"', '<', '>', '|'])
                 && !part.chars().any(char::is_control)
         });
@@ -979,6 +981,15 @@ struct Measured {
     size: u64,
     files: u64,
     complete: bool,
+}
+
+/// Whether a path component looks like an 8.3 short name (`DOCUME~1`): it names the same folder as
+/// the long name but would slip past every comparison of names, so it is never accepted.
+fn is_short_name(part: &str) -> bool {
+    part.rsplit_once('~').is_some_and(|(_, tail)| {
+        let digits = tail.split('.').next().unwrap_or("");
+        !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
+    })
 }
 
 /// A name that is safe to look for as one folder or key name: long enough, one plain component.

@@ -335,9 +335,13 @@ fn system_places_the_roots_links_and_other_apps_are_never_offered() {
         r"..\evil",
         r"\\server\share\app",
         r"C:\Program Files\..\Windows",
+        r"C:\PROGRA~1",
+        r"C:\Program Files.",
         "relative",
     ] {
         let f = fixture();
+        f.system.file_system.add_dir(r"C:\PROGRA~1", None);
+        f.system.file_system.add_dir(r"C:\Program Files.", None);
         f.system
             .file_system
             .add_dir(r"C:\Windows\System32\Contoso", None);
