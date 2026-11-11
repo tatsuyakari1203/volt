@@ -609,3 +609,106 @@ fn dates_are_read_from_the_compact_text_and_impossible_ones_are_dropped() {
     }
     assert!(AppDate::parse_compact("20230405") < AppDate::parse_compact("20240101"));
 }
+
+/// A fixture whose manager polls fast, so a test of the fallback wait stays short.
+fn quick_fixture(limit: std::time::Duration) -> Fixture {
+    let mut f = fixture();
+    f.manager.poll = std::time::Duration::from_millis(10);
+    f.manager.limit = limit;
+    f
+}
+
+#[test]
+fn an_uninstaller_that_could_not_be_followed_is_waited_for_until_the_entry_is_gone() {
+    let f = quick_fixture(std::time::Duration::from_secs(30));
+    let at = f.add("Elevated", "Elevated App", r"C:\Vendor\e.exe");
+    f.uninstaller
+        .waited_as(r"C:\Vendor\e.exe", Waited::FirstProcess);
+    let started = std::time::Instant::now();
+    let report = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            let _ = f.registry.delete_key(&at);
+        });
+        f.manager
+            .uninstall("win32:m64:elevated", Source::Manual)
+            .expect("started")
+    });
+    assert!(started.elapsed() >= std::time::Duration::from_millis(100));
+    assert_eq!(report.outcome, UninstallOutcome::Removed);
+    assert_eq!(f.records()[0].outcome, ActivityOutcome::Applied);
+}
+
+#[test]
+fn the_wait_for_an_uninstaller_that_could_not_be_followed_gives_up_at_its_limit() {
+    let f = quick_fixture(std::time::Duration::from_millis(60));
+    f.add("Slow", "Slow App", r"C:\Vendor\s.exe");
+    f.uninstaller
+        .waited_as(r"C:\Vendor\s.exe", Waited::FirstProcess);
+    let report = f
+        .manager
+        .uninstall("win32:m64:slow", Source::Manual)
+        .expect("started");
+    assert_eq!(report.outcome, UninstallOutcome::StillInstalled);
+}
+
+#[test]
+fn stopping_ends_the_fallback_wait_at_once() {
+    let f = quick_fixture(std::time::Duration::from_secs(600));
+    f.add("Stuck", "Stuck App", r"C:\Vendor\k.exe");
+    f.uninstaller
+        .waited_as(r"C:\Vendor\k.exe", Waited::FirstProcess);
+    let started = std::time::Instant::now();
+    let report = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            f.manager.stop_waiting();
+        });
+        f.manager
+            .uninstall("win32:m64:stuck", Source::Manual)
+            .expect("started")
+    });
+    assert!(started.elapsed() < std::time::Duration::from_secs(30));
+    assert_eq!(report.outcome, UninstallOutcome::StillInstalled);
+}
+
+#[test]
+fn stopping_reaches_an_uninstaller_that_is_still_being_waited_for() {
+    let f = fixture();
+    f.add("Open", "Open App", r"C:\Vendor\o.exe");
+    f.uninstaller.runs_until_stopped(r"C:\Vendor\o.exe");
+    let report = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            f.manager.stop_waiting();
+        });
+        f.manager
+            .uninstall("win32:m64:open", Source::Manual)
+            .expect("started")
+    });
+    assert_eq!(report.outcome, UninstallOutcome::StillInstalled);
+    assert_eq!(report.exit_code, None);
+}
+
+#[test]
+fn a_stop_that_nothing_was_waiting_for_does_not_cut_the_next_wait_short() {
+    let f = fixture();
+    f.add("Next", "Next App", r"C:\Vendor\n.exe");
+    f.uninstaller.runs_until_stopped(r"C:\Vendor\n.exe");
+    f.manager.stop_waiting();
+    // The earlier request is cleared when the removal starts, so this one waits for its own.
+    let report = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            f.manager.stop_waiting();
+        });
+        let started = std::time::Instant::now();
+        let report = f
+            .manager
+            .uninstall("win32:m64:next", Source::Manual)
+            .expect("started");
+        assert!(started.elapsed() >= std::time::Duration::from_millis(80));
+        report
+    });
+    assert_eq!(report.outcome, UninstallOutcome::StillInstalled);
+}

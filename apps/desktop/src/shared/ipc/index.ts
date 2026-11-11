@@ -616,3 +616,11 @@ export async function listApps(): Promise<AppListView> {
 export async function uninstallApp(id: string, includeSystem: boolean): Promise<UninstallResult> {
   return call(() => commands.uninstallApp(id, includeSystem));
 }
+
+/**
+ * Stops waiting for the uninstaller that `uninstallApp` is waiting for. Nothing is closed: the
+ * uninstaller keeps running, and the pending `uninstallApp` returns with what the list shows.
+ */
+export async function stopWaitingForUninstaller(): Promise<void> {
+  await call(() => commands.stopWaitingForUninstaller());
+}

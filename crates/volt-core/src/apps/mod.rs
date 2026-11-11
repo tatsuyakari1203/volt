@@ -12,6 +12,13 @@
 //! again and reports whether the app is gone, and writes one activity record that says Volt
 //! cannot undo it.
 //!
+//! Many uninstallers copy themselves to a temporary folder, start the copy and exit at once. The
+//! [`Uninstaller`] port therefore waits for every process the uninstaller started, not only the
+//! first, and says how far it got ([`Waited`]). When it could not follow the later processes (an
+//! elevated uninstaller does not join the job of an unelevated launcher), the manager waits until
+//! the app's registry entry disappears instead. Either wait ends early when the user asks
+//! ([`AppManager::stop_waiting`]) and the fallback also gives up after a limit.
+//!
 //! Which entries are offered is decided here, not in the UI: entries marked as system
 //! components, updates, frameworks, packages Windows will not remove and entries without a usable
 //! uninstall command carry a [`HiddenReason`] (the UI hides them by default), and Volt itself is
@@ -24,7 +31,9 @@ pub mod fakes;
 mod tests;
 mod win32;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, TryLockError};
+use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
@@ -213,7 +222,8 @@ pub struct PackagedApp {
     pub version: Option<String>,
     /// When it was installed, when known.
     pub installed: Option<Timestamp>,
-    /// Its size in bytes, when known.
+    /// Its size in bytes, when known. Windows has no cheap way to report one for a package (only
+    /// walking its folder, which the listing never does), so the adapter leaves it empty.
     pub size_bytes: Option<u64>,
     /// A framework other packages depend on.
     pub framework: bool,
@@ -233,12 +243,76 @@ pub trait PackagedApps: Send + Sync {
     fn remove(&self, full_name: &str) -> Result<(), PortError>;
 }
 
+/// A request to stop waiting for the uninstaller that is running. Cheap to clone; every clone is
+/// the same request.
+#[derive(Debug, Clone, Default)]
+pub struct StopWaiting(Arc<AtomicBool>);
+
+impl StopWaiting {
+    /// A request that was not made yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Asks the wait to end. The uninstaller itself is never touched.
+    pub fn request(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether the wait was asked to end.
+    #[must_use]
+    pub fn is_requested(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+
+    fn clear(&self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+/// How far the wait for an uninstaller got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Waited {
+    /// The uninstaller and every process it started have exited.
+    Everything,
+    /// The first process exited, but the processes it started could not be followed (for example
+    /// an elevated uninstaller started from an unelevated launcher). Something may still run.
+    FirstProcess,
+    /// The wait ended because the user asked it to. Something may still run.
+    Stopped,
+}
+
+/// What the wait for an uninstaller found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UninstallerExit {
+    /// The exit code of the process Volt started, when it exited and Windows reported one.
+    pub exit_code: Option<i32>,
+    /// How far the wait got.
+    pub waited: Waited,
+}
+
+impl UninstallerExit {
+    /// The uninstaller and everything it started have exited.
+    #[must_use]
+    pub const fn complete(exit_code: Option<i32>) -> Self {
+        Self {
+            exit_code,
+            waited: Waited::Everything,
+        }
+    }
+}
+
 /// Port: starting a vendor's uninstaller.
 pub trait Uninstaller: Send + Sync {
     /// Starts `command` exactly as registered, interactively and without elevating, and waits
-    /// until the process exits. Returns its exit code when Windows reports one. A program that
-    /// cannot be started is an error (nothing ran).
-    fn run(&self, command: &UninstallCommand) -> Result<Option<i32>, PortError>;
+    /// until the process and every process it started have exited, or until `stop` is requested.
+    /// A program that cannot be started is an error (nothing ran).
+    fn run(
+        &self,
+        command: &UninstallCommand,
+        stop: &StopWaiting,
+    ) -> Result<UninstallerExit, PortError>;
 }
 
 /// Where Volt itself is installed, so it is never offered for removal.
@@ -347,7 +421,17 @@ pub struct AppManager {
     clock: Arc<dyn Clock>,
     activity: Option<Arc<dyn ActivityLog>>,
     running: Mutex<()>,
+    stop: StopWaiting,
+    poll: Duration,
+    limit: Duration,
 }
+
+/// How often the registry is read while waiting for an uninstaller that could not be followed.
+const DEFAULT_POLL: Duration = Duration::from_secs(2);
+/// The longest Volt waits for such an uninstaller before it reports what it sees.
+const DEFAULT_LIMIT: Duration = Duration::from_secs(20 * 60);
+/// A wait sleeps in slices this long, so a request to stop is noticed quickly.
+const SLICE: Duration = Duration::from_millis(100);
 
 impl std::fmt::Debug for AppManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -373,7 +457,25 @@ impl AppManager {
             clock,
             activity: None,
             running: Mutex::new(()),
+            stop: StopWaiting::new(),
+            poll: DEFAULT_POLL,
+            limit: DEFAULT_LIMIT,
         }
+    }
+
+    /// Changes how an uninstaller that could not be followed is waited for: the registry is read
+    /// every `poll` and the wait gives up after `limit`.
+    #[must_use]
+    pub fn with_untracked_wait(mut self, poll: Duration, limit: Duration) -> Self {
+        self.poll = poll;
+        self.limit = limit;
+        self
+    }
+
+    /// Ends the wait for the uninstaller that is running, if any. The uninstaller keeps running;
+    /// the removal is then reported from what the list shows.
+    pub fn stop_waiting(&self) {
+        self.stop.request();
     }
 
     /// Also lists (and removes) the packaged apps of the current user.
@@ -508,8 +610,12 @@ impl AppManager {
         {
             return Err(UninstallError::HiddenByDefault);
         }
+        self.stop.clear();
         let started = match &app.removal {
-            Removal::Command(command) => self.uninstaller.run(command),
+            Removal::Command(command) => self
+                .uninstaller
+                .run(command, &self.stop)
+                .map(|exit| self.finish_wait(id, exit)),
             Removal::Package(full_name) => self
                 .packages
                 .as_ref()
@@ -551,6 +657,27 @@ impl AppManager {
         };
         report.activity_write_failed = !self.record(&report, source);
         Ok(report)
+    }
+
+    /// For an uninstaller that could not be followed past its first process: waits until the
+    /// app's entry is gone from the list, the user stops waiting or the limit passes. Returns the
+    /// exit code of the first process.
+    fn finish_wait(&self, id: &str, exit: UninstallerExit) -> Option<i32> {
+        if exit.waited == Waited::FirstProcess {
+            let started = Instant::now();
+            while !self.stop.is_requested()
+                && started.elapsed() < self.limit
+                && self.list().apps.iter().any(|app| app.id == id)
+            {
+                let mut slept = Duration::ZERO;
+                while slept < self.poll && !self.stop.is_requested() {
+                    let slice = SLICE.min(self.poll - slept);
+                    std::thread::sleep(slice);
+                    slept += slice;
+                }
+            }
+        }
+        exit.exit_code
     }
 
     /// Writes the activity record. Returns whether it was written (or there is no log).

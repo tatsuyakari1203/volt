@@ -15,12 +15,13 @@ use volt_core::apps::fakes::FakePackages;
 use volt_core::fakes::FakeSystem;
 use volt_core::{
     AppLocation, AppManager, PortError, Registry, RegistryHive, RegistryKeyRef, RegistryValue,
-    SystemClock, UninstallCommand, Uninstaller,
+    StopWaiting, SystemClock, UninstallCommand, Uninstaller, UninstallerExit,
 };
 use volt_desktop_lib::IpcError;
 use volt_desktop_lib::api::list_activity;
 use volt_desktop_lib::apps::{
-    AppSourceView, HiddenReasonView, UninstallOutcomeView, list_apps_of, uninstall_app_of,
+    AppSourceView, HiddenReasonView, UninstallOutcomeView, list_apps_of, stop_waiting_of,
+    uninstall_app_of,
 };
 use volt_desktop_lib::catalogue::EMBEDDED_CATALOGUE;
 use volt_desktop_lib::wiring::{AppCore, build_core};
@@ -111,7 +112,11 @@ struct SandboxUninstaller {
 }
 
 impl Uninstaller for SandboxUninstaller {
-    fn run(&self, command: &UninstallCommand) -> Result<Option<i32>, PortError> {
+    fn run(
+        &self,
+        command: &UninstallCommand,
+        _stop: &StopWaiting,
+    ) -> Result<UninstallerExit, PortError> {
         let program = command.program().to_lowercase();
         let Some(key) = program
             .strip_prefix(r"c:\vendor\remove-")
@@ -130,12 +135,29 @@ impl Uninstaller for SandboxUninstaller {
             .output()
             .map_err(|error| PortError::Other(error.to_string()))?
             .status;
-        Ok(status.code())
+        Ok(UninstallerExit::complete(status.code()))
     }
 }
 
 fn sz(text: &str) -> RegistryValue {
     RegistryValue::Sz(text.to_owned())
+}
+
+#[test]
+fn stopping_the_wait_with_nothing_running_is_harmless_and_does_not_cut_the_next_removal() {
+    let sandbox = Sandbox::new();
+    sandbox.entry(
+        "user",
+        "Mine",
+        &[
+            ("DisplayName", sz("Mine")),
+            ("UninstallString", sz(r"C:\Vendor\remove-mine.exe")),
+        ],
+    );
+    let core = sandbox.core(Arc::new(FakePackages::new()));
+    stop_waiting_of(&core).expect("accepted");
+    let result = uninstall_app_of(&core, "win32:user:Mine", false).expect("runs");
+    assert_eq!(result.outcome, UninstallOutcomeView::Removed);
 }
 
 #[test]
@@ -327,7 +349,11 @@ fn the_real_list_can_be_read_and_counts_are_plausible() {
 struct NeverRuns;
 
 impl Uninstaller for NeverRuns {
-    fn run(&self, _command: &UninstallCommand) -> Result<Option<i32>, PortError> {
+    fn run(
+        &self,
+        _command: &UninstallCommand,
+        _stop: &StopWaiting,
+    ) -> Result<UninstallerExit, PortError> {
         Err(PortError::Unsupported("never runs".to_owned()))
     }
 }

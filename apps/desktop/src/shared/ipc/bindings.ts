@@ -515,12 +515,24 @@ async listApps() : Promise<Result<AppListView, IpcError>> {
 },
 /**
  * Tauri command: removes one app by running the vendor's own registered uninstaller (or asking
- * Windows to remove a packaged app) and waits for it. This cannot be undone by Volt, so it is
+ * Windows to remove a packaged app) and waits for it and every process it started. This cannot be undone by Volt, so it is
  * recorded in the activity log but not in the undo journal. The UI asks first.
  */
 async uninstallApp(id: string, includeSystem: boolean) : Promise<Result<UninstallResult, IpcError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("uninstall_app", { id, includeSystem }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Tauri command: stops waiting for the uninstaller that `uninstall_app` is waiting for. Nothing
+ * is closed or killed; the uninstaller keeps running and the app is reported from the list.
+ */
+async stopWaitingForUninstaller() : Promise<Result<null, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("stop_waiting_for_uninstaller") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };

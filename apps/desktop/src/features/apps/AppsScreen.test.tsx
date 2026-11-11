@@ -9,6 +9,7 @@ import { AppsScreen } from './AppsScreen';
 const ipc = vi.hoisted(() => ({
   listApps: vi.fn(),
   uninstallApp: vi.fn(),
+  stopWaitingForUninstaller: vi.fn(),
 }));
 vi.mock('../../shared/ipc', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../shared/ipc')>()),
@@ -99,6 +100,8 @@ function order(): string[] {
 beforeEach(() => {
   ipc.listApps.mockReset();
   ipc.uninstallApp.mockReset();
+  ipc.stopWaitingForUninstaller.mockReset();
+  ipc.stopWaitingForUninstaller.mockResolvedValue(undefined);
   ipc.listApps.mockResolvedValue(sample);
 });
 
@@ -242,7 +245,11 @@ describe('uninstalling', () => {
     await waitFor(() => expect(ipc.uninstallApp).toHaveBeenCalledTimes(1));
     expect(ipc.uninstallApp).toHaveBeenLastCalledWith('win32:m64:a', false);
     const queue = screen.getByRole('region', { name: 'Uninstalling' });
-    expect(within(queue).getAllByText('Waiting for its uninstaller to finish...')).toHaveLength(1);
+    expect(
+      within(queue).getAllByText(
+        'Waiting for the uninstaller and everything it started to finish...',
+      ),
+    ).toHaveLength(1);
     // The other two wait their turn.
     expect(within(queue).getAllByText('Waiting', { selector: 'p' })).toHaveLength(2);
 
@@ -328,5 +335,105 @@ describe('uninstalling', () => {
       ),
     ).toBeTruthy();
     expect(ipc.uninstallApp).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('waiting and leaving', () => {
+  async function startQueue(user: ReturnType<typeof userEvent.setup>, ...names: string[]) {
+    await screen.findByRole('list', { name: 'Installed apps' });
+    for (const name of names) {
+      await user.click(screen.getByRole('checkbox', { name: `Select ${name}` }));
+    }
+    await user.click(screen.getByRole('button', { name: `Uninstall ${names.length} apps` }));
+    await user.click(
+      within(screen.getByRole('dialog')).getByRole('button', {
+        name: `Uninstall ${names.length} apps`,
+      }),
+    );
+    await waitFor(() => expect(ipc.uninstallApp).toHaveBeenCalledTimes(1));
+  }
+
+  it('says on the page that Volt cannot undo a removal, before and during the queue', async () => {
+    const user = userEvent.setup();
+    ipc.uninstallApp.mockImplementation(() => new Promise<UninstallResult>(() => {}));
+    renderScreen();
+    await screen.findByRole('list', { name: 'Installed apps' });
+    expect(screen.getAllByText(/Volt cannot undo an uninstall/)).toHaveLength(1);
+    await startQueue(user, 'Alpha Editor', 'Beta Player');
+    const queue = screen.getByRole('region', { name: 'Uninstalling' });
+    expect(within(queue).getByText(/Volt cannot undo an uninstall/)).toBeTruthy();
+  });
+
+  it('stops waiting for the running uninstaller by hand and goes on with the next app', async () => {
+    const user = userEvent.setup();
+    const gates: Array<(value: UninstallResult) => void> = [];
+    ipc.uninstallApp.mockImplementation(
+      () => new Promise<UninstallResult>((resolve) => gates.push(resolve)),
+    );
+    renderScreen();
+    await startQueue(user, 'Alpha Editor', 'Beta Player');
+
+    await user.click(screen.getByRole('button', { name: 'Stop waiting for this one' }));
+    expect(ipc.stopWaitingForUninstaller).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('button', { name: 'No longer waiting for this one' })).toBeTruthy();
+
+    // The core ends its wait and reports what the list shows; the queue moves on.
+    gates[0]?.(result({ id: 'win32:m64:a', name: 'Alpha Editor', outcome: 'stillInstalled' }));
+    await waitFor(() => expect(ipc.uninstallApp).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole('button', { name: 'Stop waiting for this one' })).toBeTruthy();
+  });
+
+  it('remembers the apps that did not run when the page is left, and names them at the next open', async () => {
+    const user = userEvent.setup();
+    let finish: (value: UninstallResult) => void = () => {};
+    ipc.uninstallApp.mockImplementation(
+      () =>
+        new Promise<UninstallResult>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const first = renderScreen();
+    await startQueue(user, 'Alpha Editor', 'Beta Player', 'Gamma Notes');
+    first.unmount();
+    finish(result({ id: 'win32:m64:a', name: 'Alpha Editor' }));
+    await waitFor(() =>
+      expect(window.localStorage.getItem('volt.apps.queue')).toBe(
+        JSON.stringify([
+          { id: 'win32:m64:b', name: 'Beta Player' },
+          { id: 'win32:user:c', name: 'Gamma Notes' },
+        ]),
+      ),
+    );
+    // The second app never started.
+    expect(ipc.uninstallApp).toHaveBeenCalledTimes(1);
+
+    renderScreen();
+    const notice = await screen.findByText(
+      /These apps were not removed: Beta Player, Gamma Notes\./,
+    );
+    expect(notice).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Dismiss' }));
+    expect(screen.queryByText(/These apps were not removed/)).toBeNull();
+    expect(window.localStorage.getItem('volt.apps.queue')).toBeNull();
+  });
+
+  it('does not name an app that is gone by the next open, and a finished queue leaves nothing', async () => {
+    window.localStorage.setItem(
+      'volt.apps.queue',
+      JSON.stringify([{ id: 'win32:m64:gone', name: 'Vanished App' }]),
+    );
+    renderScreen();
+    await screen.findByRole('list', { name: 'Installed apps' });
+    expect(screen.queryByText(/These apps were not removed/)).toBeNull();
+
+    const user = userEvent.setup();
+    ipc.uninstallApp.mockResolvedValue(result({ id: 'win32:m64:a', name: 'Alpha Editor' }));
+    await user.click(screen.getByRole('checkbox', { name: 'Select Alpha Editor' }));
+    await user.click(screen.getByRole('button', { name: 'Uninstall 1 app' }));
+    await user.click(
+      within(screen.getByRole('dialog')).getByRole('button', { name: 'Uninstall 1 app' }),
+    );
+    await screen.findByText('Finished');
+    expect(window.localStorage.getItem('volt.apps.queue')).toBeNull();
   });
 });

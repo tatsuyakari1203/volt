@@ -136,7 +136,7 @@
   "summary.process.failed": "; {count} không kết thúc được",
   "summary.uninstall.removed": "Đã gỡ cài đặt {name} (Volt không thể hoàn tác)",
   "summary.uninstall.stillInstalled": "Đã chạy trình gỡ cài đặt của {name}; ứng dụng vẫn còn được cài",
-  "summary.uninstall.unknown": "Đã chạy trình gỡ cài đặt của {name}; Volt không kiểm tra được ứng dụng đã bị gỡ chưa",
+  "summary.uninstall.unknown": "Đã chạy trình gỡ cài đặt của {name}; Volt không kiểm tra được ứng dụng đã bị gỡ chưa (Volt không thể hoàn tác)",
   "summary.uninstall.failed": "Không gỡ cài đặt được {name}: {reason}",
 
   "health.disk": "Còn trống {free} trên tổng {total} ở ổ {mount} ({share}%). Windows cần chỗ trống để cài bản cập nhật và để chuyển bộ nhớ xuống ổ đĩa.",

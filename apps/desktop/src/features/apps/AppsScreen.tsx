@@ -23,6 +23,7 @@ import {
   visibleApps,
 } from './apps';
 import { QueuePanel } from './QueuePanel';
+import { forgetQueue, type PendingApp, readRememberedQueue } from './queueMemory';
 import { UninstallDialog } from './UninstallDialog';
 import { useUninstallQueue } from './useUninstallQueue';
 
@@ -103,7 +104,9 @@ export function AppsScreen() {
   const alive = useRef(true);
 
   const onListing = useCallback((list: AppListView) => setLoad({ status: 'ready', list }), []);
-  const { queue, start, stop, dismiss } = useUninstallQueue(onListing);
+  const { queue, start, stop, stopWaiting, dismiss } = useUninstallQueue(onListing);
+  // What an earlier queue left unfinished when its page or window was closed.
+  const [left, setLeft] = useState<PendingApp[]>(readRememberedQueue);
 
   useEffect(() => {
     alive.current = true;
@@ -146,11 +149,17 @@ export function AppsScreen() {
 
   const confirm = () => {
     setConfirming(false);
+    setLeft([]);
     setTicked(new Set());
     void start(chosen, showSystem);
   };
 
   const problems = load.status === 'ready' ? load.list.problems : [];
+  const notRemoved = left.filter((item) => apps.some((app) => app.id === item.id));
+  const dismissLeft = () => {
+    forgetQueue();
+    setLeft([]);
+  };
 
   return (
     <>
@@ -168,6 +177,21 @@ export function AppsScreen() {
             </p>
           </div>
         ))}
+
+        {notRemoved.length > 0 ? (
+          <div
+            role="status"
+            className="flex items-start gap-3 rounded-md bg-caution p-3 text-body text-caution-fg"
+          >
+            <TriangleAlert aria-hidden size={18} className="mt-0.5 shrink-0" />
+            <p className="min-w-0 flex-1">
+              {t('apps.interrupted', { apps: notRemoved.map((item) => item.name).join(', ') })}
+            </p>
+            <Button size="sm" onClick={dismissLeft}>
+              {t('apps.interrupted.dismiss')}
+            </Button>
+          </div>
+        ) : null}
 
         {load.status === 'loading' ? (
           <Card role="status" className="flex items-center justify-center gap-2 py-10 text-muted">
@@ -251,7 +275,12 @@ export function AppsScreen() {
             )}
 
             {queue ? (
-              <QueuePanel queue={queue} onStop={stop} onDone={dismiss} />
+              <QueuePanel
+                queue={queue}
+                onStop={stop}
+                onStopWaiting={stopWaiting}
+                onDone={dismiss}
+              />
             ) : (
               <Card
                 as="section"
@@ -263,6 +292,7 @@ export function AppsScreen() {
                     ? t('apps.selection.none')
                     : t('apps.selection.some', { apps: tn('count.app', chosen.length) })}
                 </p>
+                <p className="text-caption text-muted">{t('apps.noUndo')}</p>
                 <div className="flex flex-wrap gap-2">
                   <Button
                     variant="primary"
