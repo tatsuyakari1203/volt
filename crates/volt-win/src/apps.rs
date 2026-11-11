@@ -433,31 +433,64 @@ mod tests {
         }
     }
 
+    /// How long a test may wait for a program before it is stopped. The wait itself has no limit
+    /// (the user ends it), so every test that waits runs under this watchdog: a program that never
+    /// ends fails the test instead of hanging the whole test binary.
+    const WATCHDOG: Duration = Duration::from_secs(90);
+
+    /// Runs the uninstaller with `stop` and a watchdog that requests the stop after
+    /// [`WATCHDOG`]. The result then reads `Waited::Stopped` where the test expects more.
+    fn run_bounded(command: &UninstallCommand, stop: &StopWaiting) -> UninstallerExit {
+        let done = std::sync::atomic::AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let started = std::time::Instant::now();
+                while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                    if started.elapsed() >= WATCHDOG {
+                        stop.request();
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            });
+            let result = WinUninstaller::new().run(command, stop);
+            done.store(true, std::sync::atomic::Ordering::Relaxed);
+            result.expect("runs")
+        })
+    }
+
     /// A harmless system program, not an uninstaller: proves the program is started as given and
     /// that its exit code comes back.
     #[test]
     fn a_started_program_is_waited_for_and_its_exit_code_returned() {
         let command = UninstallCommand::parse("cmd.exe /c exit 3").expect("accepted");
-        let exit = WinUninstaller::new()
-            .run(&command, &StopWaiting::new())
-            .expect("runs");
+        let exit = run_bounded(&command, &StopWaiting::new());
         assert_eq!(exit.exit_code, Some(3));
+        assert_ne!(
+            exit.waited,
+            Waited::Stopped,
+            "the watchdog stopped the wait"
+        );
         println!("quick program waited: {:?}", exit.waited);
     }
 
     /// A harmless system helper that starts a child and exits at once, the way a self-copying
-    /// uninstaller does: the wait must last as long as the child (about three seconds).
+    /// uninstaller does: the wait must last as long as the child (about three seconds). The first
+    /// ping takes about a second, so the job that follows the children holds the process before
+    /// the child starts, however slowly the machine starts the program.
     #[test]
     fn the_wait_covers_a_child_that_outlives_the_first_process() {
-        let command = UninstallCommand::parse("cmd.exe /c start /b ping.exe -n 4 127.0.0.1")
-            .expect("accepted");
+        let command = UninstallCommand::parse(
+            "cmd.exe /c ping.exe -n 2 127.0.0.1 >nul & start /b ping.exe -n 4 127.0.0.1",
+        )
+        .expect("accepted");
         let started = std::time::Instant::now();
-        let exit = WinUninstaller::new()
-            .run(&command, &StopWaiting::new())
-            .expect("runs");
+        let exit = run_bounded(&command, &StopWaiting::new());
         assert_eq!(exit.waited, Waited::Everything);
+        // Both pings ran one after the other, about four seconds in all; the lower bound is what
+        // shows the wait covered the second one. A busy machine only makes it longer.
         assert!(
-            started.elapsed() >= Duration::from_millis(2_000),
+            started.elapsed() >= Duration::from_millis(2_500),
             "returned after {:?}",
             started.elapsed()
         );
@@ -466,19 +499,18 @@ mod tests {
     /// Stopping ends the wait while the child still runs, and says so.
     #[test]
     fn stopping_ends_the_wait_while_a_child_still_runs() {
-        let command = UninstallCommand::parse("cmd.exe /c start /b ping.exe -n 6 127.0.0.1")
+        let command = UninstallCommand::parse("cmd.exe /c start /b ping.exe -n 30 127.0.0.1")
             .expect("accepted");
         let stop = StopWaiting::new();
-        let started = std::time::Instant::now();
         let exit = std::thread::scope(|scope| {
             scope.spawn(|| {
                 std::thread::sleep(Duration::from_millis(700));
                 stop.request();
             });
-            WinUninstaller::new().run(&command, &stop).expect("runs")
+            run_bounded(&command, &stop)
         });
+        // The child runs for about half a minute: only the stop can have ended the wait.
         assert_eq!(exit.waited, Waited::Stopped);
-        assert!(started.elapsed() < Duration::from_millis(4_000));
     }
 
     #[test]

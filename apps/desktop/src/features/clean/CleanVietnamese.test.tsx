@@ -59,7 +59,8 @@ it('lists a rule and its group in Vietnamese, filed under the rule id and the ca
   await user.click(within(group).getByText('Đây là gì?'));
   expect(within(group).getByText(/Các tệp mà chương trình và trình cài đặt để lại/)).toBeTruthy();
   expect(within(group).getByText('Chỉ lấy các mục không thay đổi trong 7 ngày.')).toBeTruthy();
-  expect(screen.getByText('Thùng rác đang trống.')).toBeTruthy();
+  // The Recycle Bin status arrives after the rules, so wait for it.
+  expect(await screen.findByText('Thùng rác đang trống.')).toBeTruthy();
 });
 
 it('puts the result of a clean together from its totals', () => {

@@ -1,4 +1,4 @@
-import { act, render, screen, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EndAppResult, ProcessGroupView, ProcessListView } from '../../shared/ipc';
@@ -156,10 +156,15 @@ describe('ProcessesScreen', () => {
 
   it('ends the app after the confirmation, says so and reads the list again', async () => {
     const user = userEvent.setup();
-    ipc.endApp.mockResolvedValue(ended);
+    // The screen also reads the list by itself every few seconds, on a real timer, so the number
+    // of readings says nothing on a slow machine. Only the reading after the end can show the
+    // new list, so the list changes when the app ends and the test waits for that.
+    ipc.endApp.mockImplementation(() => {
+      ipc.listProcesses.mockResolvedValue(list(sample.groups.filter((g) => g.id !== 'chrome.exe')));
+      return Promise.resolve(ended);
+    });
     renderScreen();
     await screen.findByRole('list', { name: 'Apps' });
-    expect(ipc.listProcesses).toHaveBeenCalledTimes(1);
 
     await user.click(screen.getByRole('button', { name: 'End chrome.exe' }));
     await user.click(screen.getByRole('button', { name: 'End 12 processes' }));
@@ -167,7 +172,9 @@ describe('ProcessesScreen', () => {
     expect(ipc.endApp).toHaveBeenCalledWith('chrome.exe');
     expect(await screen.findByText('Ended chrome.exe: 12 processes.')).toBeTruthy();
     expect(screen.queryByRole('dialog')).toBeNull();
-    expect(ipc.listProcesses).toHaveBeenCalledTimes(2);
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: 'End chrome.exe' })).toBeNull();
+    });
   });
 
   it('warns extra for Windows Explorer', async () => {
