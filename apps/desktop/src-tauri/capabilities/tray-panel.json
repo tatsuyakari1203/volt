@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "tray-panel",
+  "description": "Minimum capability for the tray panel. Like the main window it may only listen to events; its buttons are Volt commands, which need no permission.",
+  "windows": ["tray-panel"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}

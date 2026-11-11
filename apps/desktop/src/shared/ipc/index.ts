@@ -41,6 +41,7 @@ import {
   type MemoryPointView,
   type MemoryState,
   type MetricsView,
+  type PanelBoostLine,
   type ProcessListView,
   type RecycleBinView,
   type Result,
@@ -124,6 +125,7 @@ export type {
   MetricsView,
   MovedToBinView,
   OperationState,
+  PanelBoostLine,
   PhraseView,
   PriorityView,
   ProcessEndView,
@@ -277,6 +279,25 @@ export function onBoostFinished(handler: (report: BoostResult) => void): Promise
  */
 export async function runBoost(): Promise<BoostResult> {
   return call(() => commands.boost());
+}
+
+/**
+ * Runs Boost for the tray panel, the way the tray menu item does (same notification and tooltip),
+ * and resolves with the line to show. 
+ull when a Boost is already running.
+ */
+export async function runPanelBoost(): Promise<PanelBoostLine | null> {
+  return call(() => commands.panelBoost());
+}
+
+/** Closes the tray panel, and with it its WebView. */
+export async function closeTrayPanel(): Promise<void> {
+  await call(() => commands.closeTrayPanel());
+}
+
+/** Opens (or focuses) the main window and closes the tray panel. */
+export async function openMainFromPanel(): Promise<void> {
+  await call(() => commands.openMainFromPanel());
 }
 
 /** What Boost includes (the defaults until the user changes them). */

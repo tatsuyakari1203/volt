@@ -13,8 +13,10 @@ use tauri::{App, AppHandle, Manager, Runtime};
 use tauri_plugin_notification::NotificationExt;
 use tauri_specta::Event as _;
 
-use crate::boost::{self, BoostFinished};
+use crate::IpcError;
+use crate::boost::{self, BoostFinished, BoostResult};
 use crate::language::{self, Lang};
+use crate::panel;
 use crate::window;
 use crate::wiring::AppState;
 
@@ -123,10 +125,10 @@ impl TrayAction {
     }
 }
 
-/// Whether a tray icon event is the left click that opens the window (on release, so the press
+/// Whether a tray icon event is the left click that opens the panel (on release, so the press
 /// that started the click is not mistaken for a second one).
 #[must_use]
-pub(crate) fn opens_window(event: &TrayIconEvent) -> bool {
+pub(crate) fn opens_panel(event: &TrayIconEvent) -> bool {
     matches!(
         event,
         TrayIconEvent::Click {
@@ -140,6 +142,7 @@ pub(crate) fn opens_window(event: &TrayIconEvent) -> bool {
 /// Builds the tray icon and its menu. Called once from the app's setup.
 pub(crate) fn setup(app: &App) -> tauri::Result<()> {
     app.manage(BoostRunning::default());
+    panel::setup(app);
 
     // The menu starts in the language that is set now; [`apply_language`] rewrites it when the
     // user changes the language.
@@ -172,8 +175,10 @@ pub(crate) fn setup(app: &App) -> tauri::Result<()> {
             }
         })
         .on_tray_icon_event(|tray, event| {
-            if opens_window(&event) {
-                run(tray.app_handle(), TrayAction::Open);
+            if opens_panel(&event)
+                && let TrayIconEvent::Click { position, rect, .. } = &event
+            {
+                panel::toggle(tray.app_handle(), panel::Anchor::of(rect, *position));
             }
         });
     if let Some(icon) = app.default_window_icon() {
@@ -193,40 +198,47 @@ fn run<R: Runtime>(app: &AppHandle<R>, action: TrayAction) {
 }
 
 /// Runs Boost on a worker thread (it reads and changes memory, so never on the main thread).
-/// The result goes to the tooltip, to a notification when no window is open and, as an event, to
-/// a window that is open.
 fn start_boost<R: Runtime>(app: &AppHandle<R>) {
-    if !app.state::<BoostRunning>().try_start() {
-        return;
-    }
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let running = app.state::<BoostRunning>();
-        let _clears_the_flag = running.guard();
-        let outcome = app
-            .state::<AppState>()
-            .core()
-            .and_then(|core| boost::boost_of(&core));
-        let lang = language::current(&app.state::<AppState>());
-        if let Some(tray) = app.tray_by_id(TRAY_ID) {
-            // A failed tooltip update changes nothing that matters.
-            let _ = tray.set_tooltip(Some(boost::tooltip_line(&outcome, lang)));
-        }
-        if app.get_webview_window(window::MAIN_WINDOW).is_none() {
-            // With a window open the report is on Home; with none, this is the only feedback.
-            // A notification that cannot be shown (disabled in Windows) leaves the tooltip.
-            let _ = app
-                .notification()
-                .builder()
-                .title("Volt Boost")
-                .body(boost::notification_body(&outcome, lang))
-                .show();
-        }
-        if let Ok(result) = outcome {
-            // A failed emit only means nobody is listening.
-            let _ = BoostFinished(result).emit(&app);
-        }
+        boost_now(&app);
     });
+}
+
+/// Runs Boost on the calling thread, which must not be the main thread, and returns how it
+/// ended; None when another Boost is running (nothing is started then). The result goes to the
+/// tooltip, to a notification when no main window is open and, as an event, to every window.
+/// The tray menu and the tray panel both call this, so they follow the same rules.
+pub(crate) fn boost_now<R: Runtime>(app: &AppHandle<R>) -> Option<Result<BoostResult, IpcError>> {
+    let running = app.state::<BoostRunning>();
+    if !running.try_start() {
+        return None;
+    }
+    let _clears_the_flag = running.guard();
+    let outcome = app
+        .state::<AppState>()
+        .core()
+        .and_then(|core| boost::boost_of(&core));
+    let lang = language::current(&app.state::<AppState>());
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        // A failed tooltip update changes nothing that matters.
+        let _ = tray.set_tooltip(Some(boost::tooltip_line(&outcome, lang)));
+    }
+    if app.get_webview_window(window::MAIN_WINDOW).is_none() {
+        // With a window open the report is on Home; with none, this is the only feedback.
+        // A notification that cannot be shown (disabled in Windows) leaves the tooltip.
+        let _ = app
+            .notification()
+            .builder()
+            .title("Volt Boost")
+            .body(boost::notification_body(&outcome, lang))
+            .show();
+    }
+    if let Ok(result) = &outcome {
+        // A failed emit only means nobody is listening.
+        let _ = BoostFinished(result.clone()).emit(app);
+    }
+    Some(outcome)
 }
 
 #[cfg(test)]
@@ -270,20 +282,17 @@ mod tests {
     }
 
     #[test]
-    fn only_a_left_click_release_opens_the_window() {
-        assert!(opens_window(&click(
-            MouseButton::Left,
-            MouseButtonState::Up
-        )));
-        assert!(!opens_window(&click(
+    fn only_a_left_click_release_opens_the_panel() {
+        assert!(opens_panel(&click(MouseButton::Left, MouseButtonState::Up)));
+        assert!(!opens_panel(&click(
             MouseButton::Left,
             MouseButtonState::Down
         )));
-        assert!(!opens_window(&click(
+        assert!(!opens_panel(&click(
             MouseButton::Right,
             MouseButtonState::Up
         )));
-        assert!(!opens_window(&click(
+        assert!(!opens_panel(&click(
             MouseButton::Middle,
             MouseButtonState::Up
         )));

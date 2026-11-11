@@ -273,6 +273,9 @@ pub fn bindings_builder() -> Builder<tauri::Wry> {
             crate::boost::boost,
             crate::boost::boost_config,
             crate::boost::set_boost_config,
+            crate::panel::panel_boost,
+            crate::panel::close_tray_panel,
+            crate::panel::open_main_from_panel,
             crate::language::language_setting,
             crate::language::set_language,
         ])
