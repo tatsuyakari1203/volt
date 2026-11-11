@@ -172,8 +172,7 @@
   "boost.notice.done": "Boost xong.",
   "boost.notice.memory": "Bộ nhớ khả dụng {before} lên {after}.",
   "boost.notice.moved": "Đã chuyển {files} vào Thùng rác.",
-  "boost.notice.skipped": "Đã bỏ qua {count}: mở Volt để xem lý do."
-=======
+  "boost.notice.skipped": "Đã bỏ qua {count}: mở Volt để xem lý do.",
   "subject.process": "cài đặt của {name}",
   "prior.processes.other": "cài đặt của {count} tiến trình",
   "restore.processes.other": "đã khôi phục cài đặt của {count} tiến trình",
