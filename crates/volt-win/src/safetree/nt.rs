@@ -270,7 +270,7 @@ pub(super) fn meta(handle: &OwnedHandle) -> Result<Meta, Status> {
 /// The entries of an open directory, `.` and `..` left out.
 #[allow(
     clippy::cast_ptr_alignment,
-    reason = "the buffer is 8-aligned and the file system puts every entry, and so every name, at an \n              even offset; the name units are copied out, never referenced"
+    reason = "the buffer is 8-aligned and the file system puts every entry, and so every name, at an even offset; the name units are copied out, never referenced"
 )]
 pub(super) fn list(handle: &OwnedHandle) -> Result<Vec<Entry>, Status> {
     #[repr(C)]

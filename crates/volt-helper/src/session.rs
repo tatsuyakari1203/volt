@@ -967,7 +967,7 @@ max_depth = 3
             let root = dir.path().join("tree");
             std::fs::create_dir_all(&root).expect("root");
             let canonical = root.canonicalize().expect("canonical");
-            let root = PathBuf::from(canonical.to_string_lossy().trim_start_matches(r"\?\"));
+            let root = PathBuf::from(canonical.to_string_lossy().trim_start_matches(r"\\?\"));
             let mut file = std::fs::File::create(root.join("old.tmp")).expect("file");
             file.write_all(b"0123456789").expect("write");
             file.set_modified(SystemTime::now() - Duration::from_secs(30 * 86_400))
@@ -1000,13 +1000,7 @@ max_depth = 3
         #[test]
         fn cleaning_requests_that_cannot_be_served_are_refused_without_touching_anything() {
             let confirmer = Arc::new(FakeConfirmer::accepting());
-            let mut session = session_with_desk(
-                PathBuf::from(
-                    r"C:
-owhere",
-                ),
-                confirmer.clone(),
-            );
+            let mut session = session_with_desk(PathBuf::from(r"C:\nowhere"), confirmer.clone());
             for (id, json, expected) in [
                 (2, scan_json(2, "Not-A-Rule"), ErrorCode::InvalidRequest),
                 (3, scan_json(3, "../x"), ErrorCode::InvalidRequest),

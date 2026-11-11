@@ -159,8 +159,8 @@ fn clean_text(lang: Lang, name: &str, risk: &str, seconds: u64) -> PromptText {
             title: "Volt: administrator confirmation".to_owned(),
             heading: format!("Delete \"{name}\" permanently?"),
             body: format!(
-                "This deletes old files from a folder that every account on this PC can put files                  in. They do not go to the Recycle Bin and cannot be restored. Risk: {risk}.
-
+                "This deletes old files from a folder that every account on this PC can put files in. \
+                 They do not go to the Recycle Bin and cannot be restored. Risk: {risk}.\n\n\
                  Continue only if you just asked Volt to do this."
             ),
             footer: format!("If nobody answers within {seconds} seconds, nothing is deleted."),
@@ -171,9 +171,9 @@ fn clean_text(lang: Lang, name: &str, risk: &str, seconds: u64) -> PromptText {
             title: "Volt: xác nhận quyền quản trị".to_owned(),
             heading: format!("Xóa vĩnh viễn \"{name}\"?"),
             body: format!(
-                "Việc này xóa các tệp cũ trong một thư mục mà mọi tài khoản trên máy này đều có                  thể đặt tệp vào. Chúng không vào Thùng rác và không thể khôi phục. Mức rủi ro:                  {risk}.
-
-Chỉ tiếp tục nếu bạn vừa yêu cầu Volt làm việc này."
+                "Việc này xóa các tệp cũ trong một thư mục mà mọi tài khoản trên máy này đều có thể \
+                 đặt tệp vào. Chúng không vào Thùng rác và không thể khôi phục. Mức rủi ro: {risk}.\n\n\
+                 Chỉ tiếp tục nếu bạn vừa yêu cầu Volt làm việc này."
             ),
             footer: format!("Nếu không ai trả lời trong {seconds} giây, sẽ không xóa gì cả."),
             accept: "Xóa vĩnh viễn".to_owned(),

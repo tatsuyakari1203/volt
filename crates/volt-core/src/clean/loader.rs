@@ -458,7 +458,7 @@ impl Reader<'_> {
                 self.report(
                     field.to_owned(),
                     RuleIssueKind::Invalid(
-                        "only a rule that needs administrator rights (`requires_admin = true`)                          can say this"
+                        "only a rule that needs administrator rights (`requires_admin = true`) can say this"
                             .to_owned(),
                     ),
                 );
