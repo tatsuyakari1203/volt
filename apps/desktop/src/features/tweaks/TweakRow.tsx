@@ -1,5 +1,5 @@
 import { ChevronDown, ChevronRight } from 'lucide-react';
-import { t } from '../../shared/i18n';
+import { say, t } from '../../shared/i18n';
 import type { TweakInfo, TweakPlanView, TweakStepView } from '../../shared/ipc';
 import { Badge, Button, ListRow, Switch } from '../../shared/ui';
 import { restartNote, tweakDescription, tweakEvidence, tweakTitle } from './messages';
@@ -19,10 +19,13 @@ export function StepList({ steps, label }: { steps: TweakStepView[]; label: stri
     <ul aria-label={label} className="mt-1 flex flex-col gap-1.5">
       {steps.map((step) => (
         <li key={step.subject} className="rounded-sm bg-surface-sunken px-2 py-1.5">
-          <code className="block break-all font-mono text-caption text-fg">{step.subject}</code>
+          <code className="block break-all font-mono text-caption text-fg">
+            {say(step.subjectPhrase, step.subject)}
+          </code>
           <span className="block text-caption text-muted">
-            {step.current} <span aria-hidden>{'->'}</span>
-            <span className="sr-only">{t('tweaks.row.changesTo')}</span> {step.target}
+            {say(step.currentPhrase, step.current)} <span aria-hidden>{'->'}</span>
+            <span className="sr-only">{t('tweaks.row.changesTo')}</span>{' '}
+            {say(step.targetPhrase, step.target)}
           </span>
         </li>
       ))}

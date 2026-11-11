@@ -89,3 +89,19 @@ describe('say', () => {
     expect(sayCapitalised(what, 'startup entry Teams')).toBe('Startup entry Teams');
   });
 });
+
+describe('say for the last sentences the core wrote in English only', () => {
+  it('writes why a line cannot be undone and what a tweak will change in Vietnamese', () => {
+    setLocale('vi');
+    expect(
+      say(phrase('undo.unconfirmed'), 'Volt has not confirmed that this change happened.'),
+    ).toBe('Volt chưa xác nhận thay đổi này đã diễn ra.');
+    expect(say(phrase('preview.keyValues', { count: count(1) }), 'key exists, 1 value')).toBe(
+      'khóa tồn tại, 1 giá trị',
+    );
+    expect(say(phrase('preview.text', { text: text('REG_DWORD 1') }), 'x')).toBe('REG_DWORD 1');
+    expect(say(phrase('preview.command', { command: text('sc stop X') }), 'x')).toBe(
+      'lệnh sc stop X',
+    );
+  });
+});

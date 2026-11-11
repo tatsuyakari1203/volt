@@ -107,14 +107,13 @@ impl TrayAction {
 
     /// The label shown in the menu, in the language the app is set to.
     #[must_use]
-    pub(crate) const fn label(self, lang: Lang) -> &'static str {
-        match (self, lang) {
-            (Self::Open, Lang::English) => "Open",
-            (Self::Open, Lang::Vietnamese) => "Mở",
-            (Self::Boost, _) => "Boost",
-            (Self::Quit, Lang::English) => "Quit",
-            (Self::Quit, Lang::Vietnamese) => "Thoát",
-        }
+    pub(crate) fn label(self, lang: Lang) -> String {
+        let code = match self {
+            Self::Open => "tray.open",
+            Self::Boost => "tray.boost",
+            Self::Quit => "tray.quit",
+        };
+        crate::phrase::write(&volt_core::Phrase::new(code), lang)
     }
 
     /// Maps a menu item id back to its action. Unknown ids map to nothing.

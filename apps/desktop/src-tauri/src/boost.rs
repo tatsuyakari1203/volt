@@ -12,7 +12,7 @@
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri_specta::Event;
-use volt_core::{Availability, BoostConfig, BoostReport, MemoryArea, Source, run_boost};
+use volt_core::{Availability, BoostConfig, BoostReport, MemoryArea, Phrase, Source, run_boost};
 
 use crate::IpcError;
 use crate::cleaner::{count32, count64};
@@ -210,99 +210,63 @@ pub fn boost_of(core: &AppCore) -> Result<BoostResult, IpcError> {
 /// A short line for the tray tooltip, in plain words. The text never says space was freed.
 #[must_use]
 pub fn tooltip_line(outcome: &Result<BoostResult, IpcError>, lang: Lang) -> String {
-    match (outcome, lang) {
-        (Err(_), Lang::English) => "Volt: Boost could not run".to_owned(),
-        (Err(_), Lang::Vietnamese) => "Volt: Boost không chạy được".to_owned(),
-        (Ok(result), _) => match (result.available_before, result.available_after) {
-            (Some(before), Some(after)) => match lang {
-                Lang::English => format!(
-                    "Volt: Boost done, memory available {} to {}",
-                    gib(before, lang),
-                    gib(after, lang)
-                ),
-                Lang::Vietnamese => format!(
-                    "Volt: Boost xong, bộ nhớ khả dụng {} lên {}",
-                    gib(before, lang),
-                    gib(after, lang)
-                ),
-            },
-            _ => match lang {
-                Lang::English => "Volt: Boost done".to_owned(),
-                Lang::Vietnamese => "Volt: Boost xong".to_owned(),
-            },
+    let phrase = match outcome {
+        Err(_) => Phrase::new("boost.tooltip.failed"),
+        Ok(result) => match memory_change(result) {
+            Some((before, after)) => Phrase::new("boost.tooltip.memory")
+                .bytes("before", before)
+                .bytes("after", after),
+            None => Phrase::new("boost.tooltip.done"),
         },
-    }
+    };
+    crate::phrase::write(&phrase, lang)
 }
 
 /// The text of the notification a tray Boost shows when no window is open. It says what ran and
 /// how memory changed; it never claims disk space was freed.
 #[must_use]
 pub fn notification_body(outcome: &Result<BoostResult, IpcError>, lang: Lang) -> String {
-    match outcome {
-        Err(_) => match lang {
-            Lang::English => "Boost could not run.".to_owned(),
-            Lang::Vietnamese => "Boost không chạy được.".to_owned(),
-        },
-        Ok(result) => {
-            let mut parts = Vec::new();
-            match (result.available_before, result.available_after) {
-                (Some(before), Some(after)) => parts.push(match lang {
-                    Lang::English => format!(
-                        "Memory available {} to {}.",
-                        gib(before, lang),
-                        gib(after, lang)
-                    ),
-                    Lang::Vietnamese => format!(
-                        "Bộ nhớ khả dụng {} lên {}.",
-                        gib(before, lang),
-                        gib(after, lang)
-                    ),
-                }),
-                _ => parts.push(match lang {
-                    Lang::English => "Boost done.".to_owned(),
-                    Lang::Vietnamese => "Boost xong.".to_owned(),
-                }),
-            }
-            if let Some(moved) = &result.moved_to_bin {
-                parts.push(match lang {
-                    Lang::English => {
-                        format!("{} moved to the Recycle Bin.", count_files(moved.files))
-                    }
-                    Lang::Vietnamese => {
-                        format!("Đã chuyển {} tệp vào Thùng rác.", moved.files)
-                    }
-                });
-            }
-            if !result.skipped.is_empty() {
-                parts.push(match lang {
-                    Lang::English => {
-                        format!("{} skipped: open Volt to see why.", result.skipped.len())
-                    }
-                    Lang::Vietnamese => {
-                        format!("Đã bỏ qua {}: mở Volt để xem lý do.", result.skipped.len())
-                    }
-                });
-            }
-            parts.join(" ")
-        }
+    let Ok(result) = outcome else {
+        return crate::phrase::write(&Phrase::new("boost.notice.failed"), lang);
+    };
+    let mut parts = vec![match memory_change(result) {
+        Some((before, after)) => Phrase::new("boost.notice.memory")
+            .bytes("before", before)
+            .bytes("after", after),
+        None => Phrase::new("boost.notice.done"),
+    }];
+    if let Some(moved) = &result.moved_to_bin {
+        parts.push(Phrase::new("boost.notice.moved").phrase(
+            "files",
+            Phrase::new("count.file").count("count", moved.files),
+        ));
     }
+    if !result.skipped.is_empty() {
+        parts.push(Phrase::new("boost.notice.skipped").count("count", result.skipped.len()));
+    }
+    parts
+        .iter()
+        .map(|part| crate::phrase::write(part, lang))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
-fn count_files(files: u32) -> String {
-    if files == 1 {
-        "1 file".to_owned()
-    } else {
-        format!("{files} files")
-    }
-}
-
-/// Bytes as gibibytes with one decimal, written with the decimal mark of the language.
-fn gib(bytes: f64, lang: Lang) -> String {
-    let text = format!("{:.1} GB", bytes / f64::from(1u32 << 30));
-    match lang {
-        Lang::English => text,
-        Lang::Vietnamese => text.replace('.', ","),
-    }
+/// Available memory before and after, in bytes, when both were read.
+fn memory_change(result: &BoostResult) -> Option<(u64, u64)> {
+    let bytes = |value: f64| {
+        // Display only: a negative or absurd reading is clamped, never an error.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "available memory is a non-negative byte count far below 2^64"
+        )]
+        let whole = value.max(0.0) as u64;
+        whole
+    };
+    Some((
+        bytes(result.available_before?),
+        bytes(result.available_after?),
+    ))
 }
 
 /// Tauri command: runs Boost as saved and returns the before and after report.

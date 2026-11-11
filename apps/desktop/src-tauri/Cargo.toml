@@ -31,6 +31,8 @@ tauri-plugin-dialog = "=2.7.3"
 # capability grants it to the UI, and on Windows it calls the local toast API (no network).
 tauri-plugin-notification = "=2.4.0"
 serde = { version = "1", features = ["derive"] }
+# Reads the phrase table the tray and Boost notification write in.
+serde_json = { workspace = true }
 # Typed IPC: pinned exactly because tauri-specta is still a release candidate. The three move
 # together (tauri-specta requires the matching specta rc and specta-typescript 0.0.13).
 tauri-specta = { version = "=2.0.0-rc.21", features = ["derive", "typescript"] }
@@ -43,5 +45,4 @@ log = { workspace = true }
 
 [dev-dependencies]
 volt-core = { workspace = true, features = ["fakes"] }
-serde_json = { workspace = true }
 tempfile = { workspace = true }

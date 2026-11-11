@@ -675,6 +675,13 @@ fn the_plan_is_a_dry_run_that_shows_current_and_target_and_changes_nothing() {
         plan.items[3].preview.to_string(),
         "command sample-tool --enable: not applied -> applied"
     );
+    // Every part of the preview also comes as a phrase that reads the same in English.
+    for item in &plan.items {
+        let preview = &item.preview;
+        assert_eq!(preview.subject_phrase.english(), preview.subject);
+        assert_eq!(preview.current_phrase.english(), preview.current);
+        assert_eq!(preview.target_phrase.english(), preview.target);
+    }
     assert_before(&system);
     assert!(
         system.log.events().is_empty(),

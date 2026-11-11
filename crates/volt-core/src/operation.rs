@@ -6,8 +6,10 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::activity::start_type_phrase;
 use crate::command::{Command, run_detect, run_expecting_success};
 use crate::error::PortError;
+use crate::phrase::Phrase;
 use crate::ports::Ports;
 use crate::registry::{
     RegistryKeyContents, RegistryKeyRef, RegistryValue, RegistryValueRef, missing_levels,
@@ -276,6 +278,50 @@ impl Operation {
     }
 }
 
+/// A text that is the same in every language, as a phrase.
+fn raw(text: impl Into<String>) -> Phrase {
+    Phrase::new("preview.text").text("text", text)
+}
+
+impl Operation {
+    /// [`Operation::describe_target`] as phrases: what is changed and the value it gets.
+    pub(crate) fn describe_target_phrases(&self) -> (Phrase, Phrase) {
+        match self {
+            Self::SetRegistryValue { target, value } => {
+                (raw(target.to_string()), raw(value.to_string()))
+            }
+            Self::DeleteRegistryValue { target } => {
+                (raw(target.to_string()), Phrase::new("prior.notSet"))
+            }
+            Self::EnsureRegistryKey { key } => {
+                (raw(key.to_string()), Phrase::new("preview.keyExists"))
+            }
+            Self::DeleteRegistryKey { key } => {
+                (raw(key.to_string()), Phrase::new("preview.keyRemoved"))
+            }
+            Self::SetServiceStartType {
+                service,
+                start_type,
+            } => (
+                Phrase::new("subject.service").text("service", service.to_string()),
+                start_type_phrase(*start_type),
+            ),
+            Self::RunCommand {
+                apply,
+                effect_after,
+                ..
+            } => (
+                Phrase::new("preview.command").text("command", apply.to_string()),
+                Phrase::new(if *effect_after {
+                    "prior.applied"
+                } else {
+                    "prior.notApplied"
+                }),
+            ),
+        }
+    }
+}
+
 impl PriorState {
     /// The registry value this state records: `None` when it is not about a registry value,
     /// `Some(None)` when the value did not exist.
@@ -285,6 +331,24 @@ impl PriorState {
             Self::RegistryValue(value) => Some(value.as_ref()),
             Self::RegistryValueInNewKey { .. } => Some(None),
             _ => None,
+        }
+    }
+
+    /// [`PriorState::describe`] as a phrase.
+    pub(crate) fn describe_phrase(&self) -> Phrase {
+        match self {
+            Self::RegistryValue(Some(value)) => raw(value.to_string()),
+            Self::RegistryValue(None) | Self::RegistryValueInNewKey { .. } => {
+                Phrase::new("prior.notSet")
+            }
+            Self::RegistryKeyMissing { .. } => Phrase::new("prior.keyMissing"),
+            Self::RegistryKeyPresent(contents) => match contents.values.len() {
+                0 if contents.complete => Phrase::new("preview.keyEmpty"),
+                n => Phrase::new("preview.keyValues").count("count", n),
+            },
+            Self::ServiceStartType(start_type) => start_type_phrase(*start_type),
+            Self::CommandState(true) => Phrase::new("prior.applied"),
+            Self::CommandState(false) => Phrase::new("prior.notApplied"),
         }
     }
 

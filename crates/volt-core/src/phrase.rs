@@ -137,61 +137,104 @@ impl Phrase {
     /// The sentence in English: the fallback every record keeps.
     #[must_use]
     pub fn english(&self) -> String {
-        let template = self.template();
+        self.write_with(&english_template, '.', true)
+            .unwrap_or_else(|| "?".to_owned())
+    }
+
+    /// The sentence written from another language's templates, for the few places where the shell
+    /// writes for the user with no window to do it (the tray). `lookup` gives the template of a
+    /// code (`count.file.one`, `count.file.other`, `scan.tooNew`); `decimal` is the decimal mark;
+    /// `singular` is whether the language has a form for a count of 1 (`.one`). `None` when this
+    /// phrase or a part of it has no template, so the caller falls back to [`Phrase::english`].
+    #[must_use]
+    pub fn write_with(
+        &self,
+        lookup: &dyn Fn(&str) -> Option<String>,
+        decimal: char,
+        singular: bool,
+    ) -> Option<String> {
+        let template = self.template_in(lookup, singular)?;
         let mut out = String::with_capacity(template.len());
-        let mut rest = template;
+        let mut rest = template.as_str();
         while let Some(start) = rest.find('{') {
             out.push_str(&rest[..start]);
             let after = &rest[start + 1..];
             let Some(end) = after.find('}') else {
                 out.push_str(&rest[start..]);
-                return out;
+                return Some(out);
             };
             if let Some(arg) = self.args.get(&after[..end]) {
-                arg.write_english(&mut out);
+                arg.write_in(&mut out, lookup, decimal, singular)?;
             }
             rest = &after[end + 1..];
         }
         out.push_str(rest);
-        out
+        Some(out)
     }
 
-    fn template(&self) -> &'static str {
-        let find = |code: &str| {
-            ENGLISH
-                .iter()
-                .find(|(known, _)| *known == code)
-                .map(|(_, text)| *text)
-        };
+    fn template_in(
+        &self,
+        lookup: &dyn Fn(&str) -> Option<String>,
+        singular: bool,
+    ) -> Option<String> {
         if let Some(Arg::Count(count)) = self.args.get("count") {
-            let form = if *count == 1 { "one" } else { "other" };
-            if let Some(text) = find(&format!("{}.{form}", self.code)) {
-                return text;
+            let form = if singular && *count == 1 {
+                "one"
+            } else {
+                "other"
+            };
+            if let Some(text) = lookup(&format!("{}.{form}", self.code))
+                .or_else(|| lookup(&format!("{}.other", self.code)))
+            {
+                return Some(text);
             }
         }
-        // A code the table does not know is written as the code, so the gap is visible.
-        find(&self.code).unwrap_or("?")
+        lookup(&self.code)
     }
 }
 
+fn english_template(code: &str) -> Option<String> {
+    ENGLISH
+        .iter()
+        .find(|(known, _)| *known == code)
+        .map(|(_, text)| (*text).to_owned())
+}
+
 impl Arg {
-    fn write_english(&self, out: &mut String) {
+    fn write_in(
+        &self,
+        out: &mut String,
+        lookup: &dyn Fn(&str) -> Option<String>,
+        decimal: char,
+        singular: bool,
+    ) -> Option<()> {
+        let number = |text: String| {
+            if decimal == '.' {
+                text
+            } else {
+                text.replace('.', &decimal.to_string())
+            }
+        };
         match self {
             Self::Text(text) => out.push_str(text),
             Self::Count(count) => {
                 let _ = write!(out, "{count}");
             }
             Self::Tenths(tenths) => {
-                let _ = write!(out, "{}.{}", tenths / 10, tenths % 10);
+                out.push_str(&number(format!("{}.{}", tenths / 10, tenths % 10)));
             }
-            Self::Size(bytes) => out.push_str(&size_text(*bytes)),
-            Self::Bytes(bytes) => out.push_str(&bytes_text(*bytes)),
-            Self::Phrase(phrase) => out.push_str(&phrase.english()),
+            Self::Size(bytes) => out.push_str(&number(size_text(*bytes))),
+            Self::Bytes(bytes) => out.push_str(&number(bytes_text(*bytes))),
+            Self::Phrase(phrase) => out.push_str(&phrase.write_with(lookup, decimal, singular)?),
             Self::List { sep, items } => {
-                let parts: Vec<String> = items.iter().map(Phrase::english).collect();
-                out.push_str(&parts.join(sep));
+                let parts: Option<Vec<String>> = items
+                    .iter()
+                    .map(|item| item.write_with(lookup, decimal, singular))
+                    .collect();
+                out.push_str(&parts?.join(sep));
             }
         }
+        Some(())
     }
 }
 
@@ -405,6 +448,31 @@ pub const ENGLISH: &[(&str, &str)] = &[
     ("health.memory", "{percent}% of your memory is in use. When it runs out Windows slows down and may close programs."),
     ("health.restart", "Windows has updates or installs that finish only after a restart."),
     ("health.startup", "{count} startup entries are enabled. Each one starts a program when you sign in, which slows it down."),
+    // Why a line on the Undo page cannot be undone.
+    ("undo.noRecord", "Volt saved no earlier value for this action, so it cannot restore it."),
+    ("undo.recordGone", "Its undo record is no longer in the journal, so Volt cannot restore it."),
+    ("undo.unreadable", "The undo journal could not be read just now. Reload the list to try again."),
+    ("undo.unconfirmed", "Volt has not confirmed that this change happened."),
+    // What a tweak will change, as the preview shows it.
+    ("preview.text", "{text}"),
+    ("preview.command", "command {command}"),
+    ("preview.keyExists", "key exists"),
+    ("preview.keyRemoved", "key removed"),
+    ("preview.keyEmpty", "key exists, empty"),
+    ("preview.keyValues.one", "key exists, {count} value"),
+    ("preview.keyValues.other", "key exists, {count} values"),
+    // The tray: menu, tooltip and the notification of a Boost.
+    ("tray.open", "Open"),
+    ("tray.boost", "Boost"),
+    ("tray.quit", "Quit"),
+    ("boost.tooltip.failed", "Volt: Boost could not run"),
+    ("boost.tooltip.done", "Volt: Boost done"),
+    ("boost.tooltip.memory", "Volt: Boost done, memory available {before} to {after}"),
+    ("boost.notice.failed", "Boost could not run."),
+    ("boost.notice.done", "Boost done."),
+    ("boost.notice.memory", "Memory available {before} to {after}."),
+    ("boost.notice.moved", "{files} moved to the Recycle Bin."),
+    ("boost.notice.skipped", "{count} skipped: open Volt to see why."),
 ];
 
 #[cfg(test)]

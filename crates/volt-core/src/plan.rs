@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::PlanError;
 use crate::label::{Evidence, Risk};
 use crate::operation::Operation;
+use crate::phrase::Phrase;
 use crate::ports::Ports;
 
 /// What a caller asks to be planned: an operation plus its declared labels.
@@ -44,6 +45,12 @@ pub struct Preview {
     pub current: String,
     /// The value after applying, as text.
     pub target: String,
+    /// `subject` as a phrase, for the UI to write in its own language.
+    pub subject_phrase: Phrase,
+    /// `current` as a phrase.
+    pub current_phrase: Phrase,
+    /// `target` as a phrase.
+    pub target_phrase: Phrase,
 }
 
 impl fmt::Display for Preview {
@@ -89,11 +96,15 @@ impl Plan {
                 .detect(ports)
                 .map_err(|error| PlanError::Detect { index, error })?;
             let (subject, target) = request.operation.describe_target();
+            let (subject_phrase, target_phrase) = request.operation.describe_target_phrases();
             items.push(PlanItem {
                 preview: Preview {
                     subject,
                     current: prior.describe(),
                     target,
+                    subject_phrase,
+                    current_phrase: prior.describe_phrase(),
+                    target_phrase,
                 },
                 operation: request.operation,
                 risk: request.risk,

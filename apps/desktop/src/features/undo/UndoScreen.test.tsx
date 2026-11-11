@@ -40,6 +40,7 @@ function item(id: string, over: Partial<ActivityItem> = {}): ActivityItem {
     previousPhrase: null,
     state: 'cannotUndo',
     reason: null,
+    reasonPhrase: null,
     ...over,
   };
 }

@@ -7,10 +7,13 @@
 //! `volt_core::phrase`).
 
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use volt_core::{Arg, Phrase};
+
+use crate::language::Lang;
 
 /// A value of a phrase. Numbers are `f64` because that is what crosses the boundary.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
@@ -51,6 +54,33 @@ pub struct PhraseView {
 // is reflexive: the views may be `Eq` like the types that hold them.
 impl Eq for ArgView {}
 impl Eq for PhraseView {}
+
+/// The Vietnamese templates: the very file the window reads, so the tray and the window write
+/// every sentence from one table.
+static VIETNAMESE: OnceLock<BTreeMap<String, String>> = OnceLock::new();
+
+fn vietnamese() -> &'static BTreeMap<String, String> {
+    VIETNAMESE.get_or_init(|| {
+        // A file that does not parse leaves the table empty: every sentence is then English.
+        serde_json::from_str(include_str!(
+            "../../src/shared/i18n/locales/vi.phrases.json"
+        ))
+        .unwrap_or_default()
+    })
+}
+
+/// The sentence of a phrase in `lang`, for the places where the shell writes for the user with no
+/// window to do it (the tray menu, the tooltip, the Boost notification). Vietnamese comes from
+/// `vi.phrases.json` with a decimal comma; a code that file lacks is written in English.
+#[must_use]
+pub(crate) fn write(phrase: &Phrase, lang: Lang) -> String {
+    match lang {
+        Lang::English => phrase.english(),
+        Lang::Vietnamese => phrase
+            .write_with(&|code| vietnamese().get(code).cloned(), ',', false)
+            .unwrap_or_else(|| phrase.english()),
+    }
+}
 
 /// A count or size of the core as the number the UI gets.
 #[allow(
@@ -118,5 +148,32 @@ mod tests {
         let json = serde_json::to_value(&view).expect("serialize");
         assert_eq!(json["args"]["size"]["kind"], "size");
         assert_eq!(json["args"]["parts"]["value"]["sep"], ", ");
+    }
+
+    #[test]
+    fn the_shell_writes_a_phrase_in_the_chosen_language() {
+        let phrase = Phrase::new("boost.notice.moved")
+            .phrase("files", Phrase::new("count.file").count("count", 3_u32));
+        assert_eq!(
+            write(&phrase, Lang::English),
+            "3 files moved to the Recycle Bin."
+        );
+        assert_eq!(
+            write(&phrase, Lang::Vietnamese),
+            "Đã chuyển 3 tệp vào Thùng rác."
+        );
+        let memory = Phrase::new("boost.tooltip.memory")
+            .bytes("before", 4 << 30)
+            .bytes("after", 11 << 29);
+        assert_eq!(
+            write(&memory, Lang::Vietnamese),
+            "Volt: Boost xong, bộ nhớ khả dụng 4,0 GB lên 5,5 GB"
+        );
+    }
+
+    #[test]
+    fn a_code_the_vietnamese_table_lacks_falls_back_to_english() {
+        let phrase = Phrase::new("no.such.code");
+        assert_eq!(write(&phrase, Lang::Vietnamese), phrase.english());
     }
 }
