@@ -95,7 +95,7 @@ pub fn elevation_status_of(core: &AppCore) -> Result<ElevationStatusView, IpcErr
 }
 
 /// The error a failed elevated call becomes.
-fn ipc_error(error: &ElevationError) -> IpcError {
+pub(crate) fn ipc_error(error: &ElevationError) -> IpcError {
     match error {
         ElevationError::Unavailable(_) => {
             IpcError::unsupported(&Phrase::new("err.helper.unavailable"))
@@ -106,6 +106,9 @@ fn ipc_error(error: &ElevationError) -> IpcError {
         ElevationError::Mismatch(_) => IpcError::other(&Phrase::new("err.helper.mismatch")),
         ElevationError::Refused(ErrorCode::RateLimited) => {
             IpcError::other(&Phrase::new("err.helper.rateLimited"))
+        }
+        ElevationError::Refused(ErrorCode::TweakFailed) => {
+            IpcError::other(&Phrase::new("err.helper.tweakFailed"))
         }
         ElevationError::Refused(_) => IpcError::other(&Phrase::new("err.helper.refused")),
         ElevationError::Disconnected => IpcError::other(&Phrase::new("err.helper.disconnected")),

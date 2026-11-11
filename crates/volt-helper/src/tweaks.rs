@@ -21,8 +21,9 @@ use std::time::Instant;
 use volt_core::{
     ActivityId, ActivityLog, ActivityOutcome, Catalogue, CatalogueIssue, Clock, ConfirmAction,
     ConfirmGate, ConfirmRequest, Confirmer, Decision, ErrorCode, HISTORY_MAX_RECORDS, HistoryReply,
-    Journal, MAX_REPLY_BYTES, NewActivity, PortError, Ports, ReconcileReport, Reply, ReplyBody,
-    Source, Tweak, TweakApplyReply, TweakEngine, TweakError, TweakRevertReply, TweakState,
+    Journal, MAX_REPLY_BYTES, NewActivity, Phrase, PortError, Ports, ReconcileReport, Reply,
+    ReplyBody, RestoreGate, RestorePoints, Source, Tweak, TweakApplyReply, TweakEngine, TweakError,
+    TweakRevertReply, TweakState, needs_restore_point,
 };
 
 /// Why a desk cannot be built.
@@ -65,6 +66,8 @@ pub struct DeskParts {
     pub clock: Arc<dyn Clock>,
     /// Who is asked before a change.
     pub confirmer: Arc<dyn Confirmer>,
+    /// Makes the restore point a Caution or Advanced tweak needs.
+    pub restore: Arc<dyn RestorePoints>,
     /// The identifier of the helper's store, reported with the history.
     pub store_id: String,
 }
@@ -85,6 +88,8 @@ pub struct TweakDesk {
     clock: Arc<dyn Clock>,
     confirmer: Arc<dyn Confirmer>,
     gate: ConfirmGate,
+    restore: Arc<dyn RestorePoints>,
+    restore_gate: RestoreGate,
     store_id: String,
     recovered: ReconcileReport,
 }
@@ -130,6 +135,8 @@ impl TweakDesk {
             clock: parts.clock,
             confirmer: parts.confirmer,
             gate: ConfirmGate::new(),
+            restore: parts.restore,
+            restore_gate: RestoreGate::new(),
             store_id: parts.store_id,
             recovered,
         })
@@ -167,7 +174,10 @@ impl TweakDesk {
             Ok(_) => {}
             Err(error) => return Err(self.failed(id, "apply", &error)),
         }
-        self.confirm(ConfirmAction::ApplyTweak, id, title, risk, now)?;
+        self.confirm(ConfirmAction::ApplyTweak, id, title.clone(), risk, now)?;
+        if needs_restore_point(risk) {
+            self.restore_point(id, &title, now)?;
+        }
         match self.engine.apply(id, Source::Manual) {
             Ok(report) => Ok(ReplyBody::TweakApply(TweakApplyReply {
                 tweak: id.to_owned(),
@@ -240,6 +250,31 @@ impl TweakDesk {
         }
     }
 
+    /// Makes the restore point a Caution or Advanced tweak needs before it changes anything (one
+    /// per ten minutes of a session). When Windows cannot make one the tweak is refused and the
+    /// refusal is logged: the requirement is the helper's, so it is never skipped silently.
+    fn restore_point(&mut self, id: &str, title: &str, now: Instant) -> Result<(), ErrorCode> {
+        let description = format!("Volt: {title}");
+        match self.restore_gate.ensure(&*self.restore, &description, now) {
+            Ok(_) => Ok(()),
+            Err(error) => {
+                // Only the class of the failure: a port's text can carry data.
+                log::warn!(
+                    "no restore point for `{id}`: {}",
+                    volt_core::activity::error_class(&error)
+                );
+                self.write(
+                    id,
+                    Phrase::new("summary.adminRefused")
+                        .phrase("verb", Phrase::new("verb.apply"))
+                        .text("tweak", id)
+                        .phrase("reason", Phrase::new("reason.restorePoint")),
+                );
+                Err(ErrorCode::RestorePointFailed)
+            }
+        }
+    }
+
     /// Asks (or refuses without asking) and logs a refusal.
     fn confirm(
         &mut self,
@@ -260,8 +295,8 @@ impl TweakDesk {
             return Ok(());
         }
         let verb = match action {
-            ConfirmAction::ApplyTweak => "apply",
-            _ => "revert",
+            ConfirmAction::ApplyTweak => "verb.apply",
+            _ => "verb.revert",
         };
         self.note_refusal(id, verb, decision);
         Err(if decision.is_blocked() {
@@ -276,10 +311,10 @@ impl TweakDesk {
     fn note_refusal(&self, id: &str, verb: &str, decision: Decision) {
         self.write(
             id,
-            format!(
-                "Refused to {verb} the administrator tweak `{id}`: {}.",
-                decision.reason()
-            ),
+            Phrase::new("summary.adminRefused")
+                .phrase("verb", Phrase::new(verb))
+                .text("tweak", id)
+                .phrase("reason", decision.reason_phrase()),
         );
     }
 
@@ -289,22 +324,26 @@ impl TweakDesk {
         log::warn!("administrator tweak `{id}` ({verb}): {error}");
         self.write(
             id,
-            format!("The administrator tweak `{id}` could not be carried out ({verb})."),
+            Phrase::new("summary.adminFailed").text("tweak", id).phrase(
+                "verb",
+                Phrase::new(if verb == "apply" {
+                    "verb.apply"
+                } else {
+                    "verb.revert"
+                }),
+            ),
         );
         ErrorCode::TweakFailed
     }
 
-    fn write(&self, id: &str, summary: String) {
-        let record = NewActivity {
-            timestamp: self.clock.now(),
-            source: Source::Manual,
-            outcome: ActivityOutcome::Failed,
-            summary,
-            batch: None,
-            entry: None,
-            label: Some(id.to_owned()),
-            phrase: None,
-        };
+    fn write(&self, id: &str, phrase: Phrase) {
+        let record = NewActivity::said(
+            self.clock.now(),
+            Source::Manual,
+            ActivityOutcome::Failed,
+            phrase,
+            Some(id.to_owned()),
+        );
         if let Err(error) = self.activity.record(record) {
             log::warn!("the activity log could not take a record: {error}");
         }
@@ -315,7 +354,7 @@ impl TweakDesk {
 mod tests {
     use std::time::Duration;
 
-    use volt_core::elevation::fakes::FakeConfirmer;
+    use volt_core::elevation::fakes::{FakeConfirmer, FakeRestorePoints};
     use volt_core::fakes::{FakeActivityLog, FakeSystem};
     use volt_core::{
         ApplyOutcome, DENIAL_BLOCK, EntryState, RegistryHive, RegistryValue, RegistryValueRef,
@@ -370,13 +409,19 @@ value = { dword = 1 }
     struct Rig {
         system: FakeSystem,
         confirmer: Arc<FakeConfirmer>,
+        restore: Arc<FakeRestorePoints>,
         desk: TweakDesk,
         start: Instant,
     }
 
     fn rig(confirmer: FakeConfirmer) -> Rig {
+        rig_with(confirmer, FakeRestorePoints::new())
+    }
+
+    fn rig_with(confirmer: FakeConfirmer, restore: FakeRestorePoints) -> Rig {
         let system = FakeSystem::new();
         let confirmer = Arc::new(confirmer);
+        let restore = Arc::new(restore);
         let desk = TweakDesk::new(DeskParts {
             catalogue: Arc::new(Catalogue::from_toml(CATALOGUE).expect("catalogue")),
             ports: system.ports(),
@@ -384,12 +429,14 @@ value = { dword = 1 }
             activity: system.activity.clone(),
             clock: system.clock.clone(),
             confirmer: confirmer.clone(),
+            restore: restore.clone(),
             store_id: "store-1".to_owned(),
         })
         .expect("desk");
         Rig {
             system,
             confirmer,
+            restore,
             desk,
             start: Instant::now(),
         }
@@ -586,6 +633,7 @@ value = { dword = 1 }
             activity: system.activity.clone(),
             clock: system.clock.clone(),
             confirmer: Arc::new(FakeConfirmer::accepting()),
+            restore: Arc::new(volt_core::elevation::fakes::FakeRestorePoints::new()),
             store_id: "s".to_owned(),
         });
         assert!(matches!(built, Err(DeskError::Catalogue(_))));
@@ -699,6 +747,7 @@ value = { dword = 1 }
             activity: system.activity.clone(),
             clock: system.clock.clone(),
             confirmer: Arc::new(FakeConfirmer::accepting()),
+            restore: Arc::new(volt_core::elevation::fakes::FakeRestorePoints::new()),
             store_id: "s".to_owned(),
         })
         .expect("desk");
@@ -756,6 +805,7 @@ value = { dword = 1 }
             activity: Arc::new(FakeActivityLog::new()),
             clock: system.clock.clone(),
             confirmer: Arc::new(FakeConfirmer::accepting()),
+            restore: Arc::new(volt_core::elevation::fakes::FakeRestorePoints::new()),
             store_id: "s".to_owned(),
         })
         .expect("desk");
@@ -815,6 +865,7 @@ value = { dword = 1 }
             activity: store.clone(),
             clock: system.clock.clone(),
             confirmer: Arc::new(FakeConfirmer::accepting()),
+            restore: Arc::new(volt_core::elevation::fakes::FakeRestorePoints::new()),
             store_id: first_id,
         })
         .expect("desk");
@@ -831,5 +882,71 @@ value = { dword = 1 }
         // The previous value came from the journal on disk.
         desk.revert("machine-flag", Instant::now()).expect("revert");
         assert_eq!(system.registry.get(&flag()), None);
+    }
+    #[test]
+    fn a_caution_tweak_gets_a_restore_point_after_the_confirmation_and_before_any_change() {
+        let mut rig = rig(FakeConfirmer::accepting());
+        rig.desk.apply("machine-flag", rig.start).expect("applied");
+        assert_eq!(
+            rig.restore.descriptions(),
+            vec!["Volt: Machine flag".to_owned()]
+        );
+        // A revert needs none, and a second apply within ten minutes does not make another.
+        rig.desk
+            .revert("machine-flag", rig.start)
+            .expect("reverted");
+        rig.desk
+            .apply("machine-flag", rig.start + Duration::from_secs(60))
+            .expect("applied again");
+        assert_eq!(rig.restore.attempts(), 1);
+    }
+
+    #[test]
+    fn a_declined_confirmation_makes_no_restore_point() {
+        let mut rig = rig(FakeConfirmer::denying());
+        assert_eq!(
+            rig.desk.apply("machine-flag", rig.start),
+            Err(ErrorCode::NotConfirmed)
+        );
+        assert_eq!(rig.restore.attempts(), 0);
+    }
+
+    #[test]
+    fn without_a_restore_point_a_caution_tweak_is_refused_and_nothing_changes() {
+        let mut rig = rig_with(FakeConfirmer::accepting(), FakeRestorePoints::failing());
+        assert_eq!(
+            rig.desk.apply("machine-flag", rig.start),
+            Err(ErrorCode::RestorePointFailed)
+        );
+        assert_eq!(rig.system.registry.get(&flag()), None, "nothing changed");
+        assert!(
+            rig.system
+                .journal
+                .entries_in_state(EntryState::Pending)
+                .expect("entries")
+                .is_empty()
+        );
+        let records = rig.system.activity.records();
+        assert_eq!(records.len(), 1, "{records:?}");
+        assert_eq!(records[0].outcome, ActivityOutcome::Failed);
+        assert!(
+            records[0].summary.contains("restore point"),
+            "{}",
+            records[0].summary
+        );
+        assert_eq!(
+            records[0]
+                .phrase
+                .as_ref()
+                .map(|phrase| phrase.code.as_str()),
+            Some("summary.adminRefused")
+        );
+        // The next try asks Windows again: a failure is not remembered as a point.
+        assert_eq!(
+            rig.desk
+                .apply("machine-flag", rig.start + Duration::from_secs(1)),
+            Err(ErrorCode::RestorePointFailed)
+        );
+        assert_eq!(rig.restore.attempts(), 2);
     }
 }

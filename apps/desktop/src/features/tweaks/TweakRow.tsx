@@ -1,6 +1,12 @@
-import { ChevronDown, ChevronRight } from 'lucide-react';
+import { ChevronDown, ChevronRight, ShieldCheck } from 'lucide-react';
 import { say, sayCapitalised, t } from '../../shared/i18n';
-import type { TweakInfo, TweakPlanView, TweakStepView } from '../../shared/ipc';
+import type {
+  ElevationStatusView,
+  TweakInfo,
+  TweakPlanView,
+  TweakStepView,
+} from '../../shared/ipc';
+import { elevationReasonText } from '../../shared/text/memory';
 import { Badge, Button, ListRow, Switch } from '../../shared/ui';
 import { restartNote, tweakDescription, tweakEvidence, tweakTitle } from './messages';
 
@@ -41,10 +47,30 @@ function evidenceLine(tweak: TweakInfo): string {
   });
 }
 
-function stateLine(tweak: TweakInfo, busy: Busy | undefined): string | null {
+/**
+ * Whether the switch of an administrator tweak can be used: the helper is available and Volt can
+ * undo what is on (a tweak that was on before Volt cannot be switched off by it).
+ */
+function adminSwitchUsable(tweak: TweakInfo, elevation: ElevationStatusView | null): boolean {
+  return (
+    elevation?.state === 'available' && (tweak.state.kind !== 'applied' || tweak.appliedByVolt)
+  );
+}
+
+function stateLine(
+  tweak: TweakInfo,
+  busy: Busy | undefined,
+  elevation: ElevationStatusView | null,
+): string | null {
+  if (tweak.needsAdmin && busy !== undefined) return t('tweaks.row.waitingAdmin');
   if (busy === 'applying') return t('tweaks.row.turningOn');
   if (busy === 'undoing') return t('tweaks.row.working');
-  if (tweak.needsAdmin) return t('tweaks.row.needsAdmin');
+  if (tweak.needsAdmin) {
+    if (elevation === null) return t('tweaks.row.needsAdmin');
+    if (elevation.state === 'unavailable') return elevationReasonText(elevation.reason);
+    if (tweak.state.kind === 'applied' && !tweak.appliedByVolt) return t('tweaks.row.alreadyOn');
+    return t('tweaks.row.adminReady');
+  }
   const state = tweak.state;
   switch (state.kind) {
     case 'applied':
@@ -63,6 +89,8 @@ export interface TweakRowProps {
   /** Advanced mode: risk badge, evidence note and the list of changes. */
   detailed: boolean;
   busy: Busy | undefined;
+  /** Whether administrator actions can be used; `null` until it is known. */
+  elevation: ElevationStatusView | null;
   /** The plan, when the user opened "What it changes". Absent when closed. */
   plan: PlanLoad | undefined;
   onToggle: (tweak: TweakInfo, value: boolean) => void;
@@ -75,17 +103,30 @@ export function TweakRow({
   tweak,
   detailed,
   busy,
+  elevation,
   plan,
   onToggle,
   onUndo,
   onShowPlan,
 }: TweakRowProps) {
-  const status = stateLine(tweak, busy);
+  const status = stateLine(tweak, busy, elevation);
   const open = plan !== undefined;
   return (
     <ListRow
       title={tweakTitle(tweak)}
-      badge={detailed ? <Badge risk={tweak.risk} /> : undefined}
+      badge={
+        detailed || tweak.needsAdmin ? (
+          <>
+            {detailed ? <Badge risk={tweak.risk} /> : null}
+            {tweak.needsAdmin ? (
+              <Badge>
+                <ShieldCheck aria-hidden size={12} />
+                {t('common.administrator')}
+              </Badge>
+            ) : null}
+          </>
+        ) : undefined
+      }
       description={
         <>
           <span className="block">{tweakDescription(tweak)}</span>
@@ -137,7 +178,11 @@ export function TweakRow({
             aria-label={tweakTitle(tweak)}
             aria-busy={busy !== undefined}
             checked={tweak.state.kind === 'applied'}
-            disabled={busy !== undefined || tweak.needsAdmin || tweak.state.kind === 'unreadable'}
+            disabled={
+              busy !== undefined ||
+              tweak.state.kind === 'unreadable' ||
+              (tweak.needsAdmin && !adminSwitchUsable(tweak, elevation))
+            }
             onCheckedChange={(value) => onToggle(tweak, value)}
           />
         </div>

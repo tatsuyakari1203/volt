@@ -628,6 +628,7 @@ value = { dword = 1 }
                 activity: system.activity.clone(),
                 clock: system.clock.clone(),
                 confirmer: confirmer.clone(),
+                restore: Arc::new(volt_core::elevation::fakes::FakeRestorePoints::new()),
                 store_id: "store-9".to_owned(),
             })
             .expect("desk");
@@ -760,6 +761,7 @@ value = { dword = 1 }
                 activity: system.activity.clone(),
                 clock: system.clock.clone(),
                 confirmer: Arc::new(FakeConfirmer::accepting()),
+                restore: Arc::new(volt_core::elevation::fakes::FakeRestorePoints::new()),
                 store_id: "s".to_owned(),
             })
             .expect("desk");

@@ -177,6 +177,56 @@ fn exit_code(handle: HANDLE) -> Option<u32> {
         .map(|()| code)
 }
 
+/// Whether a window of the confirmation prompt's class can be found from the desktop of the
+/// calling thread. The prompt lives on a private desktop, so from the default desktop this must be
+/// `false` while a prompt is up.
+#[must_use]
+pub fn prompt_window_visible_from_this_desktop() -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::FindWindowW;
+    use windows::core::PCWSTR;
+
+    let class = super::wide(super::prompt::WINDOW_CLASS);
+    // SAFETY: the class name is NUL-terminated and outlives the call; a null window name matches
+    // any title.
+    unsafe { FindWindowW(PCWSTR(class.as_ptr()), PCWSTR::null()) }.is_ok()
+}
+
+/// Sends Enter, Space and Escape (key down and up) to the input stream from the calling thread
+/// and returns how many events Windows accepted. Used to show that keys sent from the default
+/// desktop do not reach the prompt on the private one.
+#[must_use]
+pub fn send_answer_keys_from_this_desktop() -> u32 {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput,
+        VIRTUAL_KEY, VK_ESCAPE, VK_RETURN, VK_SPACE,
+    };
+
+    let key = |code: VIRTUAL_KEY, flags: KEYBD_EVENT_FLAGS| INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: code,
+                wScan: 0,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    let mut events = Vec::new();
+    for code in [VK_RETURN, VK_SPACE, VK_ESCAPE] {
+        events.push(key(code, KEYBD_EVENT_FLAGS(0)));
+        events.push(key(code, KEYEVENTF_KEYUP));
+    }
+    // SAFETY: the slice holds fully initialised keyboard events and the size is that of one.
+    unsafe {
+        SendInput(
+            &events,
+            i32::try_from(std::mem::size_of::<INPUT>()).unwrap_or(0),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

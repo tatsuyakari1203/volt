@@ -662,6 +662,19 @@ async cleanMemoryElevated(areas: MemoryAreaView[]) : Promise<Result<ElevatedClea
 }
 },
 /**
+ * Tauri command: undoes an administrator change (a row of the Undo page with an Administrator
+ * badge) through the helper, which asks for its own confirmation and restores the earlier value
+ * from its own journal. The first call of a session shows one Windows prompt.
+ */
+async undoAdministratorChange(tweak: string) : Promise<Result<UndoResult, IpcError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("undo_administrator_change", { tweak }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Tauri command: the process list grouped by app with memory and CPU. Reads the system only.
  */
 async listProcesses() : Promise<Result<ProcessListView, IpcError>> {
@@ -985,7 +998,16 @@ reason: string | null;
 /**
  * `reason` as a code and parameters.
  */
-reasonPhrase: PhraseView | null }
+reasonPhrase: PhraseView | null; 
+/**
+ * Whether the elevated helper made this change (it is mirrored from the helper's own log):
+ * the row carries an Administrator badge and is undone through the helper.
+ */
+administrator: boolean; 
+/**
+ * For an administrator row, the tweak id to pass to `undoAdministratorChange`.
+ */
+administratorTweak: string | null }
 /**
  * A page of the activity history, newest first.
  */
@@ -1187,7 +1209,25 @@ export type ApplyStatus =
 /**
  * A step failed and the system may differ from before; the user has to look.
  */
-"needsAttention"
+"needsAttention" | 
+/**
+ * The administrator prompt of Windows was cancelled. Nothing was changed.
+ */
+"declined" | 
+/**
+ * The helper's own confirmation was declined or timed out. Nothing was changed.
+ */
+"notConfirmed" | 
+/**
+ * The same request was declined less than 10 minutes ago (or confirmations are locked for
+ * this session), so it was refused without asking. Nothing was changed.
+ */
+"blocked" | 
+/**
+ * The tweak needs a restore point first and Windows could not create one. Nothing was
+ * changed.
+ */
+"restorePointFailed"
 /**
  * One operation of a run.
  */
@@ -2812,7 +2852,20 @@ export type RevertStatus =
  * The journal holds nothing to undo for this tweak: Volt did not apply it, or it is
  * already undone. Not an error.
  */
-"nothingToRevert"
+"nothingToRevert" | 
+/**
+ * The administrator prompt of Windows was cancelled. Nothing was changed.
+ */
+"declined" | 
+/**
+ * The helper's own confirmation was declined or timed out. Nothing was changed.
+ */
+"notConfirmed" | 
+/**
+ * The same request was declined lately, so it was refused without asking. Nothing was
+ * changed.
+ */
+"blocked"
 /**
  * How risky a tweak is. Mirrors [`volt_core::Risk`].
  */
@@ -3780,7 +3833,20 @@ export type UndoStatus =
  * Nothing was changed: the undo would replace a later change the caller has not
  * acknowledged. `overwrites` lists them; call again with their `laterEntry` ids to go ahead.
  */
-"needsAcknowledgement"
+"needsAcknowledgement" | 
+/**
+ * The administrator prompt of Windows was cancelled. Nothing was changed.
+ */
+"declined" | 
+/**
+ * The helper's own confirmation was declined or timed out. Nothing was changed.
+ */
+"notConfirmed" | 
+/**
+ * The same request was declined lately, so it was refused without asking. Nothing was
+ * changed.
+ */
+"blocked"
 /**
  * How removing one app ended. Mirrors [`volt_core::UninstallOutcome`].
  */

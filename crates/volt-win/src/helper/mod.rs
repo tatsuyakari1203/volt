@@ -27,7 +27,9 @@ pub mod identity;
 pub mod install;
 pub mod launch;
 pub mod pipe;
+pub mod prompt;
 pub mod registry_guard;
+pub mod restore;
 pub mod state;
 pub mod uac;
 

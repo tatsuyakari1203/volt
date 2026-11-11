@@ -124,6 +124,12 @@ export function describeUndo(result: UndoResult, scope: 'change' | 'batch'): Not
       };
     case 'nothingToUndo':
       return { tone: 'info', message: t('undo.nothing'), details };
+    case 'declined':
+      return { tone: 'info', message: t('undo.declined'), details };
+    case 'notConfirmed':
+      return { tone: 'problem', message: t('undo.notConfirmed'), details };
+    case 'blocked':
+      return { tone: 'problem', message: t('undo.blocked'), details };
     case 'needsAcknowledgement':
       return {
         tone: 'problem',

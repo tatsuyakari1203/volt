@@ -19,6 +19,7 @@
 use std::time::{Duration, Instant};
 
 use crate::label::Risk;
+use crate::phrase::Phrase;
 
 /// How long the same request stays refused after a denial.
 pub const DENIAL_BLOCK: Duration = Duration::from_secs(10 * 60);
@@ -101,16 +102,22 @@ impl Decision {
         matches!(self, Self::Blocked | Self::LockedOut)
     }
 
-    /// The reason in words, for the activity log (English).
+    /// The reason as a phrase, for the activity log: the UI writes it in its own language.
     #[must_use]
-    pub fn reason(self) -> &'static str {
-        match self {
-            Self::Accepted => "confirmed",
-            Self::Denied => "the confirmation was declined",
-            Self::Unavailable => "no confirmation could be shown",
-            Self::Blocked => "the same request was declined less than 10 minutes ago",
-            Self::LockedOut => "confirmations are locked after repeated denials",
-        }
+    pub fn reason_phrase(self) -> Phrase {
+        Phrase::new(match self {
+            Self::Accepted => "reason.adminConfirmed",
+            Self::Denied => "reason.adminDeclined",
+            Self::Unavailable => "reason.adminUnavailable",
+            Self::Blocked => "reason.adminBlocked",
+            Self::LockedOut => "reason.adminLockedOut",
+        })
+    }
+
+    /// The reason in words (English).
+    #[must_use]
+    pub fn reason(self) -> String {
+        self.reason_phrase().english()
     }
 }
 

@@ -1,8 +1,8 @@
-import { Ban, Check, Layers, TriangleAlert, Undo2 } from 'lucide-react';
+import { Ban, Check, Layers, ShieldCheck, TriangleAlert, Undo2 } from 'lucide-react';
 import { memo, type ReactNode, useMemo } from 'react';
 import { type MessageKey, say, t, tNodes } from '../../shared/i18n';
 import type { ActivityItem, ChangeState } from '../../shared/ipc';
-import { Button, cx, ListRow } from '../../shared/ui';
+import { Badge, Button, cx, ListRow } from '../../shared/ui';
 import type { HistoryEntry } from './history';
 import { activityTitle, formatTime, sourceLabel, statusLabel } from './messages';
 
@@ -127,6 +127,10 @@ export function HistoryList({ entries, busy, onUndoEntry, onUndoBatch }: History
 }
 
 function rowKey(item: ActivityItem): string | null {
+  if (item.administrator) {
+    // Undone through the helper, by tweak: the helper reverts what it applied for it.
+    return item.administratorTweak === null ? null : `admin:${item.administratorTweak}`;
+  }
   return item.entry === null ? null : `entry:${item.entry}`;
 }
 
@@ -165,7 +169,17 @@ const Row = memo(function Row({
             })
           : statusLabel(item.status)
       }
-      badge={<StateBadge state={item.state} />}
+      badge={
+        <>
+          {item.administrator ? (
+            <Badge>
+              <ShieldCheck aria-hidden size={12} />
+              {t('undo.row.administrator')}
+            </Badge>
+          ) : null}
+          <StateBadge state={item.state} />
+        </>
+      }
       description={
         <>
           <span className="block">

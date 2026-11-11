@@ -12,6 +12,7 @@ import {
   previewUndoEntry,
   type UndoPreview,
   type UndoResult,
+  undoAdministratorChange,
   undoBatch,
   undoEntry,
 } from '../../shared/ipc';
@@ -209,6 +210,19 @@ export function UndoScreen() {
 
   const undoOne = useCallback(
     async (item: ActivityItem) => {
+      if (item.administrator) {
+        // The helper confirms it itself and restores the earlier value from its own journal.
+        const tweak = item.administratorTweak;
+        if (tweak !== null) {
+          await runUndo(
+            `admin:${tweak}`,
+            'change',
+            () => undoAdministratorChange(tweak),
+            async () => false,
+          );
+        }
+        return;
+      }
       if (item.entry === null) return;
       const entry = item.entry;
       // The core says whether a later change to the same setting would be overwritten; if so, the

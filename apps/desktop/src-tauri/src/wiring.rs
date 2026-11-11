@@ -112,6 +112,7 @@ pub struct AppCore {
     startup_apps: Option<StartupManager>,
     gate: Mutex<()>,
     history_incomplete: AtomicBool,
+    mirror_lock: Mutex<()>,
     clean: Option<CleanEngine>,
     clean_session: CleanSession,
     large_files: Option<LargeFilesFinder>,
@@ -156,6 +157,7 @@ impl AppCore {
             startup_apps: None,
             gate: Mutex::new(()),
             history_incomplete: AtomicBool::new(false),
+            mirror_lock: Mutex::new(()),
             clean: None,
             clean_session: CleanSession::default(),
             large_files: None,
@@ -266,6 +268,20 @@ impl AppCore {
     pub fn with_elevator(mut self, elevator: Arc<dyn Elevator>) -> Self {
         self.elevator = Some(elevator);
         self
+    }
+
+    /// Whether an elevator is attached (the real app always has one; a test core has none unless it
+    /// attaches a fake).
+    #[must_use]
+    pub fn has_elevator(&self) -> bool {
+        self.elevator.is_some()
+    }
+
+    /// Takes the lock that serialises changes to the saved copy of the helper's history.
+    pub(crate) fn mirror_guard(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.mirror_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// The elevator, or the error the administrator commands return without one. Only the Memory
