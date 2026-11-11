@@ -324,10 +324,51 @@ fn cancelling_a_scan_returns_what_it_reached_and_says_it_is_partial() {
 }
 
 #[test]
+fn a_cancelled_scan_is_finished_without_looking_at_the_first_rules_again() {
+    let fx = fixture();
+    let all = scan(&fx.core).rules.len();
+    let cancelled = cleaner::scan_cleaning(&fx.core, &|progress| {
+        if progress.done == 3 {
+            cleaner::cancel_cleaning_scan(&fx.core);
+        }
+    })
+    .expect("scan");
+    assert!(cancelled.cancelled);
+    let reached: Vec<String> = cancelled.rules.iter().map(|v| v.rule.id.clone()).collect();
+    assert!(reached.len() < all);
+    // The rules not reached, and the one that was cut short, are what is left to scan.
+    let rest: Vec<String> = cleaner::list_cleaning_rules(&fx.core)
+        .expect("rules")
+        .into_iter()
+        .map(|rule| rule.id)
+        .filter(|id| {
+            cancelled.rules.iter().all(|v| {
+                &v.rule.id != id || (v.truncated && v.rule.id == reached[reached.len() - 1])
+            })
+        })
+        .collect();
+    let progress = RefCell::new(Vec::new());
+    let finished = cleaner::scan_cleaning_rules(&fx.core, &rest, Some(&cancelled.plan_id), &|p| {
+        progress.borrow_mut().push(p);
+    })
+    .expect("continue");
+    assert!(!finished.cancelled);
+    assert_eq!(finished.rules.len(), all, "every rule is listed again");
+    assert_eq!(
+        progress.borrow().last().map(|p| p.total),
+        u32::try_from(rest.len()).ok()
+    );
+    // The earlier plan is replaced; the new one cleans.
+    let stale = cleaner::clean_plan(&fx.core, &cancelled.plan_id, &ids(&["user-temp"]), &[]);
+    assert!(matches!(stale, Err(IpcError::NotFound { .. })));
+    cleaner::clean_plan(&fx.core, &finished.plan_id, &ids(&["user-temp"]), &[]).expect("clean");
+}
+
+#[test]
 fn a_scan_of_chosen_rules_looks_at_only_those_and_refuses_bad_input() {
     let fx = fixture();
     let progress = RefCell::new(Vec::new());
-    let result = cleaner::scan_cleaning_rules(&fx.core, &ids(&["user-temp"]), &|p| {
+    let result = cleaner::scan_cleaning_rules(&fx.core, &ids(&["user-temp"]), None, &|p| {
         progress.borrow_mut().push(p);
     })
     .expect("scan");
@@ -340,9 +381,9 @@ fn a_scan_of_chosen_rules_looks_at_only_those_and_refuses_bad_input() {
     assert!(fx.system.file_system.trashed().is_empty());
     cleaner::clean_plan(&fx.core, &result.plan_id, &ids(&["user-temp"]), &[]).expect("clean");
 
-    let none = cleaner::scan_cleaning_rules(&fx.core, &[], &|_| {});
+    let none = cleaner::scan_cleaning_rules(&fx.core, &[], None, &|_| {});
     assert!(matches!(none, Err(IpcError::InvalidInput { .. })));
-    let unknown = cleaner::scan_cleaning_rules(&fx.core, &ids(&["no-such-rule"]), &|_| {});
+    let unknown = cleaner::scan_cleaning_rules(&fx.core, &ids(&["no-such-rule"]), None, &|_| {});
     assert!(matches!(unknown, Err(IpcError::InvalidInput { .. })));
 }
 
@@ -525,6 +566,11 @@ fn a_folder_is_added_for_a_rule_that_needs_one_and_removed_again() {
     fx.system
         .file_system
         .add_file_at(comfy.join("temp/p.png"), 10, ancient());
+    // A folder with a temp folder that is not a ComfyUI install.
+    let other = abs("AI/Other");
+    fx.system
+        .file_system
+        .add_file_at(other.join("temp/p.png"), 10, ancient());
     let listed = |fx: &Fixture| {
         cleaner::list_cleaning_rules(&fx.core)
             .expect("rules")
@@ -544,33 +590,54 @@ fn a_folder_is_added_for_a_rule_that_needs_one_and_removed_again() {
     assert_eq!(view.problem, None, "waiting for a folder is not a problem");
     assert_eq!(view.files, 0);
 
-    // Refused: a rule that needs no folder, a folder that is not there, an output folder.
-    for (rule, folder) in [
-        ("user-temp", comfy.to_string_lossy().into_owned()),
-        (
-            "comfyui-temp",
-            abs("AI/Missing").to_string_lossy().into_owned(),
-        ),
-    ] {
-        let refused = cleaner::choose_cleaning_folder(&fx.core, rule, &folder);
-        assert!(
-            matches!(refused, Err(IpcError::InvalidInput { .. })),
-            "{rule}: {refused:?}"
-        );
-    }
-    fx.system.file_system.add_dir(comfy.join("output"), None);
-    let output = cleaner::choose_cleaning_folder(
-        &fx.core,
-        "comfyui-temp",
-        &comfy.join("output").to_string_lossy(),
-    );
+    // A rule that needs no folder is an error.
+    let wrong_rule =
+        cleaner::choose_cleaning_folder(&fx.core, "user-temp", &comfy.to_string_lossy());
     assert!(
-        matches!(output, Err(IpcError::InvalidInput { .. })),
-        "{output:?}"
+        matches!(wrong_rule, Err(IpcError::InvalidInput { .. })),
+        "{wrong_rule:?}"
     );
+    // A folder that is refused comes back with the reason, as a phrase.
+    fx.system.file_system.add_dir(comfy.join("output"), None);
+    for (folder, code) in [
+        (abs("AI/Missing"), "folder.refused.notFolder"),
+        (comfy.join("output"), "folder.refused.output"),
+        (other.clone(), "folder.refused.notInstall"),
+        // Added without the install files, the ComfyUI folder itself is refused too.
+        (comfy.clone(), "folder.refused.notInstall"),
+    ] {
+        let refused =
+            cleaner::choose_cleaning_folder(&fx.core, "comfyui-temp", &folder.to_string_lossy())
+                .expect("a refusal is an answer")
+                .expect("refused");
+        assert_eq!(refused.reason_phrase.code, code, "{}", refused.reason);
+        assert!(!refused.reason.contains("AI"), "names no folder");
+    }
+    let not_install =
+        cleaner::choose_cleaning_folder(&fx.core, "comfyui-temp", &other.to_string_lossy())
+            .expect("answer")
+            .expect("refused");
+    assert!(
+        not_install.reason.contains("main.py"),
+        "{}",
+        not_install.reason
+    );
+    assert_eq!(listed(&fx).chosen_folder, None);
 
-    cleaner::choose_cleaning_folder(&fx.core, "comfyui-temp", &comfy.to_string_lossy())
-        .expect("chosen");
+    for marker in ["main.py", "nodes.py"] {
+        fx.system
+            .file_system
+            .add_file_at(comfy.join(marker), 10, ancient());
+    }
+    for marker in ["comfy", "custom_nodes"] {
+        fx.system
+            .file_system
+            .add_dir(comfy.join(marker), Some(ancient()));
+    }
+    let accepted =
+        cleaner::choose_cleaning_folder(&fx.core, "comfyui-temp", &comfy.to_string_lossy())
+            .expect("chosen");
+    assert_eq!(accepted, None);
     assert_eq!(
         listed(&fx).chosen_folder.as_deref(),
         Some(comfy.to_string_lossy().as_ref())

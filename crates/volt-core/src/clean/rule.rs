@@ -199,6 +199,10 @@ pub struct CleaningRule {
     /// Environment variables that move the root, in order of precedence: the first one that is
     /// set to a plausible folder wins.
     pub follow: Vec<Follow>,
+    /// For a rule that works in a folder the user chose: names of files or folders that must
+    /// exist directly in the chosen folder for it to count as an install of the tool (such as
+    /// `main.py`). Checked read-only on every scan and clean. Empty for every other rule.
+    pub install_markers: Vec<String>,
 }
 
 impl CleaningRule {

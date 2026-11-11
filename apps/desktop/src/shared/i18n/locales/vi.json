@@ -193,7 +193,7 @@
   "clean.scan.readonly": "Chỉ xem. Volt không thay đổi gì trong lúc quét.",
   "clean.scan.failed": "Không chạy được lượt quét. {error}",
   "clean.scan.button": "Quét",
-  "clean.scan.partial": "Lượt quét đã dừng: đã xem {scanned}/{total} quy tắc, và quy tắc cuối có thể mới chỉ được liệt kê một phần.",
+  "clean.scan.partial": "Lượt quét đã dừng: đã xem {scanned}/{total} quy tắc, và quy tắc cuối có thể mới chỉ được liệt kê một phần. Các quy tắc còn lại hiện là chưa quét.",
   "clean.empty.title": "Quét tìm tệp rác",
   "clean.empty.description": "Volt sẽ xem xét và liệt kê những gì tìm thấy kèm dung lượng. Bạn chọn mục cần dọn trước khi có gì bị chuyển đi.",
   "clean.selection.label": "Mục đã chọn",

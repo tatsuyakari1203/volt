@@ -190,14 +190,18 @@ function JunkClean({ movedElsewhere }: { movedElsewhere: number }) {
       });
   }, []);
 
-  /** Scans every rule, or only `only` (the rest of the rules a clean did not finish). */
-  const startScan = async (only?: readonly string[]) => {
+  /**
+   * Scans every rule, or only `only` (the rest of the rules a clean did not finish). With
+   * `continuePlan`, the scan on screen stays and `only` is added to it.
+   */
+  const startScan = async (only?: readonly string[], continuePlan?: string) => {
     setPhase('scanning');
     setProgress(null);
     setCancelling(false);
     setNotice(null);
     setResult(null);
     setRestIds([]);
+    const earlier = continuePlan ? new Set(scan?.rules.map((view) => view.rule.id)) : null;
     let unlisten: (() => void) | undefined;
     try {
       unlisten = await onCleanScanProgress((next) => {
@@ -207,7 +211,9 @@ function JunkClean({ movedElsewhere }: { movedElsewhere: number }) {
       // No progress without the event bridge; the scan itself still works.
     }
     try {
-      const found = only ? await scanCleaningRules(only) : await scanCleaning();
+      const found = only
+        ? await scanCleaningRules(only, continuePlan ?? null)
+        : await scanCleaning();
       if (!alive.current) return;
       if (found.cancelled && found.rules.length === 0) {
         setPhase('idle');
@@ -215,8 +221,13 @@ function JunkClean({ movedElsewhere }: { movedElsewhere: number }) {
       }
       setPartial(found.cancelled);
       setScan(found);
-      setTicked(new Set(found.rules.filter((r) => tickedByDefault(r.rule)).map((r) => r.rule.id)));
-      setPicks(new Map());
+      const fresh = found.rules.filter((r) => !earlier?.has(r.rule.id));
+      setTicked((before) => {
+        const next = new Set(earlier ? before : []);
+        for (const view of fresh) if (tickedByDefault(view.rule)) next.add(view.rule.id);
+        return next;
+      });
+      if (!earlier) setPicks(new Map());
       setPhase('idle');
     } catch (error) {
       if (alive.current) {
@@ -250,8 +261,12 @@ function JunkClean({ movedElsewhere }: { movedElsewhere: number }) {
     try {
       const folder = await pickScanFolder();
       if (folder === null || !alive.current) return;
-      await chooseCleaningFolder(rule.id, folder);
+      const refused = await chooseCleaningFolder(rule.id, folder);
       if (!alive.current) return;
+      if (refused) {
+        setNotice(t('clean.folder.failed', { error: say(refused.reasonPhrase, refused.reason) }));
+        return;
+      }
       setScan(null);
       setTicked(new Set());
       setPicks(new Map());
@@ -308,10 +323,20 @@ function JunkClean({ movedElsewhere }: { movedElsewhere: number }) {
 
   const rules = rulesLoad.status === 'ready' ? rulesLoad.rules : [];
   const views = useMemo(() => scan?.rules ?? [], [scan]);
+  // A cancelled scan lists every rule: the ones it did not reach show as not scanned.
   const listed = useMemo(
-    () => (scan ? views.map((view) => view.rule) : rules),
-    [scan, views, rules],
+    () => (scan && !partial ? views.map((view) => view.rule) : rules),
+    [scan, partial, views, rules],
   );
+  /** The rules a cancelled scan did not finish: not reached, or cut short while walked. */
+  const unfinishedIds = useMemo(() => {
+    if (!partial) return [];
+    const last = views[views.length - 1];
+    return rules
+      .filter((rule) => !views.some((view) => view.rule.id === rule.id))
+      .map((rule) => rule.id)
+      .concat(last?.truncated ? [last.rule.id] : []);
+  }, [partial, views, rules]);
   const groups = useMemo(() => groupByCategory(listed), [listed]);
   const viewById = useMemo(() => new Map(views.map((view) => [view.rule.id, view])), [views]);
   const selection = useMemo(() => selectionOf(views, ticked, picks), [views, ticked, picks]);
@@ -405,6 +430,14 @@ function JunkClean({ movedElsewhere }: { movedElsewhere: number }) {
               </p>
             ) : null}
             <div className="flex flex-wrap gap-2">
+              {partial && unfinishedIds.length > 0 ? (
+                <Button
+                  disabled={cleaning}
+                  onClick={() => void startScan(unfinishedIds, scan.planId)}
+                >
+                  {t('clean.result.scanRest')}
+                </Button>
+              ) : null}
               <Button
                 variant="primary"
                 disabled={nothingSelected}

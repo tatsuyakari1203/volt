@@ -25,6 +25,7 @@ import {
   type EndAppResult,
   type ExportResult,
   events,
+  type FolderRefusal,
   type HealthView,
   type HistoryStatus,
   type IpcError,
@@ -91,6 +92,7 @@ export type {
   ExportResult,
   FileGroupView,
   FixActionView,
+  FolderRefusal,
   FollowView,
   GpuView,
   HealthCheckView,
@@ -435,9 +437,14 @@ export async function scanCleaning(): Promise<CleanScanResult> {
 /**
  * Scans only the chosen rules (read-only), like `scanCleaning`: how to continue with the rest of a
  * rule whose scan was truncated. Resolves with a new scan id; nothing moves until it is cleaned.
+ * With `continuePlan`, the id of the scan on screen, the rules that scan already looked at stay in
+ * the result: how a cancelled scan is finished without starting over.
  */
-export async function scanCleaningRules(ruleIds: readonly string[]): Promise<CleanScanResult> {
-  return call(() => commands.scanCleaningRules([...ruleIds]));
+export async function scanCleaningRules(
+  ruleIds: readonly string[],
+  continuePlan: string | null = null,
+): Promise<CleanScanResult> {
+  return call(() => commands.scanCleaningRules([...ruleIds], continuePlan));
 }
 
 /** Asks the running scan to stop, inside the rule it is walking or before the next. */
@@ -472,11 +479,15 @@ export async function cleanSelectedRules(
 
 /**
  * Adds a folder for a rule that needs one (a ComfyUI install, for its temp folder) and keeps it.
- * Nothing in the folder is read or changed; scan again afterwards. A folder that is too broad, a
- * protected folder, an output folder or not a plain folder is `invalidInput`.
+ * Nothing in the folder is changed; only the names an install has are looked for. Resolves with
+ * `null` when the folder was added, and with the reason when it was refused (not that tool's
+ * install, too broad, a protected or an output folder, not a plain folder). Scan again afterwards.
  */
-export async function chooseCleaningFolder(ruleId: string, folder: string): Promise<void> {
-  await call(() => commands.chooseCleaningFolder(ruleId, folder));
+export async function chooseCleaningFolder(
+  ruleId: string,
+  folder: string,
+): Promise<FolderRefusal | null> {
+  return call(() => commands.chooseCleaningFolder(ruleId, folder));
 }
 
 /** Forgets the folder added for a rule. The folder itself is never touched. */

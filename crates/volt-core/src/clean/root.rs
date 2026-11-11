@@ -26,6 +26,9 @@ pub enum RootError {
     FolderNotChosen,
     /// The chosen folder is, or lies in, an output folder (`output`), which is never cleaned.
     OutputFolder,
+    /// The chosen folder does not look like an install of the tool: these files or folders, which
+    /// the rule says an install has, are missing (names the rule declares, never paths).
+    NotInstall(Vec<String>),
 }
 
 impl fmt::Display for RootError {
@@ -45,6 +48,11 @@ impl fmt::Display for RootError {
             Self::OutputFolder => {
                 f.write_str("the chosen folder is an output folder, which is never cleaned")
             }
+            Self::NotInstall(missing) => write!(
+                f,
+                "the chosen folder does not look like the tool's install: {} not found",
+                missing.join(", ")
+            ),
         }
     }
 }

@@ -7,7 +7,7 @@ use std::path::{Component, Path, PathBuf};
 
 use super::CleanEngine;
 use super::plan::{CleanItem, ConfirmedPlan, ItemKind, RuleScan};
-use super::root::{resolve_root, same_path_ci};
+use super::root::same_path_ci;
 use super::rule::{CleaningRule, ItemUnit, MAX_DEPTH_LIMIT};
 use super::scan::{Tally, component_text};
 use crate::activity::{ActivityOutcome, NewActivity, error_class};
@@ -286,7 +286,7 @@ impl CleanEngine {
         // The root is resolved and judged again now; a plan is not trusted to
         // say where its rule's root is.
         let chosen = self.chosen_folder_of(rule).unwrap_or(None);
-        let resolved = resolve_root(rule, self.folders.as_ref(), chosen.as_deref());
+        let resolved = self.resolve_checked(rule, chosen.as_deref());
         let root = match (resolved, scan.root.clone()) {
             (Ok(resolved), Some(planned)) if same_path_ci(&resolved.path, &planned) => planned,
             _ => {

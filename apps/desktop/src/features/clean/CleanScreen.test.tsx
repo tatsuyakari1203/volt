@@ -313,6 +313,42 @@ describe('scanning', () => {
     ).toBe(false);
   });
 
+  it('keeps the rules a cancelled scan did not reach listed and scans the rest without starting over', async () => {
+    const user = userEvent.setup();
+    const pending = deferred<CleanScanResult>();
+    ipc.scanCleaning.mockReturnValue(pending.promise);
+    renderScreen();
+    await user.click(await screen.findByRole('button', { name: 'Scan' }));
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    pending.resolve({
+      planId: 'scan-2',
+      cancelled: true,
+      rules: [view(temp, { files: 7, bytes: 7 * 1024 })],
+    });
+    await screen.findByRole('region', { name: 'Selection' });
+    // The three rules it did not reach are still on the page, as not scanned.
+    expect(screen.getAllByText('Not scanned yet')).toHaveLength(3);
+    expect(screen.getByText('Careful cache')).toBeTruthy();
+
+    ipc.scanCleaningRules.mockResolvedValue({
+      planId: 'scan-3',
+      cancelled: false,
+      rules: [
+        view(temp, { files: 7, bytes: 7 * 1024 }),
+        view(machine),
+        view(thumbs, { files: 1, bytes: 2048 }),
+        view(careful),
+      ],
+    });
+    await user.click(screen.getByRole('button', { name: 'Scan the rest' }));
+    expect(ipc.scanCleaningRules).toHaveBeenCalledWith(
+      ['windows-temp', 'thumbnail-cache', 'careful'],
+      'scan-2',
+    );
+    await waitFor(() => expect(screen.queryAllByText('Not scanned yet')).toHaveLength(0));
+    expect(screen.queryByRole('button', { name: 'Scan the rest' })).toBeNull();
+  });
+
   it('says so when the scan fails', async () => {
     const user = userEvent.setup();
     ipc.scanCleaning.mockRejectedValue(
@@ -401,7 +437,7 @@ describe('choosing and cleaning', () => {
     });
     await user.click(within(result).getByRole('button', { name: 'Scan the rest' }));
     const summary = await screen.findByRole('region', { name: 'Selection' });
-    expect(ipc.scanCleaningRules).toHaveBeenCalledWith(['user-temp']);
+    expect(ipc.scanCleaningRules).toHaveBeenCalledWith(['user-temp'], null);
     // A scan, not a clean: the files wait for the confirmation.
     expect(ipc.cleanSelectedRules).toHaveBeenCalledTimes(1);
     expect(summary.textContent).toContain('40 files');

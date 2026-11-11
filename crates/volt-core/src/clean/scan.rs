@@ -8,7 +8,6 @@ use super::plan::{
     SkippedEntry,
 };
 use super::root::RootError;
-use super::root::resolve_root;
 use super::rule::{
     CleaningRule, ItemUnit, MAX_DEPTH_LIMIT, MIN_AGE_SETTING_MAX, MIN_AGE_SETTING_MIN,
 };
@@ -155,7 +154,7 @@ impl CleanEngine {
                 return scan;
             }
         };
-        let root = match resolve_root(rule, self.folders.as_ref(), chosen.as_deref()) {
+        let root = match self.resolve_checked(rule, chosen.as_deref()) {
             Ok(resolved) => {
                 scan.followed_by = resolved.followed;
                 resolved.path

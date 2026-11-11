@@ -417,7 +417,12 @@ pub const ENGLISH: &[(&str, &str)] = &[
     ("scan.problem.denied", "Windows denied access to this location."),
     ("scan.problem.unreadable", "This location could not be read ({class})."),
     ("scan.problem.minAge", "The minimum age setting could not be used, so this rule was not scanned."),
+    ("scan.problem.notInstall", "This folder does not look like the tool's install ({names} not found), so it was not scanned."),
     ("scan.problem.generic", "This rule could not be scanned."),
+    ("folder.refused.notInstall", "This folder does not look like the tool's install: {names} not found in it."),
+    ("folder.refused.output", "This is an output folder, which is never cleaned."),
+    ("folder.refused.broad", "This folder is too broad or a protected folder."),
+    ("folder.refused.notFolder", "This is not an existing, plain folder."),
     // Memory cleaning.
     ("area.workingSets", "working sets"),
     ("area.standbyList", "standby list"),

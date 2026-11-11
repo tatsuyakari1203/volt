@@ -1938,6 +1938,7 @@ category = "application_cache"
 risk = "safe"
 include = ["**"]
 {follow}
+install_markers = ["main.py"]
 root = {{ location = "chosen_folder", path = "{path}" }}
 constraints = {{ min_age_days = 1, max_depth = 2 }}
 "#
@@ -2122,10 +2123,18 @@ description = "Temp files."
 category = "application_cache"
 risk = "safe"
 include = ["**"]
+install_markers = ["main.py", "comfy"]
 root = { location = "chosen_folder", path = "temp" }
 constraints = { min_age_days = 1, max_depth = 3, remove_empty_dirs = true }
 "#
     .to_owned()
+}
+
+/// Gives `install` the files and folders the chosen-folder rule expects of a real install.
+fn make_install(f: &Fixture, install: &Path) {
+    f.fs.add_dir(install, Some(ago(400)));
+    f.fs.add_file_at(install.join("main.py"), 10, ago(400));
+    f.fs.add_dir(install.join("comfy"), Some(ago(400)));
 }
 
 fn chosen_engine(f: &Fixture) -> (CleanEngine, Arc<FakeSettings>) {
@@ -2148,7 +2157,7 @@ fn a_rule_that_needs_a_folder_waits_until_one_is_chosen() {
     assert_eq!(engine.chosen_folder("comfy"), Ok(None));
 
     let install = abs("AI/ComfyUI");
-    f.fs.add_dir(&install, Some(ago(400)));
+    make_install(&f, &install);
     f.fs.add_file_at(install.join("temp").join("preview.png"), 10, ago(30));
     f.fs.add_file_at(install.join("temp").join("fresh.png"), 10, ago(0));
     f.fs.add_file_at(install.join("output").join("image.png"), 10, ago(30));
@@ -2242,13 +2251,94 @@ fn a_folder_that_could_hold_more_than_a_cache_cannot_be_chosen() {
 }
 
 #[test]
+fn a_folder_that_does_not_look_like_the_install_is_refused_and_says_what_is_missing() {
+    let f = Fixture::new();
+    let (engine, _) = chosen_engine(&f);
+    // Any folder with a temp subfolder used to be accepted.
+    let other = abs("AI/Other");
+    f.fs.add_file_at(other.join("temp").join("a.tmp"), 10, ago(30));
+    assert_eq!(
+        engine.choose_folder("comfy", &other).unwrap_err(),
+        FolderError::Refused(RootError::NotInstall(vec![
+            "main.py".to_owned(),
+            "comfy".to_owned()
+        ]))
+    );
+    // One marker present: only the other is named.
+    f.fs.add_file_at(other.join("main.py"), 10, ago(30));
+    assert_eq!(
+        engine.choose_folder("comfy", &other).unwrap_err(),
+        FolderError::Refused(RootError::NotInstall(vec!["comfy".to_owned()]))
+    );
+    assert_eq!(engine.chosen_folder("comfy"), Ok(None));
+    // A link does not count as a marker.
+    f.fs.add_link(other.join("comfy"));
+    assert!(engine.choose_folder("comfy", &other).is_err());
+    // A real install is accepted.
+    let install = abs("AI/ComfyUI");
+    make_install(&f, &install);
+    engine.choose_folder("comfy", &install).expect("chosen");
+}
+
+#[test]
+fn a_chosen_folder_that_stops_matching_is_not_scanned_and_nothing_in_it_is_cleaned() {
+    let f = Fixture::new();
+    let (engine, _) = chosen_engine(&f);
+    let install = abs("AI/ComfyUI");
+    make_install(&f, &install);
+    f.fs.add_file_at(install.join("temp").join("a.png"), 10, ago(30));
+    engine.choose_folder("comfy", &install).expect("chosen");
+    let plan = engine.scan_all();
+    assert_eq!(paths(only(&plan)), [install.join("temp").join("a.png")]);
+
+    // The install is replaced by something else: the old plan is skipped, a new scan refuses.
+    f.fs.move_to_trash(&install, &install.join("main.py"))
+        .expect("moved away");
+    let report = engine.clean(&plan.confirm(), Source::Manual);
+    assert_eq!(report.moved_files(), 0);
+    assert_eq!(
+        report.rules[0].skipped[0].reason,
+        CleanSkipReason::RootChanged
+    );
+    assert!(f.fs.exists(&install.join("temp").join("a.png")));
+    assert_eq!(
+        only(&engine.scan_all()).failure,
+        Some(ScanFailure::Root(RootError::NotInstall(vec![
+            "main.py".to_owned()
+        ])))
+    );
+}
+
+#[test]
+fn install_markers_are_required_for_a_chosen_folder_rule_and_must_be_plain_names() {
+    let with =
+        |markers: &str| chosen_rule().replace(r#"install_markers = ["main.py", "comfy"]"#, markers);
+    assert!(CleaningRules::from_toml(&with("")).is_err());
+    assert!(CleaningRules::from_toml(&with("install_markers = []")).is_err());
+    for bad in ["../x", "a/b", r"a\\b", "..", "", "C:"] {
+        assert!(
+            CleaningRules::from_toml(&with(&format!("install_markers = [\"{bad}\"]"))).is_err(),
+            "{bad:?} must be refused"
+        );
+    }
+    assert!(CleaningRules::from_toml(&with(r#"install_markers = ["main.py"]"#)).is_ok());
+    // A rule that works in a fixed location has none.
+    let fixed = default_rule().replace(
+        "include",
+        "install_markers = [\"x\"]
+include",
+    );
+    assert!(CleaningRules::from_toml(&fixed).is_err());
+}
+
+#[test]
 fn output_folders_are_never_offered_even_when_the_rule_would_match_them() {
     let f = Fixture::new();
     // A rule that takes everything below `temp`, including folders called Output inside it, and a
     // stored folder that was edited to lie in an output folder.
     let (engine, settings) = chosen_engine(&f);
     let install = abs("AI/ComfyUI");
-    f.fs.add_dir(&install, Some(ago(400)));
+    make_install(&f, &install);
     f.fs.add_file_at(install.join("temp").join("a.png"), 10, ago(30));
     f.fs.add_file_at(
         install.join("temp").join("Output").join("kept.png"),

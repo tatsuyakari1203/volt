@@ -34,6 +34,7 @@ const RULE_KEYS: &[&str] = &[
     "unit",
     "pick",
     "follow",
+    "install_markers",
 ];
 const MAX_MIN_AGE_DAYS: u32 = 3650;
 const MAX_RELATIVE_COMPONENTS: usize = 16;
@@ -365,6 +366,28 @@ impl Reader<'_> {
             Some(value) => self.convert::<bool>(value, "pick".to_owned()),
         };
         let follow = self.follow(table);
+        let install_markers = self.install_markers(table);
+        if let (Some(root), Some(markers)) = (&root, &install_markers) {
+            let chosen = root.location == Location::ChosenFolder;
+            if chosen && markers.is_empty() {
+                self.report(
+                    "install_markers".to_owned(),
+                    RuleIssueKind::Invalid(
+                        "a rule that works in a folder the user chose must name at least one \
+                         file or folder that its install has"
+                            .to_owned(),
+                    ),
+                );
+            } else if !chosen && !markers.is_empty() {
+                self.report(
+                    "install_markers".to_owned(),
+                    RuleIssueKind::Invalid(
+                        "only a rule that works in a folder the user chose has install markers"
+                            .to_owned(),
+                    ),
+                );
+            }
+        }
         if pick == Some(true) && unit.is_some_and(|unit| unit != ItemUnit::Entries) {
             self.report(
                 "pick".to_owned(),
@@ -403,7 +426,44 @@ impl Reader<'_> {
             unit: unit?,
             pick: pick?,
             follow: follow?,
+            install_markers: install_markers?,
         })
+    }
+
+    /// The optional names that a chosen folder must hold, each a plain file or folder name.
+    fn install_markers(&mut self, table: &Table) -> Option<Vec<String>> {
+        let Some(value) = table.get("install_markers") else {
+            return Some(Vec::new());
+        };
+        let Some(items) = value.as_array() else {
+            self.report(
+                "install_markers".to_owned(),
+                RuleIssueKind::Invalid("must be an array of strings".to_owned()),
+            );
+            return None;
+        };
+        let mut names = Vec::with_capacity(items.len());
+        let mut ok = true;
+        for (index, item) in items.iter().enumerate() {
+            let field = format!("install_markers[{index}]");
+            match item.as_str() {
+                Some(name) if is_marker_name(name) => names.push(name.to_owned()),
+                Some(_) => {
+                    self.report(
+                        field,
+                        RuleIssueKind::Malformed(
+                            "must be one file or folder name, with no path".to_owned(),
+                        ),
+                    );
+                    ok = false;
+                }
+                None => {
+                    self.report(field, RuleIssueKind::Invalid("must be a string".to_owned()));
+                    ok = false;
+                }
+            }
+        }
+        ok.then_some(names)
     }
 
     /// The optional list of environment variables that move the root, each with the documentation
@@ -820,6 +880,16 @@ fn is_variable_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Whether `name` is one plain file or folder name: no separator, drive, `.` or `..`.
+fn is_marker_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name != "."
+        && name != ".."
+        && !name.ends_with([' ', '.'])
+        && !name.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|'])
 }
 
 /// Whether `name` is a plain executable file name (`chrome.exe`).

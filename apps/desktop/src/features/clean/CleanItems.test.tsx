@@ -202,7 +202,7 @@ describe('a folder for a rule that needs one', () => {
     expect(ipc.chooseCleaningFolder).not.toHaveBeenCalled();
 
     ipc.pickScanFolder.mockResolvedValueOnce('D:\\AI\\ComfyUI');
-    ipc.chooseCleaningFolder.mockResolvedValue(undefined);
+    ipc.chooseCleaningFolder.mockResolvedValue(null);
     ipc.listCleaningRules.mockResolvedValue([
       models,
       { ...comfy, chosenFolder: 'D:\\AI\\ComfyUI' },
@@ -226,15 +226,20 @@ describe('a folder for a rule that needs one', () => {
   it('says why a folder was refused', async () => {
     const user = userEvent.setup();
     ipc.pickScanFolder.mockResolvedValue('C:\\');
-    ipc.chooseCleaningFolder.mockRejectedValue({
-      kind: 'invalidInput',
-      message: 'this folder cannot be used: it is too broad or a protected folder',
+    ipc.chooseCleaningFolder.mockResolvedValue({
+      reason: "This folder does not look like the tool's install: main.py not found in it.",
+      reasonPhrase: {
+        code: 'folder.refused.notInstall',
+        args: { names: { kind: 'text', value: 'main.py' } },
+      },
     });
     renderScreen();
     await user.click(
       await screen.findByRole('button', { name: 'Add a folder for ComfyUI temp folder' }),
     );
-    expect((await screen.findByRole('alert')).textContent).toContain('That folder was not added.');
+    const alert = (await screen.findByRole('alert')).textContent;
+    expect(alert).toContain('That folder was not added.');
+    expect(alert).toContain('main.py not found');
   });
 
   it('says to add a folder instead of showing a switch before one is chosen', async () => {

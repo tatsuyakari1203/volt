@@ -204,7 +204,7 @@
   "clean.scan.readonly": "Looking only. Nothing is changed while Volt scans.",
   "clean.scan.failed": "The scan could not run. {error}",
   "clean.scan.button": "Scan",
-  "clean.scan.partial": "The scan was stopped: {scanned} of {total} rules were looked at, and the last one may be only partly listed.",
+  "clean.scan.partial": "The scan was stopped: {scanned} of {total} rules were looked at, and the last one may be only partly listed. The others are listed as not scanned.",
   "clean.empty.title": "Scan for junk files",
   "clean.empty.description": "Volt looks, and lists what it finds with sizes. You choose what goes before anything moves.",
   "clean.selection.label": "Selection",

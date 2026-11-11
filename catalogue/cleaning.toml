@@ -1021,6 +1021,9 @@ first."""
 category = "application_cache"
 risk = "safe"
 include = ["**"]
+# A folder is accepted only when it has these, as the ComfyUI repository and its Windows portable
+# build do: the launcher, the model code and the custom node folder.
+install_markers = ["main.py", "nodes.py", "comfy", "custom_nodes"]
 
 [rule.root]
 location = "chosen_folder"

@@ -15,8 +15,8 @@ use crate::api::{
     UndoResult,
 };
 use crate::cleaner::{
-    self, CleanRunResult, CleanScanResult, CleaningRuleInfo, EmptyBinResult, ItemPick,
-    RecycleBinView,
+    self, CleanRunResult, CleanScanResult, CleaningRuleInfo, EmptyBinResult, FolderRefusal,
+    ItemPick, RecycleBinView,
 };
 use crate::wiring::{AppCore, AppState};
 
@@ -154,16 +154,19 @@ pub(crate) async fn scan_cleaning(
 }
 
 /// Tauri command: like `scanCleaning` for the chosen rules only (read-only). The page uses it to
-/// continue with the rest of a rule whose scan was truncated, after cleaning what was listed.
+/// continue with the rest of a rule whose scan was truncated, after cleaning what was listed. With
+/// `continuePlan` (the id of the scan on screen) the rules it already looked at stay in the new
+/// scan, which is how a cancelled scan is finished without starting over.
 #[tauri::command]
 #[specta::specta]
 pub(crate) async fn scan_cleaning_rules(
     app: AppHandle,
     state: State<'_, AppState>,
     rule_ids: Vec<String>,
+    continue_plan: Option<String>,
 ) -> Result<CleanScanResult, IpcError> {
     blocking(&state, move |core| {
-        cleaner::scan_cleaning_rules(core, &rule_ids, &|progress| {
+        cleaner::scan_cleaning_rules(core, &rule_ids, continue_plan.as_deref(), &|progress| {
             let _ = progress.emit(&app);
         })
     })
@@ -202,14 +205,16 @@ pub(crate) async fn clean_selected_rules(
 }
 
 /// Tauri command: adds a folder for a cleaning rule that needs one (a `ComfyUI` install, for its
-/// temp folder) and keeps it in the settings. Reads nothing in the folder. Scan again afterwards.
+/// temp folder) and keeps it in the settings. Resolves with `null` when the folder was added and
+/// with the reason when it was refused (not the tool's install, too broad, an output folder).
+/// Only looks for the files an install has. Scan again afterwards.
 #[tauri::command]
 #[specta::specta]
 pub(crate) async fn choose_cleaning_folder(
     state: State<'_, AppState>,
     rule_id: String,
     folder: String,
-) -> Result<(), IpcError> {
+) -> Result<Option<FolderRefusal>, IpcError> {
     blocking(&state, move |core| {
         cleaner::choose_cleaning_folder(core, &rule_id, &folder)
     })
