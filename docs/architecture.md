@@ -113,6 +113,21 @@ What `volt-core` contains today:
     optional `path`. Each process gets a result
     (`Ended`, `NeedsAdministrator`, `AlreadyGone`, `Failed`), and one activity record says it
     cannot be undone; there is no journal entry.
+  - **Process settings** (`volt_core::tuning`): priority class (Low to High, never Realtime), CPU
+    affinity (a non-empty core set, the first 64 logical processors) and Efficiency mode (EcoQoS
+    together with Low priority). One `Operation::TuneProcesses` per app is journaled with every
+    process's prior settings; revert restores the processes that still run, and a revert when all
+    have ended is a recorded no-op. The `Processes` port gained `settings` and `apply_settings`;
+    the Windows adapter opens a process with `PROCESS_SET_INFORMATION`, so "readable" means
+    "changeable" and elevated or protected processes report `AccessDenied`. Rules are stored by
+    executable name (path when known) under the settings key `process.rules` and reapplied by
+    `ProcessTuner::apply_rules`, called from `RulesSource`, a decorator of the sampler's metrics
+    source, every 5 reads (about 5 s). There is no extra thread or timer: with no rule a tick reads
+    nothing, with rules it reads the process list once per 5 s. In the tray with no window the
+    sampler is stopped, so rules wait until a window opens (the first read applies them). A rule
+    that cannot be applied is reported once (an activity record and the rule's problem label) until
+    it works again; processes already handled are not retried. The Undo page labels the operation
+    `process.tune` as "Process settings". Screenshot: `docs/design/process-rules-light.png`.
 - **Live metrics:** the `MetricsSource` port (`volt_core::metrics`) reads one _raw sample_: the
   cumulative CPU time counters, the physical memory totals, the space of every fixed volume and one
   reading per GPU adapter. A raw sample means little alone (a CPU counter only grows), so
@@ -207,6 +222,13 @@ What `volt-core` contains today:
   separately. `MemoryCleaner` (`volt_core::memory`) runs a selection in a fixed order (working
   sets, file cache, modified list, low-priority standby, standby), reads the lists before and
   after and writes one activity record, not a journal entry, whose text says it cannot be undone.
+  `MemoryCleaner` loads the `ExclusionList` from settings (`memory.exclusions`) at the start of
+  every working-set trim and passes it to `Memory::trim_working_sets`; Boost, the page clean and
+  the tray Boost share `MemoryCleaner::run`, so all honour it. The adapter matches by image name
+  (case-insensitive) and never opens a protected process. `PurgeOutcome.processes_excluded` is
+  reported to the UI and in the activity summary. A stored list that cannot be read means no trim
+  and a stated reason. The shell refuses `WorkingSets` in the elevated clean, because the helper
+  does not know the list and the trim needs no administrator rights.
 - **Boost:** `volt_core::boost` (settings key `boost.config`). The default is a working-set trim
   only, with no cleaning; the opt-in moves only the user-temp rule to the Recycle Bin without a
   preview. The Safe scan covers rules with risk Safe and `requires_admin` false. Reports say bytes
@@ -306,6 +328,14 @@ What `volt-core` contains today:
     plan (`CleanPlan::cancelled`) with the cut rule marked truncated; there is no
     `ScanError::Cancelled`. The shell keeps a partial plan as the current plan, so it can be
     cleaned after confirmation; if no rule was reached, the earlier plan stands.
+    `scan_cleaning_rules` takes an optional `continue_plan` id so a cancelled scan can be
+    finished; the stored plan is merged in rule order.
+  - **Install markers.** A rule that works in a user-chosen folder declares `install_markers`:
+    names that must exist directly in the chosen folder. They are checked read-only on choose,
+    scan and clean, so a replaced folder is not scanned and its old plan is skipped as
+    `RootChanged`. `choose_cleaning_folder` returns an `Option<FolderRefusal>` (a phrase) for a
+    refused folder instead of an `IpcError`. Ollama stays one whole-store item: removing a single
+    model needs manifest parsing and reference counting of shared blobs.
   - **Items by entry, picked items, relocated caches.** A rule can set `unit = "entries"`: each
     entry directly inside the root is one item, and a folder goes to the Recycle Bin whole in one
     move. Its size, file count and newest file time are read again before the move (a changed
@@ -372,8 +402,8 @@ What `volt-core` contains today:
     the profile wildcard is an include pattern one level below the root (`*/Cache/**`), and
     excludes keep the walk out of user data folders. The Chromium rules include the per-profile Dawn
     caches and the GPU caches beside the profiles; Service Worker storage and the crx caches are
-    left out on purpose. Opera has no rule: its layout could not be verified read-only, and its
-    profile (Roaming) is separate from its cache (Local). The UI leaves them unticked by default, as it
+    left out on purpose. Opera and Opera GX have no rule: the profile and cache layout could not be
+    confirmed from vendor documentation or the Chromium source. The UI leaves them unticked by default, as it
     does every category listed in `UNTICKED_CATEGORIES` (`messages.ts`). Every description says what the files are, why removing
     them is safe and what the user notices. **Deliberately not rules:** the Windows Update
     download cache (clearing it needs the update service stopped and started again, which needs
@@ -681,17 +711,22 @@ limited by paths to the helper's code. It is not a required check.
 ### The installer
 
 The NSIS installer (install mode `both`, hooks in `apps/desktop/src-tauri/installer-hooks.nsh`) is the
-stock Tauri one plus those hooks. **All users** installs only into `Program Files\Volt`, resets the
-ACL of everything it wrote to the one inherited from Program Files and puts `volt-helper.exe` next to
-`volt-desktop.exe`. **Just me** installs under the user's profile and deletes the helper again, so a
-folder the user can write to never holds it. Before an all-users update or uninstall the installer
-gives a running helper 5 seconds to leave by itself, then ends every process named `volt-helper.exe`.
-`scripts/build-installer.ps1` builds the release helper (`scripts/build-helper.ps1`) and bundles it
-through the `tauri.helper.conf.json` overlay; the base configuration has no helper, so debug builds
-and `pnpm tauri dev` need none. The "Installer" job of the elevated CI workflow installs and removes
-the real installer on the hosted runner and checks the layout, the ACLs, the availability answer and
-that the installed helper passes its install self-check (`scripts/installer-checks.ps1`). The consent
-prompt and the launch from a filtered token are still unmeasured.
+stock Tauri one plus those hooks. The user picks **All users** (`Program Files\Volt`, a fixed folder,
+helper installed, administrator features possible; preselected for an administrator) or **Just me**
+(`%LOCALAPPDATA%\Programs\Volt`, no helper, administrator features off). The hooks end a running
+helper (5 seconds to leave by itself, then kill), reset the install tree to the inherited Program
+Files ACL (skipping `state\`), refuse any other all-users folder and remove the helper from a per-user
+install, so a folder the user can write to never holds it. The release helper is built by
+`scripts/build-helper.ps1` and bundled only by `scripts/build-installer.ps1` through the
+`tauri.helper.conf.json` overlay; the base configuration has no helper, so debug builds and
+`pnpm tauri dev` need none. The release workflow runs `build-installer.ps1`. The "Installer" job of
+`elevated-helper.yml` installs the real installer on the hosted runner, all users and then per user
+(`scripts/installer-checks.ps1`), and asserts the layout, no write access for non-administrators,
+Available against the installed folder, a helper byte-identical to the built one, the installed
+helper's self-check, an update over a running helper and the uninstall. The "Elevated helper" job
+still proves the full serve, purge and bye path with the same helper binary against a staged folder.
+Known gaps: the stock Tauri uninstaller copies itself to `TEMP`, and the installer text is not
+localised. The consent prompt and the launch from a filtered token are still unmeasured.
 
 ### Window lifecycle and tray
 
@@ -710,14 +745,27 @@ and `autostart.rs`.
   then asks the process to exit because the last window is gone; `window::keep_running` refuses
   that request (only requests without an exit code, so Quit, which exits with code 0, still
   works). The process and the tray icon stay.
-- **Tray.** One icon with the menu Open, Boost and Quit. A left click (on release) opens or
-  focuses the window; the menu is on the right click. The menu id to action mapping
+- **Tray.** One icon with the menu Open, Boost and Quit. A left click (on release) opens the
+  tray panel (below); the menu is on the right click. The menu id to action mapping
   (`TrayAction`) is a pure function. **Boost** does not open the window: it runs `boost::boost_of`
   in Rust on a blocking thread (a second click while it runs does nothing), sets the tray tooltip
   and emits `BoostFinished` with the report. An open window navigates to Home and shows the report;
   with no window the run ends with a desktop notification (`tauri-plugin-notification`, driven
   from Rust; the UI is granted no notification capability), besides the activity history and the
   tooltip.
+- **Tray panel.** A left click on the icon opens the borderless `tray-panel` window
+  (`tauri.conf.json`, `create: false`, the same page with `?view=tray-panel`) with memory, CPU and
+  Boost. It is built on a worker thread, placed by `panel::place` on the monitor of the click inside
+  its work area, and destroyed on focus loss, Escape or its buttons, so no WebView stays alive. The
+  right-click menu is unchanged. Focus loss within 600 ms of showing is ignored (the taskbar or a
+  flyout may take focus back); after that an unfocused panel closes, and a tray click within 400 ms
+  of a blur-close does not reopen it. The sampler runs while the main window or the panel exists.
+  `tray::boost_now` is the one Boost job shared by the tray menu item and the panel (`BoostRunning`
+  flag, tooltip, notification when there is no main window, `BoostFinished` event); the panel never
+  prompts for elevation. Measured on a release build (private working set of the process tree, idle
+  in the tray / panel open / 10 s after close, three runs): 2.5 / 74.5 to 77.2 / 5.1 to 5.3 MB. The
+  open panel is 7 processes and after the close 1 (the WebView is gone); about 2.7 MB stays in the
+  app process. Screenshot: `docs/design/tray-panel-light.png` (300 x 360 at 2x).
 - **Single instance.** `tauri-plugin-single-instance` is registered before every other plugin. A
   second launch focuses (or recreates) the window of the first instance and exits.
 - **Launch mode.** A launch with `--background` (what the Start with Windows entry passes) does
@@ -1057,7 +1105,15 @@ the WebView2 processes. The diagnostic log was read to confirm the sampler start
     `BoostFinished` (`events.boostFinished`, payload the Boost report) is sent when a Boost
     ends, whether it started on Home or in the tray menu. `CleanScanProgress`
     (`events.cleanScanProgress`) is sent before each rule of a cleaning scan. `MetricsUpdated` (`events.metricsUpdated`, payload
-    `MetricsView`) is sent about once a second while the window is open.
+    `MetricsView`) is sent about once a second while the window is open. `MemoryTrendUpdated`
+    carries the memory-by-list reading once a second under the same condition.
+  - **Memory trend and exclusions.** The commands `memory_history`, `memory_exclusions`,
+    `add_memory_exclusion` and `remove_memory_exclusion` serve the chart and the
+    protected-programs list on the Memory page. Readings come from the sampler, which wraps its
+    `MetricsSource` in `TrendSource`; it reads `Memory::lists()` after each metrics read. The cost
+    is one read-only call and one event per second while a window is open, and a `MemoryHistory`
+    ring of at most 300 points (about 20 KB). With no window there is no sampler, no read and no
+    history.
   - **64-bit integers.** `specta-typescript` refuses to export `u64`/`i64` by default because
     JavaScript numbers lose precision above 2^53. A type that exposes one fails the export (and
     so the gate) until it is given an explicit representation, for example a decimal string.
@@ -1229,7 +1285,10 @@ The UI is available in English and Vietnamese.
 - **Phrases.** A sentence built with data is a `Phrase` (a code and parameters) and the English
   text stays in the core as the fallback. The English templates are the `ENGLISH` table in
   `volt-core` `phrase.rs`; Vietnamese is `locales/vi.phrases.json`. `check-i18n` reads the Rust
-  table and fails on a missing code or different placeholders. The activity table (schema version
+  table and fails on a missing code or different placeholders. Codes also cover Undo reasons, tweak
+  previews and the tray and Boost messages; the shell writes them from the same `vi.phrases.json`
+  table as the UI, with English as the fallback. The first paint on a fresh install uses
+  `navigator.languages`. The activity table (schema version
   4) has a nullable `phrase` column (JSON); older records have none and show their stored English
   summary. Health
   reasons are translated by deduction id, with the figures read back out of the English sentence.
@@ -1237,7 +1296,7 @@ The UI is available in English and Vietnamese.
   `ui.language` as `{choice, system}`. What System means is the display language
   from `volt-win` `display_languages()` (`GetUserPreferredUILanguages`, `MUI_LANGUAGE_NAME`); the
   shell reads it on every `language_setting` and `set_language` and the tray reads it too
-  (`language.rs`), so the window never reads `navigator.languages`. `localStorage` keeps
+  (`language.rs`), so the window only guesses from `navigator.languages` before the first answer. `localStorage` keeps
   `volt.language.system` only for the first paint. The window applies a change at once. The tray
   items are kept in managed state (`TrayItems`) and `set_language` rewrites their text at once, as
   it does the tooltip and the Boost notification.
