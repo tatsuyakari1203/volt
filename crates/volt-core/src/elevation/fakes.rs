@@ -5,11 +5,12 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use super::confirm::{ConfirmRequest, Confirmer, Verdict};
 use super::restore::{RestorePoints, SystemProtection};
 use super::{
-    CatalogueHashes, ElevationError, ElevationStatus, Elevator, ErrorCode, HelloReply,
-    HistoryReply, MemoryPurgeReply, PROTOCOL_VERSION, TweakApplyReply, TweakRevertReply,
-    UnavailableReason,
+    CatalogueHashes, CleanApplyReply, CleanScanReply, ElevationError, ElevationStatus, Elevator,
+    ErrorCode, HelloReply, HistoryReply, MemoryPurgeReply, PROTOCOL_VERSION, TweakApplyReply,
+    TweakRevertReply, UnavailableReason,
 };
 use crate::activity::ActivityRecord;
+use crate::clean::machine::{ApplySkips, ScanSkips};
 use crate::error::PortError;
 use crate::journal::Source;
 use crate::memory::MemoryCleaner;
@@ -45,6 +46,10 @@ pub enum ElevatorCall {
     TweakApply(String),
     /// `tweak_revert` for this tweak id.
     TweakRevert(String),
+    /// `clean_scan` of this rule, with this minimum age.
+    CleanScan(String, Option<u32>),
+    /// `clean_apply` of this scan id.
+    CleanApply(String),
     /// `history` after this record id.
     History(u64),
     /// `bye`.
@@ -61,6 +66,12 @@ struct State {
     protocol: u32,
     /// What `tweak_apply` and `tweak_revert` answer instead of success, when set.
     tweak_error: Option<ElevationError>,
+    /// What `clean_scan` answers (its `rule` is replaced by the one asked for), or the error.
+    scan: Result<CleanScanReply, ElevationError>,
+    /// What `clean_apply` answers (its `rule` is replaced by the one scanned last), or the error.
+    apply: Result<CleanApplyReply, ElevationError>,
+    /// The rule of the last scan, which a following apply reports.
+    scanned_rule: String,
     /// The helper's log: its store id and records, oldest first.
     history: (String, Vec<ActivityRecord>),
     /// What `system_protection` answers.
@@ -97,6 +108,27 @@ impl FakeElevator {
                 },
                 protocol: PROTOCOL_VERSION,
                 tweak_error: None,
+                scan: Ok(CleanScanReply {
+                    scan: "0123456789abcdef0123456789abcdef".to_owned(),
+                    rule: String::new(),
+                    files: 0,
+                    folders: 0,
+                    bytes: 0,
+                    min_age_days: 7,
+                    truncated: false,
+                    confirm: false,
+                    skipped: ScanSkips::default(),
+                    problem: None,
+                }),
+                apply: Ok(CleanApplyReply {
+                    rule: String::new(),
+                    files: 0,
+                    folders: 0,
+                    bytes: 0,
+                    skipped: ApplySkips::default(),
+                    stopped: false,
+                }),
+                scanned_rule: String::new(),
                 history: ("fake-store".to_owned(), Vec::new()),
                 system_protection: SystemProtection::Unknown,
             }),
@@ -151,6 +183,16 @@ impl FakeElevator {
     /// succeed again with `None`.
     pub fn set_tweak_error(&self, error: Option<ElevationError>) {
         lock(&self.state).tweak_error = error;
+    }
+
+    /// Sets what `clean_scan` answers (the `rule` field is filled with the rule asked for).
+    pub fn set_scan(&self, scan: Result<CleanScanReply, ElevationError>) {
+        lock(&self.state).scan = scan;
+    }
+
+    /// Sets what `clean_apply` answers (the `rule` field is filled with the rule scanned last).
+    pub fn set_apply(&self, apply: Result<CleanApplyReply, ElevationError>) {
+        lock(&self.state).apply = apply;
     }
 
     /// Sets the helper's activity log: its store id and records, oldest first.
@@ -258,6 +300,31 @@ impl Elevator for FakeElevator {
             batches: 1,
             complete: true,
         })
+    }
+
+    fn clean_scan(
+        &self,
+        rule: &str,
+        min_age_days: Option<u32>,
+    ) -> Result<CleanScanReply, ElevationError> {
+        let mut state = lock(&self.state);
+        state
+            .calls
+            .push(ElevatorCall::CleanScan(rule.to_owned(), min_age_days));
+        Self::ensure_session(&mut state)?;
+        rule.clone_into(&mut state.scanned_rule);
+        let mut reply = state.scan.clone()?;
+        rule.clone_into(&mut reply.rule);
+        Ok(reply)
+    }
+
+    fn clean_apply(&self, scan: &str) -> Result<CleanApplyReply, ElevationError> {
+        let mut state = lock(&self.state);
+        state.calls.push(ElevatorCall::CleanApply(scan.to_owned()));
+        Self::ensure_session(&mut state)?;
+        let mut reply = state.apply.clone()?;
+        reply.rule.clone_from(&state.scanned_rule);
+        Ok(reply)
     }
 
     fn history(&self, after: u64, limit: u32) -> Result<HistoryReply, ElevationError> {

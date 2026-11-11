@@ -19,6 +19,7 @@ mod ipc;
 pub mod language;
 pub mod large_files;
 mod logging;
+pub mod machine_clean;
 pub mod memory;
 pub mod metrics;
 pub mod panel;

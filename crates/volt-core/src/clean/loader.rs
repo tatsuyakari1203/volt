@@ -29,6 +29,8 @@ const RULE_KEYS: &[&str] = &[
     "exclude",
     "constraints",
     "requires_admin",
+    "permanent",
+    "confirm_each_time",
     "min_age_setting",
     "locked_by",
     "unit",
@@ -189,7 +191,9 @@ impl CleaningRules {
     ///
     /// Two optional top-level fields describe the rule's environment:
     /// `requires_admin = true` says the location can only be cleaned with
-    /// administrator rights (default `false`), and `min_age_setting =
+    /// administrator rights (default `false`; such a rule may also say `permanent = true`, deleted
+    /// by the helper with no Recycle Bin, and `confirm_each_time = true`, a folder that a normal
+    /// user can write to, so the helper asks a person before every clean), and `min_age_setting =
     /// "clean.temp_min_age_days"` names the settings key that may override
     /// `constraints.min_age_days` (see [`CleanEngine::with_settings`](super::CleanEngine::with_settings)).
     ///
@@ -355,6 +359,7 @@ impl Reader<'_> {
             None => Some(false),
             Some(value) => self.convert::<bool>(value, "requires_admin".to_owned()),
         };
+        let (permanent, confirm_each_time) = self.helper_flags(table, requires_admin);
         let min_age_setting = self.min_age_setting(table);
         let locked_by = self.locked_by(table);
         let unit = match table.get("unit") {
@@ -421,6 +426,8 @@ impl Reader<'_> {
             exclude: exclude?,
             constraints: constraints?,
             requires_admin: requires_admin?,
+            permanent: permanent?,
+            confirm_each_time: confirm_each_time?,
             min_age_setting,
             locked_by: locked_by?,
             unit: unit?,
@@ -428,6 +435,36 @@ impl Reader<'_> {
             follow: follow?,
             install_markers: install_markers?,
         })
+    }
+
+    /// `permanent` and `confirm_each_time` (default `false`): flags of a rule the elevated helper
+    /// cleans, so only a rule that `requires_admin` may set them.
+    fn helper_flags(
+        &mut self,
+        table: &Table,
+        requires_admin: Option<bool>,
+    ) -> (Option<bool>, Option<bool>) {
+        let flag = |reader: &mut Self, field: &str| match table.get(field) {
+            None => Some(false),
+            Some(value) => reader.convert::<bool>(value, field.to_owned()),
+        };
+        let permanent = flag(self, "permanent");
+        let confirm_each_time = flag(self, "confirm_each_time");
+        for (field, set) in [
+            ("permanent", permanent),
+            ("confirm_each_time", confirm_each_time),
+        ] {
+            if set == Some(true) && requires_admin == Some(false) {
+                self.report(
+                    field.to_owned(),
+                    RuleIssueKind::Invalid(
+                        "only a rule that needs administrator rights (`requires_admin = true`)                          can say this"
+                            .to_owned(),
+                    ),
+                );
+            }
+        }
+        (permanent, confirm_each_time)
     }
 
     /// The optional names that a chosen folder must hold, each a plain file or folder name.

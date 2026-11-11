@@ -26,10 +26,11 @@ use std::sync::{Mutex, MutexGuard, PoisonError, TryLockError};
 use std::time::Duration;
 
 use volt_core::{
-    CHANGE_TIMEOUT, CatalogueHashes, ElevationError, ElevationStatus, Elevator, ErrorCode,
-    HelloReply, HistoryReply, MAX_REPLY_BYTES, MemoryArea, MemoryPurgeReply, PROTOCOL_VERSION,
-    ReplyBody, Request, RequestEnvelope, SystemProtection, TweakApplyReply, TweakRevertReply,
-    UnavailableReason, decode_reply, encode_request, system_protection_of,
+    CHANGE_TIMEOUT, CLEAN_APPLY_TIMEOUT, CLEAN_SCAN_TIMEOUT, CatalogueHashes, CleanApplyReply,
+    CleanScanReply, ElevationError, ElevationStatus, Elevator, ErrorCode, HelloReply, HistoryReply,
+    MAX_REPLY_BYTES, MemoryArea, MemoryPurgeReply, PROTOCOL_VERSION, ReplyBody, Request,
+    RequestEnvelope, SystemProtection, TweakApplyReply, TweakRevertReply, UnavailableReason,
+    decode_reply, encode_request, system_protection_of,
 };
 
 use super::args::{HelperArgs, PipeName};
@@ -405,6 +406,35 @@ impl Elevator for WinElevator {
         })
     }
 
+    fn clean_scan(
+        &self,
+        rule: &str,
+        min_age_days: Option<u32>,
+    ) -> Result<CleanScanReply, ElevationError> {
+        self.with_session(|connection| {
+            let request = Request::CleanScan {
+                rule: rule.to_owned(),
+                min_age_days,
+            };
+            match connection.exchange(request, CLEAN_SCAN_TIMEOUT)? {
+                ReplyBody::CleanScan(reply) => Ok(reply),
+                _ => Err(ElevationError::Refused(ErrorCode::Internal)),
+            }
+        })
+    }
+
+    fn clean_apply(&self, scan: &str) -> Result<CleanApplyReply, ElevationError> {
+        self.with_session(|connection| {
+            let request = Request::CleanApply {
+                scan: scan.to_owned(),
+            };
+            match connection.exchange(request, CLEAN_APPLY_TIMEOUT)? {
+                ReplyBody::CleanApply(reply) => Ok(reply),
+                _ => Err(ElevationError::Refused(ErrorCode::Internal)),
+            }
+        })
+    }
+
     fn history(&self, after: u64, limit: u32) -> Result<HistoryReply, ElevationError> {
         self.with_session(|connection| {
             match connection.exchange(Request::History { after, limit }, SHORT_TIMEOUT)? {
@@ -657,6 +687,26 @@ mod tests {
                     tweak: tweak.clone(),
                     batches: 1,
                     complete: true,
+                }),
+                Request::CleanScan { rule, .. } => ReplyBody::CleanScan(CleanScanReply {
+                    scan: "0123456789abcdef0123456789abcdef".to_owned(),
+                    rule: rule.clone(),
+                    files: 1,
+                    folders: 0,
+                    bytes: 10,
+                    min_age_days: 7,
+                    truncated: false,
+                    confirm: false,
+                    skipped: volt_core::ScanSkips::default(),
+                    problem: None,
+                }),
+                Request::CleanApply { .. } => ReplyBody::CleanApply(CleanApplyReply {
+                    rule: "test-rule".to_owned(),
+                    files: 1,
+                    folders: 0,
+                    bytes: 10,
+                    skipped: volt_core::ApplySkips::default(),
+                    stopped: false,
                 }),
                 Request::History { .. } => ReplyBody::History(HistoryReply {
                     store: "test-store".to_owned(),

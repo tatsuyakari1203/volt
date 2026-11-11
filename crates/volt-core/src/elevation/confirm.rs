@@ -35,9 +35,13 @@ pub enum ConfirmAction {
     ApplyTweak,
     /// Revert what the helper applied for an administrator tweak.
     RevertTweak,
+    /// Delete, permanently, what a scan found for a machine-wide cleaning rule. The request's
+    /// `tweak` field holds the rule id and `title` the rule's title; `risk` is the rule's.
+    CleanRule,
 }
 
-/// One question for the person at the machine. Everything in it comes from the helper's catalogue.
+/// One question for the person at the machine. Everything in it comes from the helper's catalogue
+/// (for a cleaning rule, `tweak` is the rule id).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfirmRequest {
     /// What is about to happen.

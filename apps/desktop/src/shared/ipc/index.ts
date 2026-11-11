@@ -48,6 +48,8 @@ import {
   type LargeFilesTrashResult,
   type LeftoverRemovalView,
   type LeftoverScanView,
+  type MachineCleanResult,
+  type MachineScanResult,
   type MemoryAreaView,
   type MemoryCleanResult,
   type MemoryPointView,
@@ -164,6 +166,9 @@ export type {
   LeftoverScanView,
   LeftoverSkippedView,
   LeftoverView,
+  MachineCleanResult,
+  MachineScanResult,
+  MachineScanView,
   MemoryAreaView,
   MemoryCleanResult,
   MemoryListsView,
@@ -709,6 +714,25 @@ export async function chooseCleaningFolder(
 /** Forgets the folder added for a rule. The folder itself is never touched. */
 export async function forgetCleaningFolder(ruleId: string): Promise<void> {
   await call(() => commands.forgetCleaningFolder(ruleId));
+}
+
+/**
+ * Scans a machine-wide cleaning rule as administrator, through the helper (one Windows prompt per
+ * session; cancelling it resolves with `outcome: 'declined'`). Read-only: it counts files, folders
+ * and bytes and says what was left out, and names no file.
+ */
+export async function scanMachineRule(ruleId: string): Promise<MachineScanResult> {
+  return call(() => commands.scanMachineRule(ruleId));
+}
+
+/**
+ * Deletes PERMANENTLY what the last scan of a machine rule found: nothing goes to the Recycle Bin
+ * and nothing can be undone, so confirm with the user in those words first. A scan is good for one
+ * clean (`outcome: 'noScan'` otherwise). For a folder a normal user can write to, the helper asks
+ * again on its own surface (`notConfirmed` and `blocked` are its refusals).
+ */
+export async function cleanMachineRule(ruleId: string): Promise<MachineCleanResult> {
+  return call(() => commands.cleanMachineRule(ruleId));
 }
 
 /** How many items the Recycle Bin holds and how big they are. Read-only. */

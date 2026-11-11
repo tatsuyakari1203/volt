@@ -56,12 +56,17 @@ fn vietnamese_titles() -> &'static HashMap<String, String> {
     })
 }
 
-/// The name of the tweak in `lang`: the Vietnamese title when there is one, the catalogue's
-/// English title otherwise.
+/// The name of the tweak or cleaning rule in `lang`: the Vietnamese title when there is one, the
+/// catalogue's English title otherwise.
 #[must_use]
 pub fn tweak_name(lang: Lang, request: &ConfirmRequest) -> String {
+    let kind = if request.action == ConfirmAction::CleanRule {
+        "rule"
+    } else {
+        "tweak"
+    };
     if lang == Lang::Vietnamese
-        && let Some(title) = vietnamese_titles().get(&format!("tweak.{}.title", request.tweak))
+        && let Some(title) = vietnamese_titles().get(&format!("{kind}.{}.title", request.tweak))
     {
         return title.clone();
     }
@@ -85,6 +90,9 @@ pub fn prompt_text(lang: Lang, request: &ConfirmRequest, timeout: Duration) -> P
     let name = tweak_name(lang, request);
     let risk = risk_word(lang, request.risk);
     let seconds = timeout.as_secs();
+    if request.action == ConfirmAction::CleanRule {
+        return clean_text(lang, &name, risk, seconds);
+    }
     let apply = request.action == ConfirmAction::ApplyTweak;
     let restore = apply && volt_core::needs_restore_point(request.risk);
     match lang {
@@ -141,6 +149,36 @@ pub fn prompt_text(lang: Lang, request: &ConfirmRequest, timeout: Duration) -> P
                 cancel: "Hủy".to_owned(),
             }
         }
+    }
+}
+
+/// The question for a machine cleaning rule: what is deleted, that it is permanent and from where.
+fn clean_text(lang: Lang, name: &str, risk: &str, seconds: u64) -> PromptText {
+    match lang {
+        Lang::English => PromptText {
+            title: "Volt: administrator confirmation".to_owned(),
+            heading: format!("Delete \"{name}\" permanently?"),
+            body: format!(
+                "This deletes old files from a folder that every account on this PC can put files                  in. They do not go to the Recycle Bin and cannot be restored. Risk: {risk}.
+
+                 Continue only if you just asked Volt to do this."
+            ),
+            footer: format!("If nobody answers within {seconds} seconds, nothing is deleted."),
+            accept: "Delete permanently".to_owned(),
+            cancel: "Cancel".to_owned(),
+        },
+        Lang::Vietnamese => PromptText {
+            title: "Volt: xác nhận quyền quản trị".to_owned(),
+            heading: format!("Xóa vĩnh viễn \"{name}\"?"),
+            body: format!(
+                "Việc này xóa các tệp cũ trong một thư mục mà mọi tài khoản trên máy này đều có                  thể đặt tệp vào. Chúng không vào Thùng rác và không thể khôi phục. Mức rủi ro:                  {risk}.
+
+Chỉ tiếp tục nếu bạn vừa yêu cầu Volt làm việc này."
+            ),
+            footer: format!("Nếu không ai trả lời trong {seconds} giây, sẽ không xóa gì cả."),
+            accept: "Xóa vĩnh viễn".to_owned(),
+            cancel: "Hủy".to_owned(),
+        },
     }
 }
 
@@ -211,6 +249,39 @@ mod tests {
                 vietnamese_titles().contains_key(&format!("tweak.{}.title", tweak.id)),
                 "{} has no Vietnamese title",
                 tweak.id
+            );
+        }
+    }
+
+    #[test]
+    fn a_cleaning_question_says_permanently_in_both_languages_and_names_the_rule() {
+        let ask = ConfirmRequest {
+            action: ConfirmAction::CleanRule,
+            tweak: "windows-temp".to_owned(),
+            title: "Windows temporary files".to_owned(),
+            risk: Risk::Caution,
+        };
+        let english = prompt_text(Lang::English, &ask, Duration::from_secs(45));
+        assert!(english.heading.contains("Windows temporary files"));
+        assert!(english.heading.contains("permanently"));
+        assert!(english.body.contains("cannot be restored"));
+        assert_eq!(english.accept, "Delete permanently");
+        let vietnamese = prompt_text(Lang::Vietnamese, &ask, Duration::from_secs(45));
+        assert!(vietnamese.heading.contains("Tệp tạm của Windows"));
+        assert!(vietnamese.heading.contains("vĩnh viễn"));
+        assert_eq!(vietnamese.cancel, "Hủy");
+    }
+
+    #[test]
+    fn every_machine_cleaning_rule_has_a_vietnamese_name() {
+        let rules =
+            volt_core::CleaningRules::from_toml(include_str!("../../../catalogue/cleaning.toml"))
+                .expect("the rules load");
+        for rule in rules.rules().iter().filter(|rule| rule.requires_admin) {
+            assert!(
+                vietnamese_titles().contains_key(&format!("rule.{}.title", rule.id)),
+                "{} has no Vietnamese title",
+                rule.id
             );
         }
     }

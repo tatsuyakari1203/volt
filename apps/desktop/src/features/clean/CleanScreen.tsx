@@ -20,6 +20,7 @@ import { formatSize } from '../../shared/text/size';
 import { Button, Card, Dialog, ListGroup, PageHeader, SegmentedControl } from '../../shared/ui';
 import { DuplicatesView } from './DuplicatesView';
 import { LargeFilesView } from './LargeFilesView';
+import { MachineCleanCard } from './MachineCleanCard';
 import {
   categoryName,
   cleanRuleIds,
@@ -495,6 +496,10 @@ function JunkClean({ movedElsewhere }: { movedElsewhere: number }) {
               </section>
             ))
           : null}
+
+        {rulesLoad.status === 'ready' && !scanning ? (
+          <MachineCleanCard rules={rules.filter((rule) => rule.needsAdministrator)} />
+        ) : null}
 
         <RecycleBinCard refreshKey={binKey + movedElsewhere} />
       </div>

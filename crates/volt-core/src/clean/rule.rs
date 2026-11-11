@@ -157,6 +157,10 @@ pub struct Constraints {
 /// [`CleaningRules::from_toml`]: super::CleaningRules::from_toml
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent fact the catalogue states about the rule, not a state"
+)]
 pub struct CleaningRule {
     /// Unique id: lower-case letters and digits separated by single hyphens.
     pub id: String,
@@ -182,6 +186,16 @@ pub struct CleaningRule {
     /// is refused access says so in a typed way (see
     /// [`RuleScan::needs_administrator`](super::RuleScan::needs_administrator)).
     pub requires_admin: bool,
+    /// Whether the elevated helper removes what this rule takes for good, with no Recycle Bin
+    /// (a machine-wide rule: the files of other accounts cannot go to one account's bin). Only a
+    /// rule that `requires_admin` may say so, and every surface that offers it says "deleted
+    /// permanently".
+    pub permanent: bool,
+    /// Whether the helper asks a person on its own surface before every clean of this rule,
+    /// because a normal user can create files in its folder (`C:\Windows\Temp`): what is there
+    /// may be planted. The helper also asks, whatever this says, when the root's access list
+    /// shows that a non-administrator can write to it. Needs `requires_admin`.
+    pub confirm_each_time: bool,
     /// The settings key that may override `constraints.min_age_days`, for rules
     /// whose age the user can configure (temp-like rules). `None`: the age is
     /// fixed by the rule.

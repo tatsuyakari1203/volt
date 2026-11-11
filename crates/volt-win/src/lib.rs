@@ -36,6 +36,7 @@ mod metrics;
 mod processes;
 mod recycle_bin;
 mod registry;
+pub mod safetree;
 mod services;
 mod startup_sources;
 mod version;

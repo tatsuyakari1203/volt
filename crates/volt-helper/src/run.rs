@@ -48,6 +48,10 @@ pub mod exit {
     /// The confirmation was shown and the input could not be put back on the person's desktop: the
     /// helper ends so the private desktop goes with it. Nothing was changed.
     pub const DESKTOP: u8 = 11;
+    /// A machine-wide cleaning walk did not stop when it was cancelled at its deadline: the helper
+    /// ends rather than stay hung as an administrator process. Whatever was deleted before is
+    /// deleted (the delete is one item at a time); nothing else is left half done.
+    pub const STUCK: u8 = 12;
 }
 
 /// Runs the helper for the argument list `argv` (the program name first) and returns the process

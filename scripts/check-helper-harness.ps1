@@ -23,6 +23,8 @@ $markers = @(
     'ci-voltest-marker',
     'ci-voltest-open',
     'ci-voltest-crash',
+    'ci-voltest-clean-silent',
+    'VoltTest/Clean/Silent',
     'volt-ci-failpoint',
     'SOFTWARE\VoltTest\Ci',
     'SOFTWARE\VoltTest\Crash'

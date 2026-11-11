@@ -19,6 +19,7 @@
 
 #![cfg(windows)]
 
+mod clean_cases;
 mod prompt_cases;
 mod state_cases;
 
@@ -255,6 +256,8 @@ fn tweaks(out: &Path) -> u8 {
         Ok(me) => {
             let image = PathBuf::from(&me.identity.image);
             state_cases::tweaks_phase(&mut report, &image, &me);
+            // Machine-wide cleaning and the race harness, against the real helper and real NTFS.
+            clean_cases::clean_phase(&mut report);
             // In this process, with the real confirmer: what happens when nobody answers.
             prompt_cases::prompt_phase(&mut report);
         }

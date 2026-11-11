@@ -407,6 +407,8 @@ pub fn bindings_builder() -> Builder<tauri::Wry> {
             crate::commands::clean_selected_rules,
             crate::commands::choose_cleaning_folder,
             crate::commands::forget_cleaning_folder,
+            crate::machine_clean::scan_machine_rule,
+            crate::machine_clean::clean_machine_rule,
             crate::commands::recycle_bin_status,
             crate::commands::empty_recycle_bin,
             crate::large_files::scan_large_files,

@@ -5,14 +5,17 @@
 # does not validate, and a test checks it on every build. A test also builds a fixture tree for
 # EVERY rule here (apps/desktop/src-tauri/tests/cleaning_rules.rs) and fails when a rule has none.
 #
-# Everything a clean takes goes to the Recycle Bin, never to a permanent delete. Entries modified
-# more recently than `min_age_days` are never taken. A rule marked `requires_admin = true` sits in a
-# machine-wide location that Windows only lets an administrator read or change; run unelevated,
-# its scan reports that in a typed way instead of an empty result.
+# Everything a per-user clean takes goes to the Recycle Bin. Entries modified more recently than
+# `min_age_days` are never taken. A rule marked `requires_admin = true` sits in a machine-wide
+# location that Windows only lets an administrator read or change; run unelevated, its scan reports
+# that in a typed way instead of an empty result. The elevated helper cleans exactly these rules:
+# what they take is DELETED PERMANENTLY (`permanent = true`: files of other accounts cannot go to
+# one account's Recycle Bin), and a rule whose folder a normal user can write to
+# (`confirm_each_time = true`) is confirmed by a person on the helper's own surface every time.
 #
 # Left out on purpose (see the task notes): the Windows Update download cache (clearing it needs the
 # update service stopped and started again, which needs administrator rights) and emptying the
-# Recycle Bin (a permanent delete, a separate explicit action). When in doubt a location is left
+# Recycle Bin (a separate explicit action). When in doubt a location is left
 # out: a small, obviously safe set beats a large one.
 #
 # Per-user locations first (no administrator rights), then the machine-wide ones.
@@ -607,6 +610,8 @@ risk = "caution"
 include = ["**"]
 exclude = ["CBS"]
 requires_admin = true
+permanent = true
+confirm_each_time = true
 min_age_setting = "clean.temp_min_age_days"
 
 [rule.root]
@@ -629,6 +634,7 @@ category = "crash_reports"
 risk = "safe"
 include = ["**"]
 requires_admin = true
+permanent = true
 
 [rule.root]
 location = "program_data"
@@ -650,6 +656,7 @@ category = "crash_reports"
 risk = "safe"
 include = ["**"]
 requires_admin = true
+permanent = true
 
 [rule.root]
 location = "program_data"
@@ -672,6 +679,7 @@ category = "logs"
 risk = "safe"
 include = ["*.etl"]
 requires_admin = true
+permanent = true
 
 [rule.root]
 location = "windows"
@@ -690,11 +698,14 @@ and finish interrupted downloads. Windows downloads them again if they are neede
 kept, so a download in progress is not disturbed. You will not notice anything, except that an update that was \
 waiting may download again. Marked Caution because the service owns this folder and Windows' own cleanup uses \
 the service rather than deleting the files; a file the service holds open is skipped. Needs administrator \
-rights."""
+rights, and what is taken is deleted permanently. The folder belongs to a service account, not to \
+administrators, so Volt's administrator helper asks you to confirm every time."""
 category = "windows_update"
 risk = "caution"
 include = ["**"]
 requires_admin = true
+permanent = true
+confirm_each_time = true
 
 [rule.root]
 location = "windows"

@@ -11,6 +11,8 @@
 //!   and the exit when the client goes away;
 //! - [`session`]: one connection's protocol: ordering, quotas and the requests, over the core's
 //!   wire types and the core's memory operations;
+//! - [`clean`]: machine-wide cleaning with the handle-based walker, permanent and, for a folder a
+//!   normal user can write to, confirmed every time;
 //! - [`state`]: the helper's own protected state folder, the single-helper lock and its store;
 //! - [`tweaks`]: administrator tweaks over the helper's own journal, behind [`confirm`]'s
 //!   confirmation (drawn on a private desktop, see [`confirm`] and [`prompt_text`]) and, for a
@@ -28,6 +30,7 @@
 #[cfg(all(helper_release, feature = "elevated-ci"))]
 compile_error!("the `elevated-ci` feature must never be enabled in a release build of the helper");
 
+pub mod clean;
 pub mod confirm;
 #[cfg(not(helper_release))]
 pub mod debug;
@@ -43,10 +46,11 @@ pub mod tweaks;
 
 use std::sync::Arc;
 
-use volt_core::{Catalogue, CatalogueHashes, Memory, SystemClock, catalogue_hash};
+use volt_core::{Catalogue, CatalogueHashes, CleaningRules, Memory, SystemClock, catalogue_hash};
 use volt_win::WinMemory;
 use volt_win::helper::restore::WinRestorePoints;
 
+use crate::clean::{CleanDesk, CleanParts};
 use crate::session::{QuotaLimits, Session};
 use crate::state::HelperState;
 use crate::tweaks::{DeskParts, TweakDesk};
@@ -64,8 +68,20 @@ const TWEAK_CATALOGUE: &str = concat!(
     "\n",
     include_str!("../ci/ci-tweak.toml")
 );
-/// The cleaning rules this helper holds.
-const CLEANING_RULES: &str = include_str!("../../../catalogue/cleaning.toml");
+/// The cleaning rules of the product.
+const PRODUCT_CLEANING_RULES: &str = include_str!("../../../catalogue/cleaning.toml");
+/// The cleaning rules this helper holds. The UI compares their hash with its own.
+#[cfg(not(feature = "elevated-ci"))]
+const CLEANING_RULES: &str = PRODUCT_CLEANING_RULES;
+/// The rules of the harness build: the product's, plus one test-only rule under a throwaway
+/// `ProgramData\VoltTest` folder. The release helper never has it.
+#[cfg(feature = "elevated-ci")]
+const CLEANING_RULES: &str = concat!(
+    include_str!("../../../catalogue/cleaning.toml"),
+    "
+",
+    include_str!("../ci/ci-clean.toml")
+);
 
 /// The text of the tweak catalogue this helper holds (the harness of the elevated CI job reads
 /// the tweaks it exercises from it).
@@ -81,7 +97,7 @@ pub fn embedded_tweak_catalogue() -> &'static str {
 pub fn product_catalogue_hashes() -> CatalogueHashes {
     CatalogueHashes {
         tweaks: catalogue_hash(PRODUCT_TWEAK_CATALOGUE),
-        cleaning: catalogue_hash(CLEANING_RULES),
+        cleaning: catalogue_hash(PRODUCT_CLEANING_RULES),
     }
 }
 
@@ -111,6 +127,16 @@ pub fn production_session(state: &HelperState) -> Session {
         env!("CARGO_PKG_VERSION"),
         QuotaLimits::default(),
     );
+    let session = match CleaningRules::from_toml(CLEANING_RULES) {
+        Ok(rules) => session.with_cleaning(CleanDesk::new(CleanParts::product(
+            Arc::new(rules),
+            confirm::product_confirmer(),
+        ))),
+        Err(error) => {
+            log::error!("machine cleaning is not available in this helper: {error}");
+            session
+        }
+    };
     match build_desk(state, memory) {
         Ok(desk) => session.with_tweaks(desk),
         Err(error) => {
