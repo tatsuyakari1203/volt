@@ -113,15 +113,15 @@ pub use apps::{
     UninstallCommand, UninstallError, UninstallOutcome, UninstallReport, Uninstaller,
     UninstallerExit, Waited,
 };
-pub use automation::{
-    Automation, AutomationConfig, AutomationState, AutomationStatus, CleaningOutcome, Environment,
-    Frequency, MemoryRule, PauseReason, Schedule, SkippedRun, TickReport,
-    is_eligible as is_automatic_rule,
-};
 pub use apps::{
     AppUpdate, NoTable, PackageId, PackageSource, ParsedUpdates, UPDATE_LABEL, UpdateError,
     UpdateListing, UpdateManager, UpdateProblem, UpgradeFailure, UpgradeOutcome, UpgradeReport,
     Winget, WingetCommand, WingetRun, parse_upgrade_list,
+};
+pub use automation::{
+    Automation, AutomationConfig, AutomationState, AutomationStatus, CleaningOutcome, Environment,
+    Frequency, MemoryRule, PauseReason, Schedule, SkippedRun, TickReport,
+    is_eligible as is_automatic_rule,
 };
 pub use boost::{
     BOOST_SETTINGS_KEY, BOOST_TEMP_RULE_ID, BoostConfig, BoostReport, JunkFound, SkippedOperation,
