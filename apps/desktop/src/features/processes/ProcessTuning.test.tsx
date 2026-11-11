@@ -226,6 +226,7 @@ describe('the Settings dialog of an app', () => {
       path: null,
       request: { priority: 'belowNormal', cores: [0, 1], efficiency: null },
       problem: null,
+      leftAlone: 0,
     };
     ipc.tuneApp.mockResolvedValue({ ...done, ruleSaved: true });
     renderScreen();
@@ -305,6 +306,7 @@ describe('the saved rules', () => {
       path: 'c:\\games\\game.exe',
       request: { priority: null, cores: null, efficiency: true },
       problem: null,
+      leftAlone: 2,
     },
     {
       id: 'vendor.exe',
@@ -312,6 +314,7 @@ describe('the saved rules', () => {
       path: null,
       request: { priority: 'high', cores: [0], efficiency: null },
       problem: 'needsAdministrator',
+      leftAlone: 0,
     },
   ];
 
@@ -324,6 +327,7 @@ describe('the saved rules', () => {
     // Efficiency mode on is Low priority: it is said once.
     expect(items[0]?.textContent).toContain('Efficiency mode on');
     expect(items[0]?.textContent).not.toContain('priority');
+    expect(items[0]?.textContent).toContain('2 processes could not be changed');
     expect(items[1]?.textContent).toContain('High priority, 1 core');
     expect(items[1]?.textContent).toContain('Not applied: Windows lets only an administrator');
   });

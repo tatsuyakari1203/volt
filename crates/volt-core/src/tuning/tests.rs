@@ -523,7 +523,8 @@ fn a_rule_is_applied_to_a_process_that_starts_and_only_once() {
     assert_eq!(s.tuner.apply_rules().changed, 1);
     assert_eq!(settings_of(&s, 10).priority, PriorityClass::BelowNormal);
 
-    // Nothing new: no process is read twice, and no entry is written.
+    // Reapplying a rule is not an undo entry (removing the rule is the undo); one activity line
+    // says what the rule did, once.
     let entries = || {
         s.system
             .journal
@@ -531,29 +532,115 @@ fn a_rule_is_applied_to_a_process_that_starts_and_only_once() {
             .expect("entries")
             .len()
     };
-    assert_eq!(entries(), 1);
+    let lines = || {
+        s.system
+            .activity
+            .records()
+            .iter()
+            .filter(|r| r.summary.contains("saved rule for game.exe changed"))
+            .count()
+    };
+    assert_eq!(entries(), 0);
+    assert_eq!(lines(), 1);
     assert_eq!(s.tuner.apply_rules(), RulesRun::default());
-    assert_eq!(entries(), 1);
 
-    // A new process of the app is changed, one of another app is not.
+    // A new process of the app is changed, one of another app is not, and nothing is written.
     s.system.processes.add(20, "GAME.EXE", 1);
     s.system.processes.add(21, "other.exe", 1);
     assert_eq!(s.tuner.apply_rules().changed, 1);
     assert_eq!(settings_of(&s, 20).priority, PriorityClass::BelowNormal);
     assert_eq!(settings_of(&s, 21), FakeProcesses::DEFAULT_SETTINGS);
-    let applied = s
-        .system
-        .journal
-        .entries_in_state(EntryState::Applied)
-        .expect("entries");
-    assert_eq!(applied.len(), 2);
-    assert!(applied.iter().all(|e| e.source == Source::Automation));
+    for pid in 30..40 {
+        s.system.processes.add(pid, "game.exe", 1);
+        assert_eq!(s.tuner.apply_rules().changed, 1);
+    }
+    assert_eq!(entries(), 0);
+    assert_eq!(lines(), 1, "one line per rule and session");
 
-    // A rule application can be undone like any change.
-    s.executor
-        .revert_entry(applied[1].id, Source::Manual, None)
-        .expect("revert");
-    assert_eq!(settings_of(&s, 20).priority, PriorityClass::Normal);
+    // The rule list is what undoes it: saving again starts a new line.
+    s.tuner.remove_rule("game.exe").expect("remove");
+    assert_eq!(s.tuner.apply_rules(), RulesRun::default());
+}
+
+#[test]
+fn a_rule_that_changes_some_processes_says_how_many_it_left_alone() {
+    let s = setup();
+    s.system.processes.add(10, "chrome.exe", 1);
+    s.system.processes.add(11, "chrome.exe", 1);
+    s.system.processes.add(12, "chrome.exe", 1);
+    s.tuner
+        .save_rule("chrome.exe", &priority(PriorityClass::BelowNormal))
+        .expect("save");
+    s.system
+        .processes
+        .fail_apply_settings(11, PortError::AccessDenied("elevated".into()));
+    s.system
+        .processes
+        .fail_settings(12, PortError::AccessDenied("elevated".into()));
+
+    let run = s.tuner.apply_rules();
+    assert_eq!(
+        run,
+        RulesRun {
+            changed: 1,
+            failed: 0
+        }
+    );
+    let listed = s.tuner.rules().expect("rules");
+    assert_eq!(listed[0].problem, None);
+    assert_eq!(listed[0].left_alone, 2);
+    assert_eq!(settings_of(&s, 11).priority, PriorityClass::Normal);
+    let lines: Vec<String> = s
+        .system
+        .activity
+        .records()
+        .iter()
+        .map(|r| r.summary.clone())
+        .filter(|t| t.contains("saved rule"))
+        .collect();
+    assert_eq!(lines.len(), 1);
+    assert!(
+        lines[0].contains("changed 1 process and left 2 processes alone"),
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn a_rule_is_refused_when_this_machine_lacks_a_core_it_names() {
+    let s = setup();
+    s.system.processes.add(10, "game.exe", 1);
+    let request = TuneRequest {
+        affinity_mask: Some(1 << 9),
+        ..TuneRequest::default()
+    };
+    assert_eq!(
+        s.tuner.save_rule("game.exe", &request),
+        Err(TuneError::UnknownCore)
+    );
+    assert!(s.tuner.rules().expect("rules").is_empty());
+    let fits = TuneRequest {
+        affinity_mask: Some(0b11),
+        ..TuneRequest::default()
+    };
+    assert!(s.tuner.save_rule("game.exe", &fits).is_ok());
+}
+
+#[test]
+fn turning_efficiency_off_gives_the_process_back_to_windows() {
+    let s = setup();
+    s.system.processes.add(10, "game.exe", 1);
+    let on = TuneRequest {
+        efficiency: Some(true),
+        ..TuneRequest::default()
+    };
+    s.tuner.tune("game.exe", &on, Source::Manual).expect("on");
+    assert_eq!(settings_of(&s, 10).throttling, PowerThrottling::On);
+    let off = TuneRequest {
+        efficiency: Some(false),
+        ..TuneRequest::default()
+    };
+    s.tuner.tune("game.exe", &off, Source::Manual).expect("off");
+    assert_eq!(settings_of(&s, 10).throttling, PowerThrottling::Default);
 }
 
 #[test]
@@ -705,7 +792,7 @@ fn the_descriptions_name_the_fields_and_never_a_path() {
     let text = applied_phrase_of("game.exe", &change).english();
     assert_eq!(
         text,
-        "Changed game.exe: priority above normal, 3 processor cores, Efficiency mode off"
+        "Changed game.exe: priority above normal, 3 processor cores, Efficiency mode as Windows decides"
     );
     let on = TuneRequest {
         efficiency: Some(true),

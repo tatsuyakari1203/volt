@@ -76,6 +76,7 @@
   "count.file.other": "{count} tệp",
   "count.emptyFolder.other": "{count} thư mục trống",
   "count.item.other": "{count} mục",
+  "count.process.other": "{count} tiến trình",
   "join.and": "{first} và {second}",
 
   "summary.cleanRule": "Đã dọn quy tắc {rule}: chuyển {moved} vào Thùng rác ({size}){left}; dung lượng chỉ được giải phóng khi dọn Thùng rác",
@@ -179,6 +180,8 @@
   "summary.processTuned": "Đã thay đổi {name}: {change}",
   "summary.processesEnded": "{verb} {subject}: mọi tiến trình đã thoát từ trước nên không còn gì để khôi phục{note}",
   "summary.ruleFailed": "Không áp dụng được quy tắc đã lưu cho {name} ({reason})",
+  "summary.ruleApplied": "Quy tắc đã lưu cho {name} đã thay đổi {processes}; tiến trình mới của ứng dụng tuân theo mà không thêm mục nào (xóa quy tắc để dừng)",
+  "summary.ruleAppliedPartly": "Quy tắc đã lưu cho {name} đã thay đổi {processes} và để nguyên {left} vì Windows không cho Volt thay đổi; tiến trình mới của ứng dụng tuân theo mà không thêm mục nào (xóa quy tắc để dừng)",
   "tune.list": "{items}",
   "tune.priority": "mức ưu tiên {class}",
   "tune.affinity.other": "{count} lõi xử lý",

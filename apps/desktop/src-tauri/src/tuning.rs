@@ -80,8 +80,8 @@ pub struct TuneRequestView {
     pub priority: Option<PriorityView>,
     /// The cores to run on, by number (0 is the first). Must not be empty.
     pub cores: Option<Vec<u32>>,
-    /// Efficiency mode: on is power throttling together with Low priority; off turns throttling
-    /// off.
+    /// Efficiency mode: on is power throttling together with Low priority; off gives the process
+    /// back to the Windows default.
     pub efficiency: Option<bool>,
 }
 
@@ -229,6 +229,9 @@ pub struct RuleView {
     pub request: TuneRequestView,
     /// Why it was last not applied, until it works again.
     pub problem: Option<RuleProblemView>,
+    /// How many processes of the app the rule could not change since Volt started (Windows
+    /// refused them) although it changed others.
+    pub left_alone: u32,
 }
 
 impl From<&RuleStatus> for RuleView {
@@ -245,6 +248,7 @@ impl From<&RuleStatus> for RuleView {
                     RuleProblemView::Failed
                 }
             }),
+            left_alone: status.left_alone,
         }
     }
 }
