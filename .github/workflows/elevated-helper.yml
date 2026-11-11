@@ -1,0 +1,123 @@
+name: Elevated helper
+
+# Runs the RELEASE helper (volt-helper.exe) for real on a GitHub-hosted Windows runner, which is a
+# throwaway virtual machine whose user holds an administrator token: starting the helper there
+# shows no prompt and harms nobody. Nothing else in the repository starts the helper, writes under
+# Program Files or purges memory in a test; the harness refuses to run anywhere but here.
+#
+# Limited by paths to the code the helper is made of, so unrelated changes do not wait for it. It
+# is not a required status check.
+on:
+  push:
+    branches: [main]
+    paths:
+      - crates/volt-core/**
+      - crates/volt-win/**
+      - crates/volt-helper/**
+      - catalogue/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - scripts/build-helper.ps1
+      - .github/workflows/elevated-helper.yml
+  pull_request:
+    paths:
+      - crates/volt-core/**
+      - crates/volt-win/**
+      - crates/volt-helper/**
+      - catalogue/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - scripts/build-helper.ps1
+      - .github/workflows/elevated-helper.yml
+
+concurrency:
+  group: elevated-helper-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  elevated-helper:
+    name: Elevated helper
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # The runner context is not available in `env:` above, so the folder is set here.
+      - name: Choose the report folder
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'volt-elevated-ci'
+          "REPORT_DIR=$dir" | Add-Content -Path $env:GITHUB_ENV
+
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+
+      - name: Build the release helper
+        run: pwsh scripts/build-helper.ps1
+
+      # The harness is a binary behind a non-default feature: the release workflow and the
+      # installer never build it.
+      - name: Build and lint the harness
+        run: |
+          cargo clippy -p volt-helper --features elevated-ci --all-targets --locked -- -D warnings
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo build -p volt-helper --features elevated-ci --bin volt-elevated-ci --locked
+
+      # Reads only: the measurement code on this process, and the harness's refusal to run unless
+      # every switch of this workflow is set.
+      - name: Test the harness support code
+        run: |
+          cargo test -p volt-win --features elevated-ci --lib --locked helper::ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p volt-helper --features elevated-ci --bin volt-elevated-ci --locked
+
+      # The folder is created by an administrator under Program Files, so it carries the inherited
+      # ACL of Program Files, exactly what the installer leaves. The harness plays the UI, so it
+      # takes the UI executable's name.
+      - name: Stage the install folder
+        run: |
+          $dir = Join-Path $env:ProgramFiles 'Volt'
+          New-Item -ItemType Directory -Path $dir | Out-Null
+          Copy-Item target/helper/release/volt-helper.exe (Join-Path $dir 'volt-helper.exe')
+          Copy-Item target/debug/volt-elevated-ci.exe (Join-Path $dir 'volt-desktop.exe')
+          New-Item -ItemType Directory -Path $env:REPORT_DIR -Force | Out-Null
+          $diag = @()
+          $diag += '--- whoami /groups (integrity level)'
+          $diag += (whoami /groups | Select-String 'Mandatory Label|BUILTIN\Administrators')
+          $diag += '--- EnableLUA'
+          $diag += (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System').EnableLUA
+          $diag += '--- icacls of the install folder and the helper'
+          $diag += (icacls $dir)
+          $diag += (icacls (Join-Path $dir 'volt-helper.exe'))
+          $diag | Tee-Object -FilePath (Join-Path $env:REPORT_DIR 'staging.txt')
+
+      - name: Run the helper for real
+        env:
+          VOLT_ELEVATED_CI: "1"
+        run: |
+          $exe = Join-Path $env:ProgramFiles 'Volt\volt-desktop.exe'
+          & $exe run --out $env:REPORT_DIR 2>&1 | Tee-Object -FilePath (Join-Path $env:REPORT_DIR 'harness.log')
+          exit $LASTEXITCODE
+
+      - name: Job summary
+        if: always()
+        run: |
+          $report = Join-Path $env:REPORT_DIR 'elevated-helper-report.md'
+          if (Test-Path $report) { Get-Content $report | Add-Content $env:GITHUB_STEP_SUMMARY }
+          else { 'The harness wrote no report.' | Add-Content $env:GITHUB_STEP_SUMMARY }
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: elevated-helper-report
+          path: ${{ env.REPORT_DIR }}
+          if-no-files-found: warn

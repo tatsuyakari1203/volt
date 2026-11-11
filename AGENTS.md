@@ -85,6 +85,11 @@ Volt edits registries, services, files and memory on real machines. Treat that a
 - Every tweak declares a risk level (Safe, Caution, Advanced) and whether its benefit is
   measured or anecdotal. Do not add tweaks whose effect cannot be explained.
 - No telemetry, no network calls unless a feature needs them and says so in the UI.
+- The elevated CI job (`.github/workflows/elevated-helper.yml`) is the only place where a test may
+  write under Program Files, install or start the helper, trigger an elevation or purge memory. It
+  runs on GitHub-hosted runners only (throwaway virtual machines), and its harness
+  (`volt-elevated-ci`, behind the `elevated-ci` feature) refuses to run anywhere else. Never run
+  that harness, or set its switches, on a developer machine.
 
 ## Commands
 

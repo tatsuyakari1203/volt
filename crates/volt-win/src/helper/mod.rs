@@ -11,11 +11,16 @@
 //! that starts it through the administrator prompt) and [`elevator`] (the session: authenticate the
 //! server, agree on the version, send requests).
 //!
+//! With the `elevated-ci` feature (never enabled by a product build) the module `ci` adds the
+//! measurements of the job that runs the real helper on a hosted runner.
+//!
 //! Only [`launch`] can start a process or show a prompt, and only when the UI asks it to; nothing
 //! else in this module does, and tests replace the launch call.
 
 pub mod acl;
 pub mod args;
+#[cfg(feature = "elevated-ci")]
+pub mod ci;
 pub mod elevator;
 pub mod harden;
 pub mod identity;

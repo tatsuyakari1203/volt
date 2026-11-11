@@ -57,6 +57,20 @@ struct Connection {
     hello: HelloReply,
     /// The id of the next request.
     next_id: u64,
+    /// What the CI job measures about this connection.
+    #[cfg(feature = "elevated-ci")]
+    recorded: Recorded,
+}
+
+/// What a connection records for the CI job: the pipe and the two times.
+#[cfg(feature = "elevated-ci")]
+#[derive(Debug)]
+struct Recorded {
+    pipe: PipeName,
+    /// How long the launch call took (it returns when the process has been created).
+    launch_call: Duration,
+    /// From before the launch call to the `hello` reply.
+    launch_to_hello: Duration,
 }
 
 impl Connection {
@@ -225,6 +239,8 @@ impl WinElevator {
         }
         .render();
 
+        #[cfg(feature = "elevated-ci")]
+        let started = std::time::Instant::now();
         let process = match self.launcher.launch(&helper, &args) {
             Ok(process) => process,
             Err(LaunchError::Declined) => return Err(ElevationError::Declined),
@@ -234,6 +250,8 @@ impl WinElevator {
                 )));
             }
         };
+        #[cfg(feature = "elevated-ci")]
+        let launch_call = started.elapsed();
         let client = PipeClient::open_waiting(&pipe, OPEN_WAIT).map_err(|_| {
             unavailable("the helper did not start serving (it may have refused to run here)")
         })?;
@@ -271,6 +289,12 @@ impl WinElevator {
             process,
             hello,
             next_id: 2,
+            #[cfg(feature = "elevated-ci")]
+            recorded: Recorded {
+                pipe,
+                launch_call,
+                launch_to_hello: started.elapsed(),
+            },
         })
     }
 
@@ -351,6 +375,58 @@ impl Elevator for WinElevator {
 
     fn bye(&self) {
         self.end_session();
+    }
+}
+
+/// The facts of a live connection that the CI job records.
+#[cfg(feature = "elevated-ci")]
+#[derive(Debug)]
+pub struct ConnectionEvidence {
+    /// The pipe the helper serves.
+    pub pipe: PipeName,
+    /// The helper's process id, from the launch handle.
+    pub helper_pid: Option<u32>,
+    /// The pipe's owner as the client reads it.
+    pub owner_sid: Result<String, String>,
+    /// Whether the owner is one the client trusts.
+    pub owner_trusted: bool,
+    /// The process id `GetNamedPipeServerProcessId` reports.
+    pub server_pid: Result<u32, String>,
+    /// Whether that process is the one the launch handle refers to.
+    pub server_is_launched: bool,
+    /// What the launch handle allows.
+    pub rights: super::ci::HandleRights,
+    /// The helper's memory now.
+    pub working_set: Result<super::ci::WorkingSet, String>,
+    /// How long the launch call took.
+    pub launch_call: Duration,
+    /// From before the launch call to the `hello` reply.
+    pub launch_to_hello: Duration,
+}
+
+#[cfg(feature = "elevated-ci")]
+impl WinElevator {
+    /// What is true of the live connection now, or `None` when there is none. Never starts a
+    /// helper.
+    #[must_use]
+    pub fn ci_evidence(&self) -> Option<ConnectionEvidence> {
+        let session = lock(&self.session);
+        let connection = session.as_ref()?;
+        let owner_sid = connection.client.owner_sid();
+        Some(ConnectionEvidence {
+            pipe: connection.recorded.pipe.clone(),
+            helper_pid: connection.process.pid().ok(),
+            owner_trusted: owner_sid
+                .as_deref()
+                .is_ok_and(|owner| self.owner_is_trusted(owner)),
+            owner_sid,
+            server_pid: connection.client.server_pid(),
+            server_is_launched: connection.client.server_is(&connection.process),
+            rights: super::ci::handle_rights(&connection.process),
+            working_set: super::ci::working_set(&connection.process),
+            launch_call: connection.recorded.launch_call,
+            launch_to_hello: connection.recorded.launch_to_hello,
+        })
     }
 }
 

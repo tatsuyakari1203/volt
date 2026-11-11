@@ -353,6 +353,12 @@ impl ProcessHandle {
         (!handle.is_invalid() && !handle.0.is_null()).then(|| Self(OwnedHandle(handle)))
     }
 
+    /// The raw handle, for the CI measurements.
+    #[cfg(feature = "elevated-ci")]
+    pub(crate) fn raw(&self) -> HANDLE {
+        self.0.raw()
+    }
+
     /// Whether the process has exited. A handle that cannot be waited on (it lacks the
     /// synchronise right) reports `false`: the caller then relies on the pipe to notice.
     #[must_use]
