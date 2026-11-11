@@ -70,7 +70,8 @@ function Get-Weaknesses([string]$Root) {
         foreach ($rule in $acl.Access) {
             if ($rule.AccessControlType -ne 'Allow') { continue }
             if (($rule.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) { continue }
-            $sid = $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
+            try { $sid = $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value }
+            catch { $sid = $rule.IdentityReference.Value }
             if ($trusted -contains $sid) { continue }
             if (([int]$rule.FileSystemRights -band $writeMask) -ne 0) {
                 $weak += "$($item.FullName): $sid has $($rule.FileSystemRights)"
