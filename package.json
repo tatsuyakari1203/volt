@@ -26,8 +26,8 @@
     "graph:sync": "codegraph sync"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.6.6",
-    "@colbymchenry/codegraph": "1.6.2",
+    "@biomejs/biome": "2.6.8",
+    "@colbymchenry/codegraph": "1.6.4",
     "@commitlint/cli": "21.2.4",
     "@commitlint/config-conventional": "21.2.4",
     "backlog.md": "1.55.3",
